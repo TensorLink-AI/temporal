@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+from temporal.losses.loss_functions import MQLoss, QuantileLoss
+from typing import Dict, Callable
 
 class BaseLoss(nn.Module):
     """Base class for time series loss functions."""
@@ -21,19 +23,19 @@ class TimeSeriesLoss(BaseLoss):
     - Root Mean Squared Error (RMSE)
     - Mean Absolute Error (MAE)
     - Quantile Loss
-    - Continuous Ranked Probability Score (CRPS)
+    - MultiQuantile Loss (MQ)
     """
 
     def __init__(self, config, loss_type="mse", quantile=0.5):
         """
         Args:
             config: Model configuration.
-            loss_type (str): Loss function to use ("mse", "rmse", "mae", "quantile", "crps").
+            loss_type (str): Loss function to use ("mse", "rmse", "mae", "quantile", "MQ").
             quantile (float): Quantile level for quantile loss (default 0.5).
         """
         super().__init__(config)
         self.loss_type = loss_type.lower()
-        self.quantile = quantile  # Only used for quantile loss
+        self.quantiles = quantile  # Only used for quantile loss
 
         # Mapping of loss types
         self.loss_functions = {
@@ -41,20 +43,14 @@ class TimeSeriesLoss(BaseLoss):
             "mae": nn.L1Loss(reduction="none"),
             "rmse": lambda preds, labels: torch.sqrt(nn.MSELoss(reduction="none")(preds, labels)),
             "quantile": self.quantile_loss,
-            "crps": self.crps_loss,  # Placeholder for CRPS implementation
+            "MQ": MQLoss(),  # Placeholder for CRPS implementation
         }
 
         if self.loss_type not in self.loss_functions:
             raise ValueError(f"Unsupported loss_type: {self.loss_type}. Choose from {list(self.loss_functions.keys())}.")
 
-    def quantile_loss(self, predictions, labels):
-        """Computes quantile loss for given quantile level."""
-        errors = labels - predictions
-        return torch.max((self.quantile - 1) * errors, self.quantile * errors)
 
-    def crps_loss(self, predictions, labels):
-        """Placeholder for CRPS loss function (can be customized)."""
-        return nn.MSELoss(reduction="none")(predictions, labels)  # Replace with actual CRPS implementation
+
 
     def forward(self, predictions, labels, loss_masks=None, output_token_len=None):
         """
@@ -88,3 +84,48 @@ class TimeSeriesLoss(BaseLoss):
             loss = torch.mean(losses)
 
         return loss
+
+
+class HybridTimeSeriesLoss(nn.Module):
+    """
+    Hybrid loss function that allows stacking multiple losses with custom weights.
+
+    Example:
+    ```python
+    loss_fn = HybridTimeSeriesLoss({
+        "mse": {"loss": TimeSeriesLoss("mse"), "weight": 0.4},
+        "quantile": {"loss": TimeSeriesLoss("quantile"), "weight": 0.6}
+    })
+    ```
+    """
+
+    def __init__(self, losses: Dict[str, Dict[str, Callable]]):
+        """
+        Args:
+            losses (dict): A dictionary where keys are loss names and values are dicts containing:
+                - "loss": Instance of `TimeSeriesLoss`
+                - "weight": Weighting factor for the loss
+        """
+        super().__init__()
+
+        self.losses = nn.ModuleDict({name: loss_dict["loss"] for name, loss_dict in losses.items()})
+        self.weights = {name: loss_dict["weight"] for name, loss_dict in losses.items()}
+
+        assert sum(self.weights.values()) > 0, "Sum of weights must be greater than zero"
+
+    def forward(self, preds, target):
+        """
+        Compute the hybrid loss as a weighted sum of all loss components.
+
+        Args:
+            preds (torch.Tensor): Model predictions
+            target (torch.Tensor): Ground truth
+
+        Returns:
+            torch.Tensor: Computed hybrid loss value.
+        """
+        total_loss = 0.0
+        for name, loss_fn in self.losses.items():
+            loss = loss_fn(preds, target)
+            total_loss += self.weights[name] * loss
+        return total_loss

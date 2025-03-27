@@ -1,6 +1,7 @@
 import torch
 import os
 from transformers import PreTrainedModel
+from ..configs.basetimeseriesconfig import BaseTimeseriesConfig
 
 class BaseTimeSeriesModel(PreTrainedModel):
     """
@@ -29,7 +30,7 @@ class BaseTimeSeriesModel(PreTrainedModel):
             config_path = os.path.join(model_path, "config.json")
             if not os.path.exists(config_path):
                 raise ValueError(f"Config file not found in {config_path}. Provide a config manually.")
-            config = TimeSeriesConfig.from_json_file(config_path)
+            config = BaseTimeseriesConfig.from_json_file(config_path)
 
         # Instantiate the correct model class
         model = cls(config)

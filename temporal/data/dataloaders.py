@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from .transformations import *
 import pandas as pd
 from torch.utils.data import IterableDataset, DataLoader
 from typing import Optional, List, Dict, Any, Union, Tuple
@@ -12,6 +13,7 @@ class TimeSeriesIterableDataset(IterableDataset):
     Expects `dataset` to be an indexable collection of dicts with:
         {
           'target': array-like,
+
           'feat_dynamic_real': optional array-like,
           'feat_static_cat': optional array-like,
           'freq': optional string,
