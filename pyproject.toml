@@ -1,11 +1,23 @@
 [tool.poetry]
-name = "temp"
-version = "0.0.1"
-description = ""
+name = "temporal"
+version = "0.1.0"
+description = "A library for temporal data analysis"
+authors = ["Chris -- tensorlink-dev", "TensorLink-AI"]
+maintainers = ["Chris chris@tensor-link.com"]
+readme = "README.md"
+license = "APACHE-2.0"
 
 [tool.poetry.dependencies]
-python = "^3.10"
-
+python = "^3.8"
+torch = ">=1.10"
+transformers = ">=4.38"
+numpy = "*"
+scikit-learn = "*"
+joblib = "*"
+tqdm = "*"
+pyarrow = "*"
+datasets = "*"
+pandas = ">=2.0.0"
 
 [build-system]
 requires = ["poetry-core"]
