@@ -25,7 +25,7 @@ Predicting crypto/futures prices
 
 Modeling sensor or health data
 
-Learning residuals and dynamic regimes
+*Learning residuals and dynamic regimes
 
 Time series data augmentation via generative modeling
 
