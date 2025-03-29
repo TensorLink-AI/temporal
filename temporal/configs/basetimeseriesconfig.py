@@ -2,6 +2,7 @@ from transformers import PretrainedConfig
 
 
 from transformers import PretrainedConfig
+PROBABILISTIC_LOSSES = ["quantile", "mq"]  # Constant set, cannot be modified dynamically
 
 class BaseTimeSeriesConfig(PretrainedConfig):
     
@@ -10,7 +11,6 @@ class BaseTimeSeriesConfig(PretrainedConfig):
     """
 
     model_type = "base_time_series"
-    PROBABILISTIC_LOSSES = {"quantile", "crps"}  # Constant set, cannot be modified dynamically
 
     def __init__(
         self,
