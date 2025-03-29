@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from soft_dtw_pytorch import SoftDTW
 import torch.fft
 
 
