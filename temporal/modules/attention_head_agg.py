@@ -1,3 +1,7 @@
+import torch
+from torch import nn
+from typing import List, Optional
+
 class HeadAggregator(nn.Module):
     def __init__(
         self,
