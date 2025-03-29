@@ -12,6 +12,7 @@ from temporal.modules.embedding import TimeSeriesValueEmbedding, TimeSeriesSinus
 from temporal.modules.losses import TimeSeriesLoss
 from temporal.modules.attention_head_agg import HeadAggregator
 from .basemodel import  BaseTimeSeriesModel
+from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 
 class TimeSeriesTransformerModel( BaseTimeSeriesModel):
     """
@@ -21,7 +22,7 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
     - Supports dynamic feature embeddings
     """
 
-    config_class = TimeSeriesConfig
+    config_class = BaseTimeSeriesConfig
     base_model_prefix = "time_series_transformer"
 
     def __init__(self, config):
