@@ -6,11 +6,11 @@ from typing import Optional, Tuple, List, Union
 # Import developed modules
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
-from .encoders import TimeSeriesTransformerEncoder
-from .decoders import TimeSeriesTransformerDecoder
-from .embeddings import TimeSeriesValueEmbedding, TimeSeriesSinusoidalPositionalEmbedding
-from .losses import TimeSeriesLoss
-from .attention_head_agg import HeadAggregator
+from temporal.modules.encoders import TimeSeriesTransformerEncoder
+from temporal.modules.decoders import TimeSeriesTransformerDecoder
+from temporal.modules.embedding import TimeSeriesValueEmbedding, TimeSeriesSinusoidalPositionalEmbedding
+from temporal.modules.losses import TimeSeriesLoss
+from temporal.modules.attention_head_agg import HeadAggregator
 from .basemodel import  BaseTimeSeriesModel
 
 class TimeSeriesTransformerModel( BaseTimeSeriesModel):
