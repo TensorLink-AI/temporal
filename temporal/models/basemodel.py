@@ -1,7 +1,7 @@
 import torch
 import os
 from transformers import PreTrainedModel
-from ..configs.basetimeseriesconfig import BaseTimeseriesConfig
+from temporal.configs.basetimeseriesconfig import BaseTimeseriesConfig
 
 class BaseTimeSeriesModel(PreTrainedModel):
     """
