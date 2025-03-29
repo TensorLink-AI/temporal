@@ -22,10 +22,10 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
     - Supports dynamic feature embeddings
     """
 
-    config_class = BaseTimeSeriesConfig
-    base_model_prefix = "time_series_transformer"
+    #config_class = BaseTimeSeriesConfig
+    #base_model_prefix = "time_series_transformer"
 
-    def __init__(self, config):
+    def __init__(self, config): # Add a type here, e.g. BaseTimeSeries Config
         super().__init__(config)
         self.config = config
 
