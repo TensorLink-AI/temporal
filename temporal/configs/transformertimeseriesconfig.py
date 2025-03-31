@@ -1,4 +1,4 @@
-from temporal.configs.basetimeseriesconfig import BaseTimeseriesConfig
+from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 
 class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     """Configuration for Transformer based time series models."""
