@@ -42,7 +42,7 @@ class TimeSeriesLoss(BaseLoss):
             "mse": nn.MSELoss(reduction="none"),
             "mae": nn.L1Loss(reduction="none"),
             "rmse": lambda preds, labels: torch.sqrt(nn.MSELoss(reduction="none")(preds, labels)),
-            "quantile": QuantileLoss(quantiles = self.quantiles ),
+            "quantile": QuantileLoss(quantile = self.quantiles ),
             "mq": MQLoss(quantiles = self.quantiles),  # Placeholder for CRPS implementation
         }
 
