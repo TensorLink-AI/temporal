@@ -13,7 +13,7 @@ from temporal.modules.losses import TimeSeriesLoss
 from temporal.modules.attention_head_agg import HeadAggregator
 from .basemodel import  BaseTimeSeriesModel
 from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
-from temporal.modules.attention import TimeSeriesAttention
+from temporal.modules.embeddings import AutoTimeSeriesEmbedding
 
 class TimeSeriesTransformerModel( BaseTimeSeriesModel):
     """
@@ -35,10 +35,8 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
         self.decoder = TimeSeriesTransformerDecoder(config)
 
         # Feature embeddings
-        self.value_embedding = TimeSeriesValueEmbedding(config.feature_size, config.hidden_size)
-        self.position_embedding = TimeSeriesSinusoidalPositionalEmbedding(
-            config.context_length + config.prediction_length, config.hidden_size
-        )
+        self.value_embedding = AutoTimeSeriesEmbedding.from_config(config, embedding_type=config.value_embedding_type)
+        self.pos_embedding = AutoTimeSeriesEmbedding.from_config(config, embedding_type=config.pos_embedding_type)
 
         # Output heads (multi-output for quantile forecasting)
         self.num_quantiles = config.num_quantiles

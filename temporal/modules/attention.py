@@ -5,7 +5,12 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 
 
-class BaseAttention(nn.Module):
+import BaseTimeSeriesConfig
+
+
+
+
+class BaseMultiHeadAttention(nn.Module):
     def __init__(
         self,
         embed_dim: int,
@@ -13,6 +18,8 @@ class BaseAttention(nn.Module):
         dropout: float = 0.1,
         is_decoder: bool = False,
         bias: bool = True,
+        is_cross_attention: bool = False,
+
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -20,6 +27,8 @@ class BaseAttention(nn.Module):
         self.dropout = dropout
         self.head_dim = embed_dim // num_heads
         self.is_decoder = is_decoder
+        self.is_cross_attention = is_cross_attention
+
 
         if self.head_dim * num_heads != embed_dim:
             raise ValueError(f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads}).")
@@ -102,7 +111,7 @@ class BaseAttention(nn.Module):
             return attn_output, None, present_key_value
 
 
-class TimeSeriesAttention(BaseAttention):
+class TimeSeriesAttention(BaseMultiHeadAttention):
     """
     Standard Multi-Head Attention for Time Series data.
     Inherits all logic from BaseAttention, including:
@@ -120,3 +129,44 @@ class TimeSeriesAttention(BaseAttention):
             is_decoder=config.is_decoder,  # ✅ Uses the config value instead of hardcoding
             bias=True,  # Bias remains default as True, unless changed in config
         )
+
+
+ATTENTION_REGISTRY = {
+    "timeseries": TimeSeriesAttention,
+    # "custom": MyCustomAttention,
+}
+
+import inspect
+
+class AutoTimeSeriesAttention:
+    @staticmethod
+    def from_config(
+        config: BaseTimeSeriesConfig,
+        attention_context: str = "self",  # could be "self", "cross", "encoder"
+        **kwargs
+    ):
+        attention_type = getattr(config, "attention_type", "base")
+        attention_cls = ATTENTION_REGISTRY.get(attention_type)
+
+        if attention_cls is None:
+            raise ValueError(f"Unknown attention_type '{attention_type}'. Available: {list(ATTENTION_REGISTRY.keys())}")
+
+        # Extract only valid kwargs
+        sig = inspect.signature(attention_cls.__init__)
+        accepted_keys = set(sig.parameters.keys()) - {"self"}
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_keys}
+
+        # Add derived arguments
+        is_decoder = (attention_context in ["self", "cross"])
+        is_cross_attention = (attention_context == "cross")
+
+        return attention_cls(
+            embed_dim=config.hidden_size,
+            num_heads=config.num_attention_heads,
+            dropout=config.attention_dropout,
+            is_decoder=is_decoder,
+            is_cross_attention=is_cross_attention,
+            bias=True,
+            **filtered_kwargs,
+        )
+        

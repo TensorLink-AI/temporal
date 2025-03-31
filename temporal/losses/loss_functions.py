@@ -111,10 +111,37 @@ class WeightedQuantileLoss(nn.Module):
             return wql.sum()
         return wql  # no reduction: returns one value per quantile
 
-def QuantileLoss(self, predictions, labels):
-    """Computes quantile loss for given quantile level."""
-    errors = labels - predictions
-    return torch.max((self.quantile - 1) * errors, self.quantile * errors)
+
+class QuantileLoss(nn.Module):
+    """
+    Quantile loss (a.k.a. Pinball loss) for probabilistic regression.
+    
+    Parameters:
+    -----------
+    quantile : float
+        The quantile to predict, e.g. 0.1, 0.5 (median), 0.9.
+    reduction : str
+        One of "mean" (default), "sum", or "none".
+    """
+    def __init__(self, quantile: float, reduction: str = "mean"):
+        super().__init__()
+        assert 0 < quantile < 1, "Quantile must be between 0 and 1."
+        self.quantile = quantile
+        self.reduction = reduction
+
+    def forward(self, predictions: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        errors = labels - predictions
+        loss = torch.max(
+            (self.quantile - 1) * errors,
+            self.quantile * errors
+        )
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        else:  # "none"
+            return loss
+
 
 
 

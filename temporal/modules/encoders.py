@@ -5,7 +5,8 @@ import torch.nn.functional as F
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
 from temporal.modules.embedding import TimeSeriesValueEmbedding,TimeSeriesSinusoidalPositionalEmbedding
-from temporal.modules.attention import TimeSeriesAttention
+from temporal.modules.attention import AutoTimeSeriesAttention
+from temporal.modules.embeddings import AutoTimeSeriesEmbedding
 
 class BaseLayer(nn.Module):
     """Base layer for all transformer components."""
@@ -37,7 +38,7 @@ class TimeSeriesTransformerEncoderLayer(BaseLayer):
         self.embed_dim = config.hidden_size
 
         # Self-attention layer
-        self.self_attn = TimeSeriesAttention(config)
+        self.self_attn = AutoTimeSeriesAttention.from_config(config, attention_context="encoder")
 
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         self.activation_fn = ACT2FN[config.hidden_act]
@@ -91,15 +92,8 @@ class TimeSeriesTransformerEncoder(BaseEncoder):
 
         # Feature embedding for input values
         # Make an abstract call for this to use different embedders
-        self.value_embedding = TimeSeriesValueEmbedding(feature_size=config.feature_size, d_model=config.hidden_size)
-        # self.value_embedding = TimeSeriesValueEmbedding(feature_size=config.feature_size, d_model=config.hidden_size)
-
-        # Sinusoidal positional encoding
-        # Make an abstract call for this to use different embedders
-
-        self.embed_positions = TimeSeriesSinusoidalPositionalEmbedding(
-            config.context_length + config.prediction_length, config.hidden_size
-        )
+        self.value_embedding = AutoTimeSeriesEmbedding.from_config(config, embedding_type=config.value_embedding_type)
+        self.pos_embedding = AutoTimeSeriesEmbedding.from_config(config, embedding_type=config.pos_embedding_type)
 
         # Transformer layers
         self.layers = nn.ModuleList([
