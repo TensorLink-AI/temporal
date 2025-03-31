@@ -21,7 +21,6 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         layer_norm_eps: float = 1e-12,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
-        use_return_dict: bool = True,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -36,4 +35,3 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.layer_norm_eps = layer_norm_eps
         self.output_attentions = output_attentions
         self.output_hidden_states = output_hidden_states
-        self.use_return_dict = use_return_dict
