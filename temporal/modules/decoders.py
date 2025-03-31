@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from typing import Optional, Tuple, List
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
+from temporal.modules.embedding import TimeSeriesValueEmbedding,TimeSeriesSinusoidalPositionalEmbedding
+from temporal.modules.attention import TimeSeriesAttention
 
 class BaseLayer(nn.Module):
     """Base layer for all transformer components."""
@@ -48,9 +50,13 @@ class TimeSeriesTransformerDecoderLayer(BaseLayer):
         self.embed_dim = config.hidden_size
 
         # Self-attention layer
+        # Make an abstract layer to define attention
         self.self_attn = TimeSeriesAttention(config)
 
+
         # Cross-attention layer
+        # Make an abstract layer to define attention
+
         self.encoder_attn = TimeSeriesAttention(config)
 
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)

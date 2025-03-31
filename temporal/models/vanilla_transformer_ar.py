@@ -13,6 +13,7 @@ from temporal.modules.losses import TimeSeriesLoss
 from temporal.modules.attention_head_agg import HeadAggregator
 from .basemodel import  BaseTimeSeriesModel
 from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
+from temporal.modules.attention import TimeSeriesAttention
 
 class TimeSeriesTransformerModel( BaseTimeSeriesModel):
     """

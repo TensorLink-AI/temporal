@@ -4,7 +4,8 @@ from typing import Optional, Tuple, List
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
-
+from temporal.modules.embedding import TimeSeriesValueEmbedding,TimeSeriesSinusoidalPositionalEmbedding
+from temporal.modules.attention import TimeSeriesAttention
 
 class BaseLayer(nn.Module):
     """Base layer for all transformer components."""
@@ -89,9 +90,13 @@ class TimeSeriesTransformerEncoder(BaseEncoder):
             raise ValueError("The `prediction_length` config needs to be specified.")
 
         # Feature embedding for input values
+        # Make an abstract call for this to use different embedders
         self.value_embedding = TimeSeriesValueEmbedding(feature_size=config.feature_size, d_model=config.hidden_size)
+        # self.value_embedding = TimeSeriesValueEmbedding(feature_size=config.feature_size, d_model=config.hidden_size)
 
         # Sinusoidal positional encoding
+        # Make an abstract call for this to use different embedders
+
         self.embed_positions = TimeSeriesSinusoidalPositionalEmbedding(
             config.context_length + config.prediction_length, config.hidden_size
         )

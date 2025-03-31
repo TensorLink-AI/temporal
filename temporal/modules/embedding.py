@@ -54,3 +54,8 @@ class TimeSeriesValueEmbedding(BaseEmbedding):
 
     def forward(self, x):
         return self.value_projection(x)
+
+    
+
+    # FeatureEmbedder tht can be call in encoders, decoders etc
+    # TimeSeriesEmbedding that can be call in that same vein
