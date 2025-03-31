@@ -5,6 +5,11 @@ from torch.utils.data import IterableDataset, DataLoader
 from typing import Optional, List, Dict, Any, Union, Tuple,Callable
 import math
 from datetime import datetime
+
+#Placeholder
+def generate_time_features(timestamps, freq): 
+    return None 
+
 class TimeSeriesIterableDataset(IterableDataset):
     """
     A streaming dataset that:
