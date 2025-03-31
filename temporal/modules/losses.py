@@ -15,41 +15,34 @@ class BaseLoss(nn.Module):
         raise NotImplementedError("Each loss class must implement its own forward method.")
 
 class TimeSeriesLoss(BaseLoss):
-    """
-    Generalized loss class for time series forecasting.
-    
-    Supports:
-    - Mean Squared Error (MSE)
-    - Root Mean Squared Error (RMSE)
-    - Mean Absolute Error (MAE)
-    - Quantile Loss
-    - MultiQuantile Loss (MQ)
-    """
-
     def __init__(self, config, loss_type="mse", quantile=0.5):
-        """
-        Args:
-            config: Model configuration.
-            loss_type (str): Loss function to use ("mse", "rmse", "mae", "quantile", "MQ").
-            quantile (float): Quantile level for quantile loss (default 0.5).
-        """
         super().__init__(config)
         self.loss_type = loss_type.lower()
-        self.quantiles = quantile  # Only used for quantile loss
+        self.quantiles = quantile  # Could be float or list
 
-        # Mapping of loss types
-        self.loss_functions = {
-            "mse": nn.MSELoss(reduction="none"),
-            "mae": nn.L1Loss(reduction="none"),
-            "rmse": lambda preds, labels: torch.sqrt(nn.MSELoss(reduction="none")(preds, labels)),
-            "quantile": QuantileLoss(quantile = self.quantiles ),
-            "mq": MQLoss(quantiles = self.quantiles),  # Placeholder for CRPS implementation
-        }
+        # Build correct loss function
+        if self.loss_type == "quantile":
+            if isinstance(self.quantiles, list):
+                if len(self.quantiles) > 1:
+                    raise ValueError("Use 'mq' for multi-quantile loss, or pass a single float for quantile loss.")
+                self.loss_fn = QuantileLoss(quantile=self.quantiles[0])
+            else:
+                self.loss_fn = QuantileLoss(quantile=self.quantiles)
+        elif self.loss_type == "mq":
+            if not isinstance(self.quantiles, list):
+                raise ValueError("MQ loss requires a list of quantiles.")
+            self.loss_fn = MQLoss(quantiles=self.quantiles)
+        elif self.loss_type == "mse":
+            self.loss_fn = nn.MSELoss(reduction="none")
+        elif self.loss_type == "mae":
+            self.loss_fn = nn.L1Loss(reduction="none")
+        elif self.loss_type == "rmse":
+            self.loss_fn = lambda preds, labels: torch.sqrt(nn.MSELoss(reduction="none")(preds, labels))
+        else:
+            raise ValueError(f"Unsupported loss_type: {self.loss_type}")
 
-        if self.loss_type not in self.loss_functions:
-            raise ValueError(f"Unsupported loss_type: {self.loss_type}. Choose from {list(self.loss_functions.keys())}.")
-
-
+    def forward(self, predictions, labels):
+        return self.loss_fn(predictions, labels)
 
 
     def forward(self, predictions, labels, loss_masks=None, output_token_len=None):
