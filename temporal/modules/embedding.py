@@ -53,6 +53,8 @@ class TimeSeriesValueEmbedding(BaseEmbedding):
         self.value_projection = nn.Linear(feature_size, d_model, bias=False)
 
     def forward(self, x):
+        print("x.shape:", x.shape)
+
         return self.value_projection(x)
 
     
