@@ -126,6 +126,11 @@ class TimeSeriesIterableDataset(IterableDataset):
                 window_input = target[in_start:in_end]   # shape [context_len]
                 window_label = target[in_end:out_end]    # shape [pred_len]
 
+                if window_input.ndim == 1:
+                    # for univariate, expand last dim so shape => [context_len, 1]
+                    window_input = window_input.unsqueeze(-1)
+                    window_label= window_label.unsqueeze(-1)
+
                 # dynamic feats if present
                 window_dyn_in = None
                 window_dyn_out = None
@@ -313,6 +318,9 @@ def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tens
         'input_ids': torch.stack(batch_input_ids, dim=0),           # [B, max_input_len]
         'attention_mask': torch.stack(batch_attention_mask, dim=0), # [B, max_input_len]
     }
+    # after you stack/pad batch_input_ids
+
+
 
     if has_labels:
         batch_dict['labels'] = torch.stack(batch_labels, dim=0)             # [B, max_label_len]
