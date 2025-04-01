@@ -35,10 +35,10 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
         self.decoder = TimeSeriesTransformerDecoder(config)
 
         # Feature embeddings
-        self.value_embedding = TimeSeriesValueEmbedding(config.feature_size, config.hidden_size)
-        self.position_embedding = TimeSeriesSinusoidalPositionalEmbedding(
-            config.context_length + config.prediction_length, config.hidden_size
-        )
+        #self.value_embedding = TimeSeriesValueEmbedding(config.feature_size, config.hidden_size)
+        #self.position_embedding = TimeSeriesSinusoidalPositionalEmbedding(
+        #    config.context_length + config.prediction_length, config.hidden_size
+        #)
 
         # Output heads (multi-output for quantile forecasting)
         self.num_quantiles = config.num_quantiles
