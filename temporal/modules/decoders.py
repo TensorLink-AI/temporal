@@ -179,9 +179,13 @@ class TimeSeriesTransformerDecoder(BaseDecoder):
         all_cross_attentions = () if output_attentions else None
         next_cache = []
 
+ 
+
         # Apply feature embedding
         hidden_states = self.value_embedding(inputs_embeds)
         embed_pos = self.embed_positions(inputs_embeds.size())
+        batch_size, seq_len = inputs_embeds.shape[:2]  # just the first two dims
+        embed_pos = self.embed_positions((batch_size, seq_len))
         hidden_states = self.layernorm(hidden_states + embed_pos)
 
         for i, layer in enumerate(self.layers):
