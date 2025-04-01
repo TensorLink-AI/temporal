@@ -2,31 +2,21 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.utils.data import IterableDataset, DataLoader
-from typing import Optional, List, Dict, Any, Union, Tuple,Callable
+from typing import Optional, List, Dict, Any, Union, Tuple, Callable
 import math
 from datetime import datetime
 
-#Placeholder
-def generate_time_features(timestamps, freq): 
-    return None 
+# Placeholder
+def generate_time_features(timestamps, freq):
+    return None
 
 class TimeSeriesIterableDataset(IterableDataset):
     """
     A streaming dataset that:
-      1. Converts each row into multiple AR examples by sliding windows of length `config.context_length`.
-      2. Optionally applies a user-provided `transform` to the target sequence.
-      3. Optionally applies a user-provided `transform_dynamic` to dynamic features.
-      4. Can do Reversible Instance Normalization (ReVIN) on the target if `revin=True`.
-    
-    Expects `dataset` to be a list of dicts like:
-      {
-        'target': [float, float, ...],
-        'feat_dynamic_real': optional 2D array or list,
-        'feat_static_cat': optional 1D array or list,
-        'freq': optional string (e.g., '1H'),
-        'start_date': optional string or datetime,
-        'item_id': optional
-      }
+      1. Converts each row into multiple AR examples by sliding windows.
+      2. Optionally applies user-provided transforms to target or dynamic features.
+      3. Optional Reversible Instance Normalization (ReVIN).
+      4. Produces BOTH `input_ids` (context window) and `labels` (future window).
     """
     def __init__(
         self,
@@ -37,18 +27,6 @@ class TimeSeriesIterableDataset(IterableDataset):
         revin: bool = False,
         stride: int = 1,
     ):
-        """
-        Args:
-            dataset: list of data samples (dict).
-            config: must have .context_length (int).
-            transform: a callable applied to the `target` tensor,
-                       e.g., log-diff, min-max scaling, etc.
-            transform_dynamic: a callable applied to dynamic_features 
-                               (shape [seq_len, feat_dim]) if desired.
-            revin: whether to apply Reversible Instance Normalization on the target
-                   per window: (x - mean) / std
-            stride: how many steps to advance the sliding window each time.
-        """
         super().__init__()
         self.dataset = dataset
         self.config = config
@@ -56,16 +34,19 @@ class TimeSeriesIterableDataset(IterableDataset):
         self.transform_dynamic = transform_dynamic
         self.revin = revin
         self.stride = stride
-        
+
         # Cache dataset length for convenience
         self._length = len(dataset)
+
+        if not hasattr(self.config, "context_length"):
+            raise ValueError("config must have 'context_length' attribute.")
+        if not hasattr(self.config, "prediction_length"):
+            raise ValueError("config must have 'prediction_length' attribute.")
 
     def __len__(self):
         return self._length
 
     def __iter__(self):
-        # For each item in the dataset, produce multiple sub-windows,
-        # and yield them one by one.
         for idx, item in enumerate(self.dataset):
             windowed_samples = self._process_item(idx, item)
             for sample in windowed_samples:
@@ -73,8 +54,9 @@ class TimeSeriesIterableDataset(IterableDataset):
 
     def _process_item(self, idx: int, item: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Return a list of AR training examples (windows) from a single item.
-        Each window is `config.context_length` steps.
+        Produce multiple (input_ids, labels) windows from a single item:
+          input window = length `config.context_length`
+          label window = length `config.prediction_length`
         """
         try:
             # 1) Extract target
@@ -84,45 +66,44 @@ class TimeSeriesIterableDataset(IterableDataset):
             if not isinstance(target, torch.Tensor):
                 target = torch.tensor(target, dtype=torch.float32)
 
-            # 2) Apply the transformation if provided
-            #    e.g. log-diff, min-max scaling, etc.
+            # 2) Transform if needed
             if self.transform is not None:
                 target = self.transform(target)
 
-            # 3) Possibly skip if not enough data
-            context_len = getattr(self.config, 'context_length', 48)
+            context_len = getattr(self.config, "context_length", 48)
+            pred_len = getattr(self.config, "prediction_length", 1)
             full_length = len(target)
-            if full_length < context_len:
+
+            # Must have enough data for context + prediction
+            if full_length < context_len + pred_len:
                 return []
 
-            # 4) Prepare dynamic features
+            # 3) Dynamic features
             dynamic_features = None
-            if 'feat_dynamic_real' in item and item['feat_dynamic_real'] is not None:
-                dyn = item['feat_dynamic_real']
+            if "feat_dynamic_real" in item and item["feat_dynamic_real"] is not None:
+                dyn = item["feat_dynamic_real"]
                 if not isinstance(dyn, torch.Tensor):
                     dyn = torch.tensor(dyn, dtype=torch.float32)
-                # Match length with target (truncate if longer)
+                # Truncate if longer
                 if dyn.shape[0] > full_length:
-                    dyn = dyn[: full_length]
-                # Optional user-provided transform for dynamic feats
+                    dyn = dyn[:full_length]
+                # Transform if given
                 if self.transform_dynamic is not None:
                     dyn = self.transform_dynamic(dyn)
                 dynamic_features = dyn
 
-            # 5) Prepare static categorical features
+            # 4) Static categorical features
             static_cat_features = None
-            if 'feat_static_cat' in item and item['feat_static_cat'] is not None:
-                cat_vals = item['feat_static_cat']
+            if "feat_static_cat" in item and item["feat_static_cat"] is not None:
+                cat_vals = item["feat_static_cat"]
                 if not isinstance(cat_vals, torch.Tensor):
                     cat_vals = torch.tensor(cat_vals, dtype=torch.long)
                 static_cat_features = cat_vals
 
-            # 6) Possibly generate time-based features
-            #    if 'freq' and 'start_date' exist
-            if 'freq' in item and item['freq'] is not None:
-                freq = item['freq']
-                start_date = item.get('start_date', datetime.now())
-                # Build timestamps for the length of target
+            # 5) Time-based features if freq & start_date exist
+            if "freq" in item and item["freq"] is not None:
+                freq = item["freq"]
+                start_date = item.get("start_date", datetime.now())
                 timestamps = pd.date_range(start=start_date, periods=full_length, freq=freq)
                 time_feats = generate_time_features(timestamps, freq)
                 if time_feats is not None:
@@ -131,160 +112,222 @@ class TimeSeriesIterableDataset(IterableDataset):
                     else:
                         dynamic_features = time_feats
 
-            # 7) Slide across 'target' in windows of length `context_len`
+            # 6) Slide windows
+            # We'll generate windows so we have at least context_len + pred_len
+            # from start_idx => start_idx + context_len (input)
+            # and start_idx + context_len => start_idx + context_len + pred_len (labels)
             windows = []
-            for start_idx in range(0, full_length - context_len + 1, self.stride):
-                end_idx = start_idx + context_len
-                # window of length context_len
-                window_target = target[start_idx:end_idx]
+            max_start = full_length - (context_len + pred_len) + 1
+            for start_idx in range(0, max_start, self.stride):
+                in_start = start_idx
+                in_end = start_idx + context_len
+                out_end = in_end + pred_len
 
-                window_dyn = None
+                window_input = target[in_start:in_end]   # shape [context_len]
+                window_label = target[in_end:out_end]    # shape [pred_len]
+
+                # dynamic feats if present
+                window_dyn_in = None
+                window_dyn_out = None
                 if dynamic_features is not None:
-                    window_dyn = dynamic_features[start_idx:end_idx, :]
+                    # slice same ranges for dynamic?
+                    # typical approach: "input dynamic feats" => context_len, "label dynamic feats" => pred_len
+                    # or you might store them combined
+                    window_dyn_in = dynamic_features[in_start:in_end, :]
+                    window_dyn_out = dynamic_features[in_end:out_end, :]
 
-                # -- Reversible Instance Normalization if requested --
-                # We'll store the mean/std used for each window in case the user
-                # wants to invert it later. In training, usually we don't invert, but
-                # you might want to store these stats.
+                # Reversible Instance Normalization
                 revin_stats = None
                 if self.revin:
-                    mean = window_target.mean(dim=0, keepdim=True)
-                    std = window_target.std(dim=0, keepdim=True)
-                    std = torch.where(std == 0, torch.tensor(1.0, device=std.device), std)  # avoid div by 0
-                    window_target = (window_target - mean) / std
-                    revin_stats = {
-                        "mean": mean,
-                        "std": std,
-                    }
+                    mean = window_input.mean(dim=0, keepdim=True)
+                    std = window_input.std(dim=0, keepdim=True)
+                    std = torch.where(std == 0, torch.tensor(1.0, device=std.device), std)
+                    window_input = (window_input - mean) / std
+                    # optionally also transform window_label?
+                    # depends on how you define ReVIN logic for forecast
+                    revin_stats = {"mean": mean, "std": std}
 
                 sample = {
-                    "input_ids": window_target,
-                    "dynamic_features": window_dyn,
+                    "input_ids": window_input,             # shape [context_len]
+                    "labels": window_label,                # shape [pred_len]
+                    "dynamic_features_input": window_dyn_in,   # shape [context_len, feat_dim]
+                    "dynamic_features_label": window_dyn_out,  # shape [pred_len, feat_dim]
                     "static_cat_features": static_cat_features,
                     "item_id": item.get("item_id", f"item_{idx}"),
                     "freq": item.get("freq", "1D"),
                 }
-
                 if revin_stats is not None:
                     sample["revin_stats"] = revin_stats
 
                 windows.append(sample)
-
             return windows
 
         except Exception as e:
             print(f"Error in _process_item({idx}): {str(e)}")
             return []
 
-
-
-
 def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-    """Collate streamed samples into a single batch with padding if needed."""
+    """Collate streamed samples into a single batch with padding for both input_ids and labels."""
     # Filter out empty or invalid samples
     samples = [s for s in samples if s and 'input_ids' in s]
     if not samples:
         return {}
-    
-    # We'll handle up to 3 main things: input_ids, dynamic_features, static_cat_features
-    # Step 1: Find max length
-    lengths = [s['input_ids'].shape[0] for s in samples]
-    max_len = max(lengths)
 
-    # Prepare storage
+    # 1) Gather input lengths
+    input_lengths = [s['input_ids'].shape[0] for s in samples]
+    max_input_len = max(input_lengths)
+
+    # 2) Gather label lengths
+    label_lengths = []
+    for s in samples:
+        if 'labels' in s and s['labels'] is not None:
+            label_lengths.append(s['labels'].shape[0])
+        else:
+            label_lengths.append(0)
+    max_label_len = max(label_lengths)
+
+    # Prepare storages
     batch_input_ids = []
+    batch_labels = []
     batch_attention_mask = []
-    batch_dynamic_feats = []
-    batch_dynamic_mask = []
-    batch_static_cat = []
-    
-    # Pad input_ids
+    batch_label_mask = []
+
+    # ---- Pad input_ids ----
     for s in samples:
         seq_len = s['input_ids'].shape[0]
-        # pad the input_ids
         padded_input = torch.cat([
             s['input_ids'],
-            torch.zeros(max_len - seq_len, dtype=torch.float32)
+            torch.zeros(max_input_len - seq_len, dtype=torch.float32)
         ])
         batch_input_ids.append(padded_input)
 
-        # attention mask
         attn_mask = torch.cat([
             torch.ones(seq_len, dtype=torch.long),
-            torch.zeros(max_len - seq_len, dtype=torch.long)
+            torch.zeros(max_input_len - seq_len, dtype=torch.long)
         ])
         batch_attention_mask.append(attn_mask)
-    
-    # Handle dynamic features
-    has_dyn = any(s['dynamic_features'] is not None for s in samples)
-    if has_dyn:
-        # We assume each sample has shape [seq_len, feature_dim]
-        # We find the max feature_dim from the first or a check
-        # For simplicity, assume consistent feature_dim
-        first_dyn = None
-        for s in samples:
-            if s['dynamic_features'] is not None:
-                first_dyn = s['dynamic_features']
-                break
-        feature_dim = first_dyn.shape[1] if first_dyn is not None else 0
 
+    # ---- Pad labels ----
+    has_labels = any('labels' in s for s in samples)
+    if has_labels:
         for s in samples:
-            if s['dynamic_features'] is None:
-                # all zeros
-                dyn_pad = torch.zeros(max_len, feature_dim)
-                batch_dynamic_feats.append(dyn_pad)
-                dyn_mask = torch.zeros(max_len, dtype=torch.long)
-                batch_dynamic_mask.append(dyn_mask)
-                continue
-            
-            seq_len = s['dynamic_features'].shape[0]
-            # pad dynamic
-            needed = max_len - seq_len
-            if needed > 0:
-                pad_block = torch.zeros(needed, feature_dim)
-                dyn_pad = torch.cat([s['dynamic_features'], pad_block], dim=0)
+            if 'labels' not in s or s['labels'] is None:
+                # no labels => zeros
+                batch_labels.append(torch.zeros(max_label_len, dtype=torch.float32))
+                batch_label_mask.append(torch.zeros(max_label_len, dtype=torch.long))
             else:
-                dyn_pad = s['dynamic_features']
-            batch_dynamic_feats.append(dyn_pad)
+                lab_len = s['labels'].shape[0]
+                padded_label = torch.cat([
+                    s['labels'],
+                    torch.zeros(max_label_len - lab_len, dtype=torch.float32)
+                ])
+                batch_labels.append(padded_label)
+                lab_mask = torch.cat([
+                    torch.ones(lab_len, dtype=torch.long),
+                    torch.zeros(max_label_len - lab_len, dtype=torch.long)
+                ])
+                batch_label_mask.append(lab_mask)
 
-            # dynamic mask
-            dyn_m = torch.cat([
-                torch.ones(seq_len, dtype=torch.long),
-                torch.zeros(needed, dtype=torch.long)
-            ])
-            batch_dynamic_mask.append(dyn_m)
+    # ---- Handle dynamic features if present ----
+    has_dyn_in = any(s.get('dynamic_features_input') is not None for s in samples)
+    has_dyn_out = any(s.get('dynamic_features_label') is not None for s in samples)
+    batch_dyn_in, batch_dyn_out = [], []
+    batch_dyn_mask_in, batch_dyn_mask_out = [], []
 
-    # Handle static cat
-    has_static = any(s['static_cat_features'] is not None for s in samples)
-    if has_static:
-        # We'll just stack them. 
+    if has_dyn_in:
+        # We assume shape [seq_len, feat_dim] for dynamic_features_input
+        # pad each sample to [max_input_len, feat_dim]
+        # similarly for dynamic_features_label -> [max_label_len, feat_dim]
+        # or you might prefer to store them combined in a single tensor.
+        first_in = None
         for s in samples:
-            if s['static_cat_features'] is None:
-                # Create a dummy 
+            if s.get('dynamic_features_input') is not None:
+                first_in = s['dynamic_features_input']
+                break
+        feat_dim_in = first_in.shape[1] if first_in is not None else 0
+
+        for s in samples:
+            dyn_in = s.get('dynamic_features_input')
+            if dyn_in is None:
+                dyn_in_pad = torch.zeros(max_input_len, feat_dim_in)
+                mask_in = torch.zeros(max_input_len, dtype=torch.long)
+            else:
+                in_len = dyn_in.shape[0]
+                needed_in = max_input_len - in_len
+                if needed_in > 0:
+                    pad_block_in = torch.zeros(needed_in, feat_dim_in)
+                    dyn_in_pad = torch.cat([dyn_in, pad_block_in], dim=0)
+                else:
+                    dyn_in_pad = dyn_in
+                mask_in = torch.cat([
+                    torch.ones(in_len, dtype=torch.long),
+                    torch.zeros(needed_in, dtype=torch.long)
+                ])
+            batch_dyn_in.append(dyn_in_pad)
+            batch_dyn_mask_in.append(mask_in)
+
+    if has_dyn_out:
+        # dynamic_features_label
+        first_out = None
+        for s in samples:
+            if s.get('dynamic_features_label') is not None:
+                first_out = s['dynamic_features_label']
+                break
+        feat_dim_out = first_out.shape[1] if first_out is not None else 0
+
+        for s in samples:
+            dyn_out = s.get('dynamic_features_label')
+            if dyn_out is None:
+                dyn_out_pad = torch.zeros(max_label_len, feat_dim_out)
+                mask_out = torch.zeros(max_label_len, dtype=torch.long)
+            else:
+                out_len = dyn_out.shape[0]
+                needed_out = max_label_len - out_len
+                if needed_out > 0:
+                    pad_block_out = torch.zeros(needed_out, feat_dim_out)
+                    dyn_out_pad = torch.cat([dyn_out, pad_block_out], dim=0)
+                else:
+                    dyn_out_pad = dyn_out
+                mask_out = torch.cat([
+                    torch.ones(out_len, dtype=torch.long),
+                    torch.zeros(needed_out, dtype=torch.long)
+                ])
+            batch_dyn_out.append(dyn_out_pad)
+            batch_dyn_mask_out.append(mask_out)
+
+    # ---- Handle static cat if present ----
+    has_static = any(s.get('static_cat_features') is not None for s in samples)
+    batch_static_cat = []
+    if has_static:
+        for s in samples:
+            cat_feat = s.get('static_cat_features')
+            if cat_feat is None:
                 batch_static_cat.append(torch.tensor([], dtype=torch.long))
             else:
-                # Ensure it's a 1D or 0D
-                cat_feat = s['static_cat_features']
                 if cat_feat.dim() == 0:
                     cat_feat = cat_feat.unsqueeze(0)
                 batch_static_cat.append(cat_feat)
 
-    # Stack final
+    # ---- Stack up final batch dict ----
     batch_dict = {
-        'input_ids': torch.stack(batch_input_ids, dim=0),           # [B, max_len]
-        'attention_mask': torch.stack(batch_attention_mask, dim=0), # [B, max_len]
+        'input_ids': torch.stack(batch_input_ids, dim=0),           # [B, max_input_len]
+        'attention_mask': torch.stack(batch_attention_mask, dim=0), # [B, max_input_len]
     }
-    if has_dyn:
-        batch_dict['dynamic_features'] = torch.stack(batch_dynamic_feats, dim=0)       # [B, max_len, feat_dim]
-        batch_dict['dynamic_feature_mask'] = torch.stack(batch_dynamic_mask, dim=0)    # [B, max_len]
+
+    if has_labels:
+        batch_dict['labels'] = torch.stack(batch_labels, dim=0)             # [B, max_label_len]
+        batch_dict['labels_mask'] = torch.stack(batch_label_mask, dim=0)    # [B, max_label_len]
+
+    if has_dyn_in:
+        batch_dict['dynamic_features_input'] = torch.stack(batch_dyn_in, dim=0)   # [B, max_input_len, feat_dim_in]
+        batch_dict['dynamic_features_input_mask'] = torch.stack(batch_dyn_mask_in, dim=0)
+
+    if has_dyn_out:
+        batch_dict['dynamic_features_label'] = torch.stack(batch_dyn_out, dim=0)  # [B, max_label_len, feat_dim_out]
+        batch_dict['dynamic_features_label_mask'] = torch.stack(batch_dyn_mask_out, dim=0)
 
     if has_static:
-        # Might have variable shapes if they're not consistent
-        # For now, assume they share shape [something]
-        # We'll just stack on dim=0
-        # If the shape is different, you'd store them in a list or handle carefully.
         batch_static_cat = torch.nn.utils.rnn.pad_sequence(batch_static_cat, batch_first=True)
         batch_dict['static_cat_features'] = batch_static_cat
 
     return batch_dict
-
