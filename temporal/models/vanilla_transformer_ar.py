@@ -67,7 +67,7 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
         dynamic_features: Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
         """Compute value embeddings, positional embeddings, and dynamic feature embeddings."""
-        hidden_states = self.value_embedding(input_ids)
+        #hidden_states = self.value_embedding(input_ids)
 
         # Add positional encoding
         #if position_ids is None:
@@ -76,10 +76,10 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
         #hidden_states = hidden_states + self.position_embedding(position_ids)
 
         # Add dynamic feature embeddings
-        if self.config.use_dynamic_features and dynamic_features is not None:
-            hidden_states = hidden_states + dynamic_features
+        #if self.config.use_dynamic_features and dynamic_features is not None:
+        #    hidden_states = hidden_states + dynamic_features
 
-        return hidden_states
+        return None
 
     def forward(
         self,
@@ -96,11 +96,11 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
         Forward pass for autoregressive time series prediction.
         """
         # Compute encoder embeddings
-        encoder_hidden_states = self._get_embeddings(input_ids, dynamic_features=dynamic_features)
+        #encoder_hidden_states = self._get_embeddings(input_ids, dynamic_features=dynamic_features)
 
         # Pass through encoder
         encoder_outputs = self.encoder(
-            encoder_hidden_states,
+            input_ids,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
