@@ -70,10 +70,10 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
         hidden_states = self.value_embedding(input_ids)
 
         # Add positional encoding
-        if position_ids is None:
-            position_ids = torch.arange(input_ids.size(1), dtype=torch.long, device=input_ids.device)
-            position_ids = position_ids.unsqueeze(0)
-        hidden_states = hidden_states + self.position_embedding(position_ids)
+        #if position_ids is None:
+        #    position_ids = torch.arange(input_ids.size(1), dtype=torch.long, device=input_ids.device)
+        #    position_ids = position_ids.unsqueeze(0)
+        #hidden_states = hidden_states + self.position_embedding(position_ids)
 
         # Add dynamic feature embeddings
         if self.config.use_dynamic_features and dynamic_features is not None:

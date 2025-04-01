@@ -179,15 +179,15 @@ class TimeSeriesTransformerDecoder(BaseDecoder):
         all_cross_attentions = () if output_attentions else None
         next_cache = []
 
- 
-
-        # Apply feature embedding
+        # -- Value embedding: shape [B, S, hidden_size]
         hidden_states = self.value_embedding(inputs_embeds)
-        embed_pos = self.embed_positions(inputs_embeds.size())
-        batch_size, seq_len = inputs_embeds.shape[:2]  # just the first two dims
-        embed_pos = self.embed_positions((batch_size, seq_len))
+
+        # -- Positional embedding: only call once, with (batch_size, seq_len)
+        batch_size, seq_len = inputs_embeds.shape[:2]
+        embed_pos = self.embed_positions((batch_size, seq_len))  # -> [B, S, hidden_size]
         hidden_states = self.layernorm(hidden_states + embed_pos)
 
+        # -- Pass through decoder layers
         for i, layer in enumerate(self.layers):
             past_key_value = past_key_values[i] if past_key_values else None
 
@@ -201,8 +201,9 @@ class TimeSeriesTransformerDecoder(BaseDecoder):
                 training_mode=training_mode,
                 output_attentions=output_attentions,
             )
-
             hidden_states = layer_outputs[0]
+
+            # Collect caches if in inference mode (not training)
             if use_cache and not training_mode and layer_outputs[-1] is not None:
                 next_cache.append(layer_outputs[-1])
 

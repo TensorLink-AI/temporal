@@ -123,13 +123,14 @@ class TimeSeriesTransformerEncoder(BaseEncoder):
         output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # Apply value embedding
-        hidden_states = self.value_embedding(inputs_embeds)
 
-        # Add positional embedding
-        seq_len = inputs_embeds.shape[1]  # ✅ Extract sequence length properly
-        embed_pos = self.embed_positions((inputs_embeds.shape[0], seq_len))  # ✅ Pass correct shape
-        hidden_states = self.layernorm_embedding(hidden_states + embed_pos)
+        hidden_states = self.value_embedding(inputs_embeds)
+        # new
+        bsz, seq_len = hidden_states.shape[:2]
+        pos = self.embed_positions((bsz, seq_len))
+        hidden_states = hidden_states + pos
+        hidden_states = self.layernorm_embedding(hidden_states)
+
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
 
         # Expand attention mask if provided
