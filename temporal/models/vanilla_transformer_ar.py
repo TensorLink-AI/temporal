@@ -109,11 +109,11 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
 
         # Compute decoder embeddings
         decoder_inputs = decoder_input_ids if decoder_input_ids is not None else input_ids[:, -1:]
-        decoder_hidden_states = self._get_embeddings(decoder_inputs)
+        #decoder_hidden_states = self._get_embeddings(decoder_inputs)
 
         # Pass through decoder
         decoder_outputs = self.decoder(
-            decoder_hidden_states,
+            decoder_inputs,
             encoder_hidden_states=encoder_outputs.last_hidden_state,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
