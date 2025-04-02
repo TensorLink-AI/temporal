@@ -46,6 +46,7 @@ class BaseAttention(nn.Module):
         key_value_states: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,  # <-- add this
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
 
@@ -88,6 +89,14 @@ class BaseAttention(nn.Module):
 
         attn_probs = F.softmax(attn_weights, dim=-1)
         attn_probs = F.dropout(attn_probs, p=self.dropout, training=self.training)
+        # after computing attn_probs shape = [batch_size * num_heads, tgt_len, src_len]
+        if head_mask is not None:
+            # head_mask shape often [num_heads] or [batch_size, num_heads, 1, 1]
+            # so you'd broadcast or reshape it to match [B*num_heads, 1, 1]
+            # For simplest approach: shape [num_heads] -> expand to [B*num_heads, 1, 1].
+            head_mask = head_mask.unsqueeze(1).unsqueeze(2)  # => [num_heads, 1, 1]
+            head_mask = head_mask.expand(attn_probs.size(0), -1, -1)  # => [B*num_heads, 1, 1]
+            attn_probs = attn_probs * head_mask
 
         # Weighted sum over values
         attn_output = torch.bmm(attn_probs, value_states)
