@@ -173,6 +173,8 @@ class TimeSeriesTransformerDecoder(BaseDecoder):
         training_mode: bool = True,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
+        return_dict: bool = True, 
+
     ):
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
