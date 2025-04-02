@@ -78,17 +78,13 @@ class BaseAttention(nn.Module):
 
         # Compute attention scores
         attn_weights = self.compute_attention_scores(query_states, key_states)
-        attention_mask_4d = expand_decoder_mask(
-            attention_mask,
-            tgt_len=tgt_len,
-            dtype=hidden_states.dtype
-        )
+
         # Attention mask (broadcasted properly)
         if attention_mask is not None:
             expected_shape = (bsz, 1, tgt_len, key_states.size(1))
-            if attention_mask_4d.size() != expected_shape:
-                raise ValueError(f"Expected attention_mask shape {expected_shape}, got {attention_mask_4d.size()}")
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, -1) + attention_mask_4d
+            if attention_mask.size() != expected_shape:
+                raise ValueError(f"Expected attention_mask shape {expected_shape}, got {attention_mask.size()}")
+            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, -1) + attention_mask
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, -1)
 
         attn_probs = F.softmax(attn_weights, dim=-1)
