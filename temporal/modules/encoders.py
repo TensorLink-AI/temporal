@@ -136,8 +136,8 @@ class TimeSeriesTransformerEncoder(BaseEncoder):
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
 
         # Expand attention mask if provided
-        if attention_mask is not None:
-            attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype)  # ✅ Fix expansion function
+       # if attention_mask is not None:
+       #     attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype)  # ✅ Fix expansion function
 
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
