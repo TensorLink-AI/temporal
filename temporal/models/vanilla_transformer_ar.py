@@ -178,7 +178,7 @@ class TimeSeriesTransformerARPrediction(TimeSeriesTransformerModel):
 
         # Encode once
         encoder_outputs = self.encoder(
-            self._get_embeddings(input_ids, dynamic_features=dynamic_features),
+            input_ids,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
             return_dict=True
@@ -198,10 +198,10 @@ class TimeSeriesTransformerARPrediction(TimeSeriesTransformerModel):
         predictions = []
 
         for step in range(prediction_length):
-            decoder_embeddings = self._get_embeddings(decoder_input)
+            #decoder_embeddings = self._get_embeddings(decoder_input)
 
             decoder_outputs = self.decoder(
-                decoder_embeddings,
+                decoder_input,
                 encoder_hidden_states=encoder_outputs.last_hidden_state,
                 attention_mask=attention_mask,
                 past_key_values=past_key_values,
