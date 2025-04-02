@@ -108,37 +108,6 @@ class TimeSeriesTransformerEncoder(BaseEncoder):
 
         self.layernorm_embedding = nn.LayerNorm(config.hidden_size)
 
-    def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None) -> torch.Tensor:
-        """
-        Expands a 2D or 3D attention mask (of shape [batch_size, seq_len]) 
-        into a 4D mask for multi-head attention.
-
-        Args:
-            mask: shape [batch_size, seq_len] (or [batch_size, 1, seq_len, seq_len])
-            dtype: usually mask.dtype or hidden_states.dtype
-            tgt_len: optionally the target length (decoder length) if needed
-
-        Returns:
-            mask of shape [batch_size, 1, tgt_len, seq_len]
-            with 0.0 for "keep" and -inf for "masked" positions
-        """
-
-        if mask.dim() == 2:
-            # shape = [batch_size, seq_len]
-            batch_size, src_len = mask.shape
-            tgt_len = tgt_len if tgt_len is not None else src_len
-            # (batch_size, 1, tgt_len, src_len)
-            expanded_mask = mask[:, None, None, :].expand(batch_size, 1, tgt_len, src_len)
-        elif mask.dim() == 3:
-            # shape = [batch_size, 1, seq_len, seq_len] -> assume it's already 4D
-            return mask
-        else:
-            raise ValueError(f"Unsupported mask dim: {mask.dim()}")
-
-        # Convert from 1.0/0.0 mask to 0.0/-inf
-        expanded_mask = expanded_mask.to(dtype=dtype)
-        inverted_mask = (1.0 - expanded_mask) * -1e9
-        return inverted_mask
 
 
     def forward(
@@ -205,3 +174,37 @@ class TimeSeriesTransformerEncoder(BaseEncoder):
             hidden_states=all_hidden_states,
             attentions=all_attentions,
         )
+
+
+
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None) -> torch.Tensor:
+    """
+    Expands a 2D or 3D attention mask (of shape [batch_size, seq_len]) 
+    into a 4D mask for multi-head attention.
+
+    Args:
+        mask: shape [batch_size, seq_len] (or [batch_size, 1, seq_len, seq_len])
+        dtype: usually mask.dtype or hidden_states.dtype
+        tgt_len: optionally the target length (decoder length) if needed
+
+    Returns:
+        mask of shape [batch_size, 1, tgt_len, seq_len]
+        with 0.0 for "keep" and -inf for "masked" positions
+    """
+
+    if mask.dim() == 2:
+        # shape = [batch_size, seq_len]
+        batch_size, src_len = mask.shape
+        tgt_len = tgt_len if tgt_len is not None else src_len
+        # (batch_size, 1, tgt_len, src_len)
+        expanded_mask = mask[:, None, None, :].expand(batch_size, 1, tgt_len, src_len)
+    elif mask.dim() == 3:
+        # shape = [batch_size, 1, seq_len, seq_len] -> assume it's already 4D
+        return mask
+    else:
+        raise ValueError(f"Unsupported mask dim: {mask.dim()}")
+
+    # Convert from 1.0/0.0 mask to 0.0/-inf
+    expanded_mask = expanded_mask.to(dtype=dtype)
+    inverted_mask = (1.0 - expanded_mask) * -1e9
+    return inverted_mask

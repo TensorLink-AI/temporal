@@ -8,14 +8,13 @@ from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
 from temporal.modules.encoders import TimeSeriesTransformerEncoder
 from temporal.modules.decoders import TimeSeriesTransformerDecoder
-from temporal.modules.embedding import TimeSeriesValueEmbedding, TimeSeriesSinusoidalPositionalEmbedding
 from temporal.modules.losses import TimeSeriesLoss
 from temporal.modules.attention_head_agg import HeadAggregator
-from .basemodel import  BaseTimeSeriesModel
+from .basemodel import BaseTimeSeriesModel
 from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 from temporal.modules.attention import TimeSeriesAttention
 
-class TimeSeriesTransformerModel( BaseTimeSeriesModel):
+class TimeSeriesTransformerModel(BaseTimeSeriesModel):
     """
     Base time series transformer model for encoder-decoder training.
     - Supports multiple loss functions (MSE, MAE, RMSE, Quantile, MQ)
@@ -23,22 +22,13 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
     - Supports dynamic feature embeddings
     """
 
-    #config_class = BaseTimeSeriesConfig
-    #base_model_prefix = "time_series_transformer"
-
-    def __init__(self, config): # Add a type here, e.g. BaseTimeSeries Config
+    def __init__(self, config):
         super().__init__(config)
         self.config = config
 
-        # Initialize encoder & decoder
+        # Initialize encoder & decoder (which each handle embedding internally)
         self.encoder = TimeSeriesTransformerEncoder(config)
         self.decoder = TimeSeriesTransformerDecoder(config)
-
-        # Feature embeddings
-        #self.value_embedding = TimeSeriesValueEmbedding(config.feature_size, config.hidden_size)
-        #self.position_embedding = TimeSeriesSinusoidalPositionalEmbedding(
-        #    config.context_length + config.prediction_length, config.hidden_size
-        #)
 
         # Output heads (multi-output for quantile forecasting)
         self.num_quantiles = config.num_quantiles
@@ -57,29 +47,7 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
         # Loss function selection
         self.loss_fn = TimeSeriesLoss(config, loss_type=config.loss_type)
 
-        # Initialize weights
         self.post_init()
-
-    def _get_embeddings(
-        self,
-        input_ids: torch.FloatTensor,
-        position_ids: Optional[torch.LongTensor] = None,
-        dynamic_features: Optional[torch.FloatTensor] = None,
-    ) -> torch.FloatTensor:
-        """Compute value embeddings, positional embeddings, and dynamic feature embeddings."""
-        #hidden_states = self.value_embedding(input_ids)
-
-        # Add positional encoding
-        #if position_ids is None:
-        #    position_ids = torch.arange(input_ids.size(1), dtype=torch.long, device=input_ids.device)
-        #    position_ids = position_ids.unsqueeze(0)
-        #hidden_states = hidden_states + self.position_embedding(position_ids)
-
-        # Add dynamic feature embeddings
-        #if self.config.use_dynamic_features and dynamic_features is not None:
-        #    hidden_states = hidden_states + dynamic_features
-
-        return None
 
     def forward(
         self,
@@ -87,33 +55,38 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
         attention_mask: Optional[torch.FloatTensor] = None,
         decoder_input_ids: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.FloatTensor] = None,
-        dynamic_features: Optional[torch.FloatTensor] = None,
+        dynamic_features: Optional[torch.FloatTensor] = None,  # optional if your encoder/decoder expect it
         output_attentions: Optional[bool] = False,
         output_hidden_states: Optional[bool] = False,
         return_dict: Optional[bool] = True,
     ) -> BaseModelOutputWithPastAndCrossAttentions:
         """
         Forward pass for autoregressive time series prediction.
+        We pass raw inputs to the encoder & decoder. Each submodule
+        does its own value_embedding + position_embedding internally.
         """
-        # Compute encoder embeddings
-        #encoder_hidden_states = self._get_embeddings(input_ids, dynamic_features=dynamic_features)
 
-        # Pass through encoder
+        # ---------------------------------------------------
+        # 1) Encoder: pass raw input (shape [B, S, features]) to encoder
+        #    The encoder itself calls self.value_embedding(...).
         encoder_outputs = self.encoder(
-            input_ids,
+            input_ids,  # raw shape [B, S, f]
             attention_mask=attention_mask,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
 
-        # Compute decoder embeddings
-        decoder_inputs = decoder_input_ids if decoder_input_ids is not None else input_ids[:, -1:]
-        #decoder_hidden_states = self._get_embeddings(decoder_inputs)
+        # ---------------------------------------------------
+        # 2) Decoder: pass raw input for the decoder
+        if decoder_input_ids is None:
+            # e.g. last slice from input_ids if you want 1 step, or [-decoder_length:] if you prefer
+            decoder_inputs = input_ids[:, -1:]  # shape [B, 1, f]
+        else:
+            decoder_inputs = decoder_input_ids
 
-        # Pass through decoder
         decoder_outputs = self.decoder(
-            decoder_inputs,
+            decoder_inputs,  # raw shape => [B, T, f]
             encoder_hidden_states=encoder_outputs.last_hidden_state,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
@@ -123,11 +96,13 @@ class TimeSeriesTransformerModel( BaseTimeSeriesModel):
 
         sequence_output = decoder_outputs.last_hidden_state
 
-        # Generate predictions using output heads and aggregate
+        # ---------------------------------------------------
+        # 3) Generate final predictions
         head_outputs = [head(sequence_output) for head in self.output_heads]  # List of (B, T, Q)
         predictions = self.head_aggregator(head_outputs)  # Apply head aggregation
 
-        # Compute loss
+        # ---------------------------------------------------
+        # 4) Compute loss (optional)
         loss = None
         if labels is not None:
             loss = self.loss_fn(predictions, labels)
@@ -169,37 +144,38 @@ class TimeSeriesTransformerARPrediction(TimeSeriesTransformerModel):
     ) -> torch.Tensor:
         """
         Generates autoregressive time series predictions using the head aggregation strategy.
+        We pass raw inputs to the encoder & decoder. Each submodule
+        does its own embedding.
         """
-        batch_size, context_length = input_ids.shape
+        batch_size, context_length = input_ids.shape[:2]  # e.g. [B, S, f]
         device = input_ids.device
 
-        generated_sequence = input_ids.clone()
-        past_key_values = None
-
-        # Encode once
+        # 1) Encode once
         encoder_outputs = self.encoder(
-            input_ids,
+            input_ids,                  # raw shape => [B, S, f]
             attention_mask=attention_mask,
             output_attentions=output_attentions,
             return_dict=True
         )
 
-        # Start decoder with last context token or a special token
+        # 2) Initialize decoder input with last token or a special token
         if decoder_start_token_value is not None:
             decoder_input = torch.full(
-                (batch_size, 1),
+                (batch_size, 1, input_ids.shape[-1]),  # shape => [B, 1, f], if input_ids is [B, S, f]
                 decoder_start_token_value,
-                dtype=torch.float32,
+                dtype=input_ids.dtype,
                 device=device
             )
         else:
-            decoder_input = input_ids[:, -1:].clone()
+            # Last step from input_ids
+            decoder_input = input_ids[:, -1:].clone()  # shape [B, 1, f]
 
+        # 3) Autoregressive loop
         predictions = []
+        past_key_values = None
 
         for step in range(prediction_length):
-            #decoder_embeddings = self._get_embeddings(decoder_input)
-
+            # Pass raw shape => [B, 1, f] to decoder
             decoder_outputs = self.decoder(
                 decoder_input,
                 encoder_hidden_states=encoder_outputs.last_hidden_state,
@@ -210,14 +186,18 @@ class TimeSeriesTransformerARPrediction(TimeSeriesTransformerModel):
                 return_dict=True
             )
 
-            last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]  # (B, 1, H)
+            # last hidden => shape [B, 1, hidden_size]
+            last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]
 
-            # Use head aggregator for predictions
-            head_outputs = [head(last_hidden) for head in self.output_heads]  # List of (B, 1, Q)
-            next_pred = self.head_aggregator(head_outputs)  # Aggregate across heads
+            # pass last_hidden to heads => [B, 1, Q]
+            head_outputs = [head(last_hidden) for head in self.output_heads]
+            next_pred = self.head_aggregator(head_outputs)  # shape => [B, 1, Q]
 
             predictions.append(next_pred)
-            decoder_input = next_pred[:, -1:, 0:1]  # Feed back one value
+
+            # feed the last value (or last dimension if multi-step) back
+            # e.g. if single-step univariate => [B, 1, 1]
+            decoder_input = next_pred[:, -1:, 0:1]  # shape => [B, 1, 1]
 
             if use_cache:
                 past_key_values = decoder_outputs.past_key_values
@@ -226,5 +206,6 @@ class TimeSeriesTransformerARPrediction(TimeSeriesTransformerModel):
                 if (decoder_input == eos_token_value).all():
                     break
 
-        predictions = torch.cat(predictions, dim=1)  # (B, T, Q)
+        # 4) Concatenate predictions => [B, pred_length, Q]
+        predictions = torch.cat(predictions, dim=1)
         return predictions
