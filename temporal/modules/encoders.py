@@ -53,7 +53,7 @@ class TimeSeriesTransformerEncoderLayer(BaseLayer):
         output_attentions: Optional[bool] = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         residual = hidden_states
-        hidden_states, attn_weights = self.self_attn(
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states,
             attention_mask=attention_mask,
             head_mask=head_mask,
