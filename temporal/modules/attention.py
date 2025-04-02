@@ -78,13 +78,17 @@ class BaseAttention(nn.Module):
 
         # Compute attention scores
         attn_weights = self.compute_attention_scores(query_states, key_states)
-
+        attention_mask_4d = expand_decoder_mask(
+            attention_mask,
+            tgt_len=tgt_len,
+            dtype=hidden_states.dtype
+        )
         # Attention mask (broadcasted properly)
         if attention_mask is not None:
             expected_shape = (bsz, 1, tgt_len, key_states.size(1))
-            if attention_mask.size() != expected_shape:
-                raise ValueError(f"Expected attention_mask shape {expected_shape}, got {attention_mask.size()}")
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, -1) + attention_mask
+            if attention_mask_4d.size() != expected_shape:
+                raise ValueError(f"Expected attention_mask shape {expected_shape}, got {attention_mask_4d.size()}")
+            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, -1) + attention_mask_4d
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, -1)
 
         attn_probs = F.softmax(attn_weights, dim=-1)
@@ -129,3 +133,41 @@ class TimeSeriesAttention(BaseAttention):
             is_decoder=config.is_decoder,  # ✅ Uses the config value instead of hardcoding
             bias=True,  # Bias remains default as True, unless changed in config
         )
+
+
+def expand_decoder_mask(
+    attention_mask: torch.Tensor,
+    tgt_len: int,
+    dtype: torch.dtype
+) -> torch.Tensor:
+    """
+    Convert a 2D [batch_size, src_len] attention mask
+    into a 4D [batch_size, 1, tgt_len, src_len] mask
+    for Transformer multi-head attention.
+
+    Args:
+        attention_mask (Tensor): shape [B, src_len], 
+            where 1.0 means "keep" and 0.0 means "mask" (or vice versa).
+        tgt_len (int): number of target steps (e.g., 1 if decoding a single step).
+        dtype: typically hidden_states.dtype
+
+    Returns:
+        A 4D expanded mask of shape [B, 1, tgt_len, src_len]
+        with 0.0 where we keep, -inf where we mask (if using the
+        typical additive attention approach).
+    """
+    if attention_mask.dim() != 2:
+        raise ValueError(f"Expected 2D mask of shape [B, src_len], got {attention_mask.shape}.")
+
+    bsz, src_len = attention_mask.shape
+    # Expand to [B, 1, 1, src_len]
+    expanded_mask = attention_mask[:, None, None, :]  # => [B,1,1,src_len]
+
+    # Expand along target dimension => [B,1,tgt_len,src_len]
+    expanded_mask = expanded_mask.expand(bsz, 1, tgt_len, src_len)
+
+    # Convert from [0,1] mask to additive form: 0.0 for keep, -1e9 for masked
+    expanded_mask = expanded_mask.to(dtype=dtype)
+    inverted_mask = (1.0 - expanded_mask) * -1e9
+
+    return inverted_mask
