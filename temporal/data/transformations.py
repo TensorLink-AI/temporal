@@ -34,6 +34,7 @@ class TimeSeriesIterableDataset(IterableDataset):
         self.transform_dynamic = transform_dynamic
         self.revin = revin
         self.stride = stride
+        self.decoder_labels = None  # Placeholder for decoder labels
 
         # Cache dataset length for convenience
         self._length = len(dataset)
@@ -148,15 +149,21 @@ class TimeSeriesIterableDataset(IterableDataset):
                     std = window_input.std(dim=0, keepdim=True)
                     std = torch.where(std == 0, torch.tensor(1.0, device=std.device), std)
                     window_input = (window_input - mean) / std
+                    window_label = (window_label - mean) / std
                     # optionally also transform window_label?
                     # depends on how you define ReVIN logic for forecast
                     revin_stats = {"mean": mean, "std": std}
+
+
+                decoder_input_ids = window_label  # or a shifted variant
 
                 sample = {
                     "input_ids": window_input,             # shape [context_len]
                     "labels": window_label,                # shape [pred_len]
                     "dynamic_features_input": window_dyn_in,   # shape [context_len, feat_dim]
                     "dynamic_features_label": window_dyn_out,  # shape [pred_len, feat_dim]
+                    "decoder_input_ids": decoder_input_ids, # multi-step decoder input
+
                     "static_cat_features": static_cat_features,
                     "item_id": item.get("item_id", f"item_{idx}"),
                     "freq": item.get("freq", "1D"),
@@ -171,18 +178,32 @@ class TimeSeriesIterableDataset(IterableDataset):
             print(f"Error in _process_item({idx}): {str(e)}")
             return []
 
+import torch
+import numpy as np
+from typing import List, Dict, Any
+
+
 def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-    """Collate streamed samples into a single batch with padding for both input_ids and labels."""
-    # Filter out empty or invalid samples
+    """
+    Collate streamed samples into a single batch with padding for:
+      - input_ids
+      - labels
+      - (optional) decoder_input_ids (for multi-step teacher forcing)
+      - dynamic features in/out
+      - static cat features
+      etc.
+    """
+
+    # 1) Filter out empty or invalid samples
     samples = [s for s in samples if s and 'input_ids' in s]
     if not samples:
         return {}
 
-    # 1) Gather input lengths
+    # 2) Gather input lengths (for input_ids)
     input_lengths = [s['input_ids'].shape[0] for s in samples]
     max_input_len = max(input_lengths)
 
-    # 2) Gather label lengths
+    # 3) Gather label lengths
     label_lengths = []
     for s in samples:
         if 'labels' in s and s['labels'] is not None:
@@ -191,24 +212,52 @@ def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tens
             label_lengths.append(0)
     max_label_len = max(label_lengths)
 
+    # 4) Gather decoder_input_ids lengths if present
+    has_decoder_inputs = any('decoder_input_ids' in s for s in samples)
+    if has_decoder_inputs:
+        decoder_lengths = []
+        for s in samples:
+            dec_ids = s.get('decoder_input_ids')
+            if dec_ids is not None:
+                decoder_lengths.append(dec_ids.shape[0])
+            else:
+                decoder_lengths.append(0)
+        max_decoder_len = max(decoder_lengths)
+    else:
+        max_decoder_len = 0
+
     # Prepare storages
     batch_input_ids = []
-    batch_labels = []
     batch_attention_mask = []
+    batch_labels = []
     batch_label_mask = []
+    batch_decoder_inputs = []
 
     # ---- Pad input_ids ----
     for s in samples:
         seq_len = s['input_ids'].shape[0]
-        padded_input = torch.cat([
-            s['input_ids'],
-            torch.zeros(max_input_len - seq_len, dtype=torch.float32)
-        ])
+        to_pad = max_input_len - seq_len
+
+        if s['input_ids'].dim() == 1:
+            # shape => [seq_len]
+            padded_input = torch.cat([
+                s['input_ids'],
+                torch.zeros(to_pad, dtype=torch.float32)
+            ])
+        else:
+            # shape => [seq_len, feat_dim]
+            feat_dim = s['input_ids'].shape[1]
+            padded_input = torch.cat([
+                s['input_ids'],
+                torch.zeros(to_pad, feat_dim, dtype=torch.float32)
+            ], dim=0)
+
         batch_input_ids.append(padded_input)
 
+        # attention_mask => 1 => real tokens, 0 => padding
         attn_mask = torch.cat([
             torch.ones(seq_len, dtype=torch.long),
-            torch.zeros(max_input_len - seq_len, dtype=torch.long)
+            torch.zeros(to_pad, dtype=torch.long)
         ])
         batch_attention_mask.append(attn_mask)
 
@@ -216,22 +265,70 @@ def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tens
     has_labels = any('labels' in s for s in samples)
     if has_labels:
         for s in samples:
-            if 'labels' not in s or s['labels'] is None:
-                # no labels => zeros
+            lab = s.get('labels', None)
+            if lab is None:
+                # no labels => fill zeros
                 batch_labels.append(torch.zeros(max_label_len, dtype=torch.float32))
                 batch_label_mask.append(torch.zeros(max_label_len, dtype=torch.long))
             else:
-                lab_len = s['labels'].shape[0]
-                padded_label = torch.cat([
-                    s['labels'],
-                    torch.zeros(max_label_len - lab_len, dtype=torch.float32)
-                ])
+                lab_len = lab.shape[0]
+                to_pad = max_label_len - lab_len
+
+                if lab.dim() == 1:
+                    # shape => [lab_len]
+                    padded_label = torch.cat([
+                        lab,
+                        torch.zeros(to_pad, dtype=torch.float32)
+                    ])
+                else:
+                    # shape => [lab_len, feat_dim]
+                    feat_dim = lab.shape[1]
+                    padded_label = torch.cat([
+                        lab,
+                        torch.zeros(to_pad, feat_dim, dtype=torch.float32)
+                    ], dim=0)
+
                 batch_labels.append(padded_label)
+
                 lab_mask = torch.cat([
                     torch.ones(lab_len, dtype=torch.long),
-                    torch.zeros(max_label_len - lab_len, dtype=torch.long)
+                    torch.zeros(to_pad, dtype=torch.long)
                 ])
                 batch_label_mask.append(lab_mask)
+
+    # ---- Pad decoder_input_ids if present (for multi-step teacher forcing) ----
+    if has_decoder_inputs:
+        for s in samples:
+            dec_in = s.get('decoder_input_ids', None)
+            if dec_in is None:
+                # no multi-step => fill zeros if we have a max_decoder_len > 0
+                if max_decoder_len > 0:
+                    # univariate => shape [max_decoder_len]
+                    # or multivariate => shape [max_decoder_len, feat_dim]
+                    # we'll assume univariate for example. If multi, adapt similarly.
+                    batch_decoder_inputs.append(torch.zeros(max_decoder_len, dtype=torch.float32))
+                else:
+                    # no decoder steps at all
+                    batch_decoder_inputs.append(torch.tensor([], dtype=torch.float32))
+            else:
+                dec_len = dec_in.shape[0]
+                to_pad = max_decoder_len - dec_len
+
+                if dec_in.dim() == 1:
+                    # shape => [dec_len]
+                    padded_dec_in = torch.cat([
+                        dec_in,
+                        torch.zeros(to_pad, dtype=torch.float32)
+                    ])
+                else:
+                    # shape => [dec_len, feat_dim]
+                    feat_dim = dec_in.shape[1]
+                    padded_dec_in = torch.cat([
+                        dec_in,
+                        torch.zeros(to_pad, feat_dim, dtype=torch.float32)
+                    ], dim=0)
+
+                batch_decoder_inputs.append(padded_dec_in)
 
     # ---- Handle dynamic features if present ----
     has_dyn_in = any(s.get('dynamic_features_input') is not None for s in samples)
@@ -240,10 +337,6 @@ def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tens
     batch_dyn_mask_in, batch_dyn_mask_out = [], []
 
     if has_dyn_in:
-        # We assume shape [seq_len, feat_dim] for dynamic_features_input
-        # pad each sample to [max_input_len, feat_dim]
-        # similarly for dynamic_features_label -> [max_label_len, feat_dim]
-        # or you might prefer to store them combined in a single tensor.
         first_in = None
         for s in samples:
             if s.get('dynamic_features_input') is not None:
@@ -272,7 +365,6 @@ def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tens
             batch_dyn_mask_in.append(mask_in)
 
     if has_dyn_out:
-        # dynamic_features_label
         first_out = None
         for s in samples:
             if s.get('dynamic_features_label') is not None:
@@ -313,25 +405,26 @@ def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tens
                     cat_feat = cat_feat.unsqueeze(0)
                 batch_static_cat.append(cat_feat)
 
-    # ---- Stack up final batch dict ----
+    # ---- Stack final batch dict ----
     batch_dict = {
-        'input_ids': torch.stack(batch_input_ids, dim=0),           # [B, max_input_len]
+        'input_ids': torch.stack(batch_input_ids, dim=0),           # [B, max_input_len, ...]
         'attention_mask': torch.stack(batch_attention_mask, dim=0), # [B, max_input_len]
     }
-    # after you stack/pad batch_input_ids
-
-
 
     if has_labels:
-        batch_dict['labels'] = torch.stack(batch_labels, dim=0)             # [B, max_label_len]
-        batch_dict['labels_mask'] = torch.stack(batch_label_mask, dim=0)    # [B, max_label_len]
+        batch_dict['labels'] = torch.stack(batch_labels, dim=0)          # [B, max_label_len, ...]
+        batch_dict['labels_mask'] = torch.stack(batch_label_mask, dim=0) # [B, max_label_len]
+
+    if has_decoder_inputs:
+        batch_dict['decoder_input_ids'] = torch.stack(batch_decoder_inputs, dim=0)
+        # shape => [B, max_decoder_len, ...features?]
 
     if has_dyn_in:
-        batch_dict['dynamic_features_input'] = torch.stack(batch_dyn_in, dim=0)   # [B, max_input_len, feat_dim_in]
+        batch_dict['dynamic_features_input'] = torch.stack(batch_dyn_in, dim=0)
         batch_dict['dynamic_features_input_mask'] = torch.stack(batch_dyn_mask_in, dim=0)
 
     if has_dyn_out:
-        batch_dict['dynamic_features_label'] = torch.stack(batch_dyn_out, dim=0)  # [B, max_label_len, feat_dim_out]
+        batch_dict['dynamic_features_label'] = torch.stack(batch_dyn_out, dim=0)
         batch_dict['dynamic_features_label_mask'] = torch.stack(batch_dyn_mask_out, dim=0)
 
     if has_static:
