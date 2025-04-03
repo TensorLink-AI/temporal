@@ -113,35 +113,26 @@ class BaseAttention(nn.Module):
 
         # 5) Expand or apply attention_mask
         #    If mask is 2D, expand to 4D. If it's already 4D, do nothing.
+
+
         if attention_mask is not None:
-            if attention_mask.dim() == 2:
-                # e.g. shape => [B, src_len], assume we're in self-attn => src_len == key_states.size(1)
-                # Or cross-attn => src_len of the encoder
-                # We'll treat 'tgt_len' as the decoder length
-                attention_mask = expand_mask(
-                    attention_mask,
-                    tgt_len=tgt_len,
-                    dtype=attn_weights.dtype,
-                )
-            elif attention_mask.dim() == 4:
-                # Already expanded
-                pass
-            else:
+            # Just verify it's already 4D
+            if attention_mask.dim() != 4:
                 raise ValueError(
-                    f"attention_mask must be 2D or 4D, got shape {attention_mask.shape}"
+                    f"Attention mask must be 4D [B,1,tgt_len,src_len], got {attention_mask.shape}"
                 )
-            
-            # shape => [B, 1, tgt_len, src_len]
+
             expected_shape = (bsz, 1, tgt_len, key_states.size(1))
             if attention_mask.shape != expected_shape:
                 raise ValueError(
                     f"Expected attention_mask shape {expected_shape}, got {attention_mask.shape}"
                 )
 
-            # attn_weights => [B*H, tgt_len, src_len], reshape => [B, H, tgt_len, src_len]
+            # shape => [B,H,tgt_len,src_len]
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, -1)
             attn_weights = attn_weights + attention_mask
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, -1)
+
 
         # 6) softmax & dropout
         attn_probs = F.softmax(attn_weights, dim=-1)

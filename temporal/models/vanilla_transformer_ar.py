@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, List, Union
 
-# Import developed modules
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
 from temporal.modules.encoders import TimeSeriesTransformerEncoder
@@ -14,12 +13,12 @@ from .basemodel import BaseTimeSeriesModel
 from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 from temporal.modules.attention import TimeSeriesAttention
 
+
+
+
 class TimeSeriesTransformerModel(BaseTimeSeriesModel):
     """
     Base time series transformer model for encoder-decoder training.
-    - Supports multiple loss functions (MSE, MAE, RMSE, Quantile, MQ)
-    - Uses AR loss with a sliding window for training
-    - Supports dynamic feature embeddings
     """
 
     def __init__(self, config):
@@ -36,15 +35,15 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
             nn.Linear(config.hidden_size, config.num_quantiles) for _ in range(config.output_token_lengths)
         ])
 
-        # Head aggregation module
+        # Head aggregator module
         self.head_aggregator = HeadAggregator(
-            method=config.head_aggregation_method,  # "mean", "gated", "attention", "fusion", "stacked", "weighted_mean"
+            method=config.head_aggregation_method,
             hidden_size=config.hidden_size,
             num_heads=config.output_token_lengths,
             output_size=config.num_quantiles
         )
 
-        # Loss function selection
+        # Loss function
         self.loss_fn = TimeSeriesLoss(config, loss_type=config.loss_type)
 
         self.post_init()
@@ -55,7 +54,7 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
         attention_mask: Optional[torch.FloatTensor] = None,
         decoder_input_ids: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.FloatTensor] = None,
-        dynamic_features: Optional[torch.FloatTensor] = None,  # optional if your encoder/decoder expect it
+        dynamic_features: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = False,
         output_hidden_states: Optional[bool] = False,
         return_dict: Optional[bool] = True,
@@ -66,29 +65,27 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
         does its own value_embedding + position_embedding internally.
         """
 
-        # ---------------------------------------------------
-        # 1) Encoder: pass raw input (shape [B, S, features]) to encoder
-        #    The encoder itself calls self.value_embedding(...).
+        # 1) Encoder
         encoder_outputs = self.encoder(
-            input_ids,  # raw shape [B, S, f]
-            attention_mask=attention_mask,
+            input_ids,
+            attention_mask=attention_mask,  # for ignoring padded tokens in the encoder
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
 
-        # ---------------------------------------------------
-        # 2) Decoder: pass raw input for the decoder
+        # 2) Decoder
         if decoder_input_ids is None:
-            # e.g. last slice from input_ids if you want 1 step, or [-decoder_length:] if you prefer
+            # e.g. last slice from input_ids if you want 1 step
             decoder_inputs = input_ids[:, -1:]  # shape [B, 1, f]
         else:
-            decoder_inputs = decoder_input_ids
+            decoder_inputs = decoder_input_ids  # shape [B, T_dec, f]
 
         decoder_outputs = self.decoder(
-            decoder_inputs,  # raw shape => [B, T, f]
+            decoder_inputs,
             encoder_hidden_states=encoder_outputs.last_hidden_state,
-            attention_mask=attention_mask,
+            attention_mask=None,             # For single-step or if no causal mask
+            encoder_attention_mask=None,      # you can pass separate masks if needed
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
@@ -96,13 +93,11 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
 
         sequence_output = decoder_outputs.last_hidden_state
 
-        # ---------------------------------------------------
-        # 3) Generate final predictions
-        head_outputs = [head(sequence_output) for head in self.output_heads]  # List of (B, T, Q)
-        predictions = self.head_aggregator(head_outputs)  # Apply head aggregation
+        # 3) Predictions
+        head_outputs = [head(sequence_output) for head in self.output_heads]  # List of [B, T_dec, Q]
+        predictions = self.head_aggregator(head_outputs)
 
-        # ---------------------------------------------------
-        # 4) Compute loss (optional)
+        # 4) Loss
         loss = None
         if labels is not None:
             loss = self.loss_fn(predictions, labels)
@@ -125,8 +120,7 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
 
 class TimeSeriesTransformerARPrediction(TimeSeriesTransformerModel):
     """
-    AR (Autoregressive) version of TimeSeriesTransformer for rolling forecasts.
-    Inherits from TimeSeriesTransformerModel but adds `generate()` for inference.
+    AR (Autoregressive) version for rolling forecasts.
     """
 
     def generate(
@@ -143,61 +137,50 @@ class TimeSeriesTransformerARPrediction(TimeSeriesTransformerModel):
         output_attentions: bool = False,
     ) -> torch.Tensor:
         """
-        Generates autoregressive time series predictions using the head aggregation strategy.
-        We pass raw inputs to the encoder & decoder. Each submodule
-        does its own embedding.
+        Single-step AR loop. You currently do one token at a time.
         """
-        batch_size, context_length = input_ids.shape[:2]  # e.g. [B, S, f]
+        batch_size, context_length = input_ids.shape[:2]
         device = input_ids.device
 
         # 1) Encode once
         encoder_outputs = self.encoder(
-            input_ids,                  # raw shape => [B, S, f]
+            input_ids,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
             return_dict=True
         )
 
-        # 2) Initialize decoder input with last token or a special token
+        # 2) Initialize decoder input
         if decoder_start_token_value is not None:
             decoder_input = torch.full(
-                (batch_size, 1, input_ids.shape[-1]),  # shape => [B, 1, f], if input_ids is [B, S, f]
+                (batch_size, 1, input_ids.size(-1)),
                 decoder_start_token_value,
                 dtype=input_ids.dtype,
                 device=device
             )
         else:
-            # Last step from input_ids
-            decoder_input = input_ids[:, -1:].clone()  # shape [B, 1, f]
+            decoder_input = input_ids[:, -1:].clone()
 
-        # 3) Autoregressive loop
         predictions = []
         past_key_values = None
 
         for step in range(prediction_length):
-            # Pass raw shape => [B, 1, f] to decoder
             decoder_outputs = self.decoder(
                 decoder_input,
                 encoder_hidden_states=encoder_outputs.last_hidden_state,
-                attention_mask=attention_mask,
+                attention_mask=None,  # single-step => no self-attn mask needed
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 output_attentions=output_attentions,
                 return_dict=True
             )
 
-            # last hidden => shape [B, 1, hidden_size]
             last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]
-
-            # pass last_hidden to heads => [B, 1, Q]
-            head_outputs = [head(last_hidden) for head in self.output_heads]
-            next_pred = self.head_aggregator(head_outputs)  # shape => [B, 1, Q]
+            head_outputs = [head(last_hidden) for head in self.output_heads]  # => list of [B,1,Q]
+            next_pred = self.head_aggregator(head_outputs)                    # => [B,1,Q]
 
             predictions.append(next_pred)
-
-            # feed the last value (or last dimension if multi-step) back
-            # e.g. if single-step univariate => [B, 1, 1]
-            decoder_input = next_pred[:, -1:, 0:1]  # shape => [B, 1, 1]
+            decoder_input = next_pred[:, -1:, 0:1]  # e.g. [B,1,1]
 
             if use_cache:
                 past_key_values = decoder_outputs.past_key_values
@@ -206,6 +189,75 @@ class TimeSeriesTransformerARPrediction(TimeSeriesTransformerModel):
                 if (decoder_input == eos_token_value).all():
                     break
 
-        # 4) Concatenate predictions => [B, pred_length, Q]
-        predictions = torch.cat(predictions, dim=1)
+        predictions = torch.cat(predictions, dim=1)  # [B, pred_length, Q]
+        return predictions
+
+    def generate_multistep(
+        self,
+        input_ids: torch.Tensor,
+        decoder_length: int,
+        encoder_mask_2d: Optional[torch.Tensor] = None,   # shape [B, enc_len], 1 => keep, 0 => mask
+        causal: bool = True,
+        output_attentions: bool = False,
+    ) -> torch.Tensor:
+        """
+        Multi-step decoding in one forward pass.
+        - input_ids: [B, enc_len, features]
+        - decoder_length: how many future steps we want to decode
+        - encoder_mask_2d: 2D mask for ignoring padded tokens in the encoder
+        - causal: whether to apply a causal mask on the decoder input
+        """
+
+        device = input_ids.device
+        batch_size, enc_len, feat_dim = input_ids.shape
+
+        # 1) Encode
+        encoder_outputs = self.encoder(
+            input_ids,
+            attention_mask=encoder_mask_2d,  # if your code auto-expands 2D => 4D
+            output_attentions=output_attentions,
+            return_dict=True
+        )
+
+        # 2) Construct a "decoder input" of shape [B, decoder_length, features]
+        #    Initialize it to zeros or some known placeholder if you want a 'warm start'.
+        #    In many tasks, you might feed the last known steps or a start token. We'll do zeros here.
+        decoder_input = torch.zeros(batch_size, decoder_length, feat_dim, device=device)
+
+        # 3) If we want a causal self-attn mask => shape [decoder_length, decoder_length]
+        #    1 => keep, 0 => block future.
+        if causal:
+            tri_mask = build_causal_mask(decoder_length, device=device)  # => shape [decoder_length, decoder_length]
+            tri_mask_2d = tri_mask.unsqueeze(0).expand(batch_size, -1, -1)  # => [B, dec_len, dec_len]
+
+            # Expand to 4D => [B,1,dec_len,dec_len] for self-attn
+            decoder_self_mask = expand_mask_4d(tri_mask_2d, tgt_len=decoder_length, dtype=torch.float32)
+        else:
+            decoder_self_mask = None
+
+        # 4) Cross-attn mask from `encoder_mask_2d` => shape [B, enc_len] => expand => [B,1,dec_len,enc_len]
+        if encoder_mask_2d is not None:
+            cross_mask_4d = expand_mask_4d(
+                encoder_mask_2d, tgt_len=decoder_length, dtype=torch.float32
+            )
+        else:
+            cross_mask_4d = None
+
+        # 5) Decode in one pass
+        decoder_outputs = self.decoder(
+            decoder_input,  # shape [B, dec_len, features]
+            encoder_hidden_states=encoder_outputs.last_hidden_state,
+            attention_mask=decoder_self_mask,          # for self-attn
+            encoder_attention_mask=cross_mask_4d,      # for cross-attn
+            output_attentions=output_attentions,
+            return_dict=True
+        )
+
+        # 6) Final hidden => [B, dec_len, hidden_size]
+        sequence_output = decoder_outputs.last_hidden_state
+
+        # 7) Pass to heads => [B, dec_len, Q]
+        head_outputs = [head(sequence_output) for head in self.output_heads]
+        predictions = self.head_aggregator(head_outputs)  # => [B, dec_len, Q]
+
         return predictions
