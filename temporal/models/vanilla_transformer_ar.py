@@ -14,6 +14,17 @@ from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 from temporal.modules.attention import TimeSeriesAttention
 
 
+def expand_encoder_mask_2d(mask_2d, seq_len, dtype):
+    # mask_2d => [B,S]
+    bsz, src_len = mask_2d.shape
+    if src_len != seq_len:
+        raise ValueError("Mismatch in seq_len")
+    # shape => [B,1,src_len,src_len]
+    expanded = mask_2d[:, None, None, :].expand(bsz, 1, seq_len, src_len)
+    expanded = expanded.to(dtype=dtype)
+    # if 1 => keep, 0 => mask, do (1 - expanded) * -1e9
+    expanded = (1.0 - expanded) * -1e9
+    return expanded
 
 
 class TimeSeriesTransformerModel(BaseTimeSeriesModel):
@@ -66,9 +77,17 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
         """
 
         # 1) Encoder
+
+        # Expand to 4D => [B, 1, S, S]
+        attention_mask_4d = expand_encoder_mask_2d(
+            attention_mask_2d,  # shape [B,S]
+            seq_len=S,
+            dtype=torch.float32
+        )
+
         encoder_outputs = self.encoder(
             input_ids,
-            attention_mask=attention_mask,  # for ignoring padded tokens in the encoder
+            attention_mask=attention_mask_4d,  # Now 4D
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
