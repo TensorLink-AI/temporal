@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple, List, Union
 
 from transformers import PreTrainedModel
-from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
+from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions,CausalLMOutputWithCrossAttentions
 from temporal.modules.encoders import TimeSeriesTransformerEncoder
 from temporal.modules.decoders import TimeSeriesTransformerDecoder
 from temporal.modules.losses import TimeSeriesLoss
@@ -162,7 +162,7 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
         if not return_dict:
             return (predictions, loss, decoder_outputs.hidden_states, decoder_outputs.attentions)
 
-        return BaseModelOutputWithPastAndCrossAttentions(
+        return CausalLMOutputWithCrossAttentions(
             last_hidden_state=predictions,
             # Typically BaseModelOutputWithPastAndCrossAttentions does not include 'loss',
             # so we return it as a separate item or define a custom output. For simplicity:
@@ -173,6 +173,7 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
             encoder_last_hidden_state=encoder_outputs.last_hidden_state,
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
+            loss=loss
         )
 
 
