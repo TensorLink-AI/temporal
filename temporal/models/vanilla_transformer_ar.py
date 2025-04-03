@@ -13,40 +13,62 @@ from .basemodel import BaseTimeSeriesModel
 from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 from temporal.modules.attention import TimeSeriesAttention
 
-
+# We assume you already have these defined in your code.
 def expand_encoder_mask_2d(mask_2d, seq_len, dtype):
-    # mask_2d => [B,S]
     bsz, src_len = mask_2d.shape
     if src_len != seq_len:
         raise ValueError("Mismatch in seq_len")
-    # shape => [B,1,src_len,src_len]
     expanded = mask_2d[:, None, None, :].expand(bsz, 1, seq_len, src_len)
     expanded = expanded.to(dtype=dtype)
-    # if 1 => keep, 0 => mask, do (1 - expanded) * -1e9
+    expanded = (1.0 - expanded) * -1e9
+    return expanded
+
+def build_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
+    """
+    shape => [seq_len, seq_len], with 1 => keep, 0 => block future
+    """
+    mat = torch.ones(seq_len, seq_len, device=device)
+    mat = torch.tril(mat)
+    return mat  # [seq_len, seq_len]
+
+def expand_mask_4d(
+    mask_2d: torch.Tensor,
+    tgt_len: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """
+    shape => [B, seq_len, seq_len] => expand to [B, 1, seq_len, seq_len]
+    or if mask_2d => [B, seq_len], e.g. build your logic accordingly.
+    """
+    bsz, src_len = mask_2d.shape[:2]
+    expanded = mask_2d[:, None].expand(bsz, 1, src_len, src_len)
+    expanded = expanded.to(dtype=dtype)
     expanded = (1.0 - expanded) * -1e9
     return expanded
 
 
 class TimeSeriesTransformerModel(BaseTimeSeriesModel):
     """
-    Base time series transformer model for encoder-decoder training.
+    Base time series transformer model for encoder-decoder training,
+    now supporting multi-step teacher forcing in a single forward.
     """
 
     def __init__(self, config):
         super().__init__(config)
         self.config = config
 
-        # Initialize encoder & decoder (which each handle embedding internally)
+        # Initialize encoder & decoder
         self.encoder = TimeSeriesTransformerEncoder(config)
         self.decoder = TimeSeriesTransformerDecoder(config)
 
-        # Output heads (multi-output for quantile forecasting)
+        # Output heads (e.g., for quantile forecasting)
         self.num_quantiles = config.num_quantiles
         self.output_heads = nn.ModuleList([
-            nn.Linear(config.hidden_size, config.num_quantiles) for _ in range(config.output_token_lengths)
+            nn.Linear(config.hidden_size, config.num_quantiles) 
+            for _ in range(config.output_token_lengths)
         ])
 
-        # Head aggregator module
+        # Head aggregator
         self.head_aggregator = HeadAggregator(
             method=config.head_aggregation_method,
             hidden_size=config.hidden_size,
@@ -54,84 +76,100 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
             output_size=config.num_quantiles
         )
 
-        # Loss function
         self.loss_fn = TimeSeriesLoss(config, loss_type=config.loss_type)
 
         self.post_init()
 
     def forward(
         self,
-        input_ids: torch.FloatTensor,
-        attention_mask: Optional[torch.FloatTensor] = None,
-        decoder_input_ids: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.FloatTensor] = None,
+        input_ids: torch.FloatTensor,              # [B, S, features]
+        attention_mask: Optional[torch.FloatTensor] = None,  # [B, S]
+        decoder_input_ids: Optional[torch.FloatTensor] = None, # [B, T_dec, features]
+        labels: Optional[torch.FloatTensor] = None,           # [B, T_dec, Q] for multi-step
         dynamic_features: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = False,
         output_hidden_states: Optional[bool] = False,
         return_dict: Optional[bool] = True,
+        multi_step: bool = True,            # <-- new param: if True, do multi-step teacher forcing
+        use_causal_mask: bool = True,        # <-- if multi_step, do we apply a causal mask?
     ) -> BaseModelOutputWithPastAndCrossAttentions:
-        """
-        Forward pass for autoregressive time series prediction.
-        We pass raw inputs to the encoder & decoder. Each submodule
-        does its own value_embedding + position_embedding internally.
-        """
 
         # 1) Encoder
-        S = input_ids.size(1)
-
-        # Expand to 4D => [B, 1, S, S]
-        attention_mask_4d = expand_encoder_mask_2d(
-            attention_mask,  # shape [B,S]
-            seq_len=S,
-            dtype=torch.float32
-        )
+        B, S, _ = input_ids.shape
+        if attention_mask is not None:
+            # expand encoder mask to 4D [B,1,S,S]
+            encoder_mask_4d = expand_encoder_mask_2d(
+                attention_mask, seq_len=S, dtype=input_ids.dtype
+            )
+        else:
+            encoder_mask_4d = None
 
         encoder_outputs = self.encoder(
-            input_ids,
-            attention_mask=attention_mask_4d,  # Now 4D
+            inputs_embeds=input_ids,           # or pass input_ids if your code expects that
+            attention_mask=encoder_mask_4d,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
 
-        # 2) Decoder
-        if decoder_input_ids is None:
-            # e.g. last slice from input_ids if you want 1 step
-            decoder_inputs = input_ids[:, -1:]  # shape [B, 1, f]
+        # 2) If multi_step = False, fallback to single-step. If no decoder_input_ids, we do last slice
+        if not multi_step:
+            if decoder_input_ids is None:
+                decoder_input_ids = input_ids[:, -1:]  # shape => [B,1,features]
+            
+            # we do no causal mask in single-step mode
+            decoder_mask = None
+
         else:
-            decoder_inputs = decoder_input_ids  # shape [B, T_dec, f]
+            # multi_step training: we pass the entire future horizon as decoder_input_ids
+            if decoder_input_ids is None:
+                raise ValueError("For multi_step=True, must provide decoder_input_ids with shape [B, T_dec, features]")
+
+            T_dec = decoder_input_ids.size(1)
+            if use_causal_mask and T_dec > 1:
+                # Build a [T_dec, T_dec] lower-tri mask
+                tri = build_causal_mask(T_dec, device=input_ids.device)  # [T_dec, T_dec] => 1 keep, 0 block
+                # expand to [B, T_dec, T_dec]
+                tri_3d = tri.unsqueeze(0).expand(B, T_dec, T_dec)  # shape => [B,T_dec,T_dec]
+                # expand to [B,1,T_dec,T_dec]
+                decoder_mask = expand_mask_4d(tri_3d, tgt_len=T_dec, dtype=input_ids.dtype)
+            else:
+                decoder_mask = None
 
         decoder_outputs = self.decoder(
-            decoder_inputs,
+            decoder_input_ids,                 # shape [B, T_dec, features]
             encoder_hidden_states=encoder_outputs.last_hidden_state,
-            attention_mask=None,             # For single-step or if no causal mask
-            encoder_attention_mask=None,      # you can pass separate masks if needed
+            attention_mask=decoder_mask,       # for self-attn
+            encoder_attention_mask=None,       # if you want cross-attn mask for encoder
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-
+        # [B, T_dec, hidden_size]
         sequence_output = decoder_outputs.last_hidden_state
 
-        # 3) Predictions
-        head_outputs = [head(sequence_output) for head in self.output_heads]  # List of [B, T_dec, Q]
+        # 3) Predictions => [B, T_dec, Q]
+        head_outputs = [head(sequence_output) for head in self.output_heads]
         predictions = self.head_aggregator(head_outputs)
 
-        # 4) Loss
+        # 4) Compute Loss
         loss = None
         if labels is not None:
+            # expects labels => shape [B, T_dec, Q]
+            # model => shape [B, T_dec, Q]
             loss = self.loss_fn(predictions, labels)
 
         if not return_dict:
-            return (predictions,) + decoder_outputs[1:]
+            return (predictions, loss, decoder_outputs.hidden_states, decoder_outputs.attentions)
 
         return BaseModelOutputWithPastAndCrossAttentions(
             last_hidden_state=predictions,
-            loss=loss,
-            past_key_values=decoder_outputs.past_key_values,
-            decoder_hidden_states=decoder_outputs.hidden_states,
-            decoder_attentions=decoder_outputs.attentions,
+            # Typically BaseModelOutputWithPastAndCrossAttentions does not include 'loss',
+            # so we return it as a separate item or define a custom output. For simplicity:
+            hidden_states=decoder_outputs.hidden_states,
+            attentions=decoder_outputs.attentions,
             cross_attentions=decoder_outputs.cross_attentions,
+            # or store the encoder outputs as well:
             encoder_last_hidden_state=encoder_outputs.last_hidden_state,
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
