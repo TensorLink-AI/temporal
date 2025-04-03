@@ -77,6 +77,7 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
         """
 
         # 1) Encoder
+        S = input_ids.size(1)
 
         # Expand to 4D => [B, 1, S, S]
         attention_mask_4d = expand_encoder_mask_2d(
