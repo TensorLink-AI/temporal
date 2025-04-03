@@ -80,7 +80,7 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
 
         # Expand to 4D => [B, 1, S, S]
         attention_mask_4d = expand_encoder_mask_2d(
-            attention_mask_2d,  # shape [B,S]
+            attention_mask,  # shape [B,S]
             seq_len=S,
             dtype=torch.float32
         )
