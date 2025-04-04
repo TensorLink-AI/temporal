@@ -92,7 +92,7 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
         return_dict: Optional[bool] = True,
         multi_step: bool = True,            # <-- new param: if True, do multi-step teacher forcing
         use_causal_mask: bool = True,        # <-- if multi_step, do we apply a causal mask?
-    ) -> BaseModelOutputWithPastAndCrossAttentions:
+    ) -> Seq2SeqLMOutput:
 
         # 1) Encoder
         B, S, _ = input_ids.shape
