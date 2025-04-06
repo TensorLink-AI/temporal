@@ -14,31 +14,79 @@ from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 from temporal.modules.attention import TimeSeriesAttention
 
 # We assume you already have these defined in your code.
-def expand_encoder_mask_2d(mask_2d, seq_len, dtype):
+def expand_encoder_mask_2d(mask_2d: torch.Tensor, seq_len: int, dtype: torch.dtype) -> torch.Tensor:
+    """
+    Convert a 2D encoder attention mask of shape [batch_size, seq_len]
+    into a 4D attention mask [batch_size, 1, seq_len, seq_len] with
+    -inf where tokens should be masked.
+
+    Args:
+        mask_2d (torch.Tensor):
+            2D mask of shape [B, seq_len], where 1.0 => keep and 0.0 => mask.
+        seq_len (int):
+            Expected sequence length; used to check shape consistency.
+        dtype (torch.dtype):
+            The dtype to which the expanded mask is cast (e.g. float32).
+
+    Returns:
+        torch.Tensor of shape [B, 1, seq_len, seq_len], with values 0 for
+        “keep” and -1e9 for “mask”. This can be added to attention logits
+        inside the Transformer to block padded tokens.
+    """
     bsz, src_len = mask_2d.shape
     if src_len != seq_len:
-        raise ValueError("Mismatch in seq_len")
+        raise ValueError(f"Mismatch in seq_len: got {src_len}, expected {seq_len}.")
+
+    # Expand to [B, 1, seq_len, seq_len]
     expanded = mask_2d[:, None, None, :].expand(bsz, 1, seq_len, src_len)
     expanded = expanded.to(dtype=dtype)
+
+    # Convert 1 => 0.0 keep, 0 => -1e9 mask
     expanded = (1.0 - expanded) * -1e9
     return expanded
 
+
 def build_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
     """
-    shape => [seq_len, seq_len], with 1 => keep, 0 => block future
+    Build a lower-triangular (causal) mask for self-attention in the decoder,
+    blocking access to future tokens.
+
+    Args:
+        seq_len (int):
+            The length of the target sequence for which we build the mask.
+        device (torch.device):
+            The device on which the returned mask resides.
+
+    Returns:
+        A 2D tensor of shape [seq_len, seq_len], where the upper-right
+        triangle is 0 (blocked) and the lower-left triangle (including diag)
+        is 1 (keep).
     """
     mat = torch.ones(seq_len, seq_len, device=device)
-    mat = torch.tril(mat)
-    return mat  # [seq_len, seq_len]
+    mat = torch.tril(mat)  # zero out upper triangle
+    return mat  # shape [seq_len, seq_len]
 
-def expand_mask_4d(
-    mask_2d: torch.Tensor,
-    tgt_len: int,
-    dtype: torch.dtype,
-) -> torch.Tensor:
+
+def expand_mask_4d(mask_2d: torch.Tensor, tgt_len: int, dtype: torch.dtype) -> torch.Tensor:
     """
-    shape => [B, seq_len, seq_len] => expand to [B, 1, seq_len, seq_len]
-    or if mask_2d => [B, seq_len], e.g. build your logic accordingly.
+    Expand a 2D or 3D mask into a 4D mask for self-attention or cross-attention.
+
+    Typically used for building a causal mask or cross-attn mask:
+      - shape => [B, seq_len, seq_len] or [B, seq_len]
+      - expand => [B, 1, seq_len, seq_len]
+    then convert 1 => 0.0 keep, 0 => -1e9 mask.
+
+    Args:
+        mask_2d (torch.Tensor):
+            Mask of shape [B, seq_len, seq_len] or [B, seq_len].
+        tgt_len (int):
+            The target sequence length (if needed to shape the final mask).
+        dtype (torch.dtype):
+            The dtype for the returned mask.
+
+    Returns:
+        torch.Tensor of shape [B, 1, seq_len, seq_len].
+        Positions to block become -1e9, positions to keep are 0.0.
     """
     bsz, src_len = mask_2d.shape[:2]
     expanded = mask_2d[:, None].expand(bsz, 1, src_len, src_len)
@@ -47,12 +95,78 @@ def expand_mask_4d(
     return expanded
 
 
+
 class TimeSeriesTransformerModel(BaseTimeSeriesModel):
     """
-    Base time series transformer model for encoder-decoder training,
-    now supporting multi-step teacher forcing in a single forward.
-    """
+    A base time-series Transformer model for encoder–decoder tasks,
+    supporting multi-step teacher forcing in a single forward pass.
 
+    This model:
+      1. Runs an encoder on [B, S, features] of input time-series data.
+      2. Runs a decoder on either:
+         - single-step input if multi_step=False
+         - full future horizon if multi_step=True
+      3. Produces final predictions via multiple “output heads,” possibly
+         aggregated by a `HeadAggregator`.
+
+    Args:
+        config (BaseTimeSeriesConfig):
+            Configuration object specifying hidden sizes, loss type, number
+            of quantiles, etc.
+
+    Forward Args:
+        input_ids (torch.FloatTensor):
+            The encoder “input” of shape [B, S, features].
+        attention_mask (torch.FloatTensor, optional):
+            A 2D or 4D mask specifying which tokens to attend to
+            in the encoder. If shape [B, S], it is expanded to [B,1,S,S].
+        decoder_input_ids (torch.FloatTensor, optional):
+            The decoder “input” of shape [B, T_dec, features].
+            If `multi_step=True`, expects the entire future horizon.
+            If not provided, and multi_step=False, defaults to the last step
+            of `input_ids`.
+        labels (torch.FloatTensor, optional):
+            The ground-truth future time-series of shape [B, T_dec, Q].
+            If provided, a loss is computed via `self.loss_fn`.
+        dynamic_features (torch.FloatTensor, optional):
+            Additional per-timestep features used inside the model if needed.
+            Not used directly in this snippet, but shown for future expansion.
+        output_attentions (bool, optional):
+            If True, returns attention weights in the decoder and possibly
+            the encoder.
+        output_hidden_states (bool, optional):
+            If True, returns hidden states of each encoder/decoder layer.
+        return_dict (bool, optional):
+            If True, returns a `Seq2SeqLMOutput` dataclass. Otherwise returns
+            a tuple.
+        multi_step (bool, optional, defaults to True):
+            Whether the model is run in “multi-step teacher forcing,” passing
+            the entire horizon to the decoder in one go.
+        use_causal_mask (bool, optional, defaults to True):
+            If multi_step=True, whether to create a lower-triangular mask in
+            the decoder to block future positions.
+
+    Returns:
+        Seq2SeqLMOutput or tuple:
+            - If return_dict=True: 
+              A Seq2SeqLMOutput with fields:
+                * loss (optional): The computed loss if `labels` was provided.
+                * logits: The final predictions of shape [B, T_dec, Q].
+                * (optionally) decoder_hidden_states, attentions, cross_attentions,
+                  and encoder states.
+            - If return_dict=False:
+              A tuple of (predictions, loss, hidden_states, attentions).
+
+    Example Usage:
+        >>> config = BaseTimeSeriesConfig(context_length=48, prediction_length=12)
+        >>> model = TimeSeriesTransformerModel(config)
+        >>> input_ids = torch.randn(16, 48, config.feature_size)
+        >>> decoder_input_ids = torch.randn(16, 12, config.feature_size)
+        >>> labels = torch.randn(16, 12, config.num_quantiles)  # e.g. quantile outputs
+        >>> outputs = model(input_ids=input_ids, decoder_input_ids=decoder_input_ids, labels=labels)
+        >>> loss = outputs.loss
+        >>> preds = outputs.logits
+    """
     def __init__(self, config):
         super().__init__(config)
         self.config = config
@@ -176,7 +290,60 @@ class TimeSeriesTransformerModel(BaseTimeSeriesModel):
 
 class TimeSeriesTransformerARPrediction(TimeSeriesTransformerModel):
     """
-    AR (Autoregressive) version for rolling forecasts.
+    AR (Autoregressive) extension of TimeSeriesTransformerModel for
+    rolling forecasts in an auto-regressive loop.
+
+    This class reuses the same encoder–decoder architecture but
+    provides a `generate(...)` method that iteratively decodes
+    one step at a time, feeding the model’s previous predictions
+    back into the next time-step.
+
+    Args:
+        config (BaseTimeSeriesConfig):
+            Configuration object, as in the parent class.
+
+    generate Args:
+        input_ids (torch.Tensor):
+            Shape [B, context_len, features]. The initial historical
+            data for the encoder.
+        prediction_length (int):
+            How many steps to roll out auto-regressively.
+        attention_mask (torch.Tensor, optional):
+            Encoder mask for ignoring padded tokens, shape [B, context_len].
+        dynamic_features (torch.Tensor, optional):
+            Additional features. Not directly used unless your model
+            merges them into the decoder input somehow.
+        static_cat_features (torch.Tensor, optional):
+            Unused in this snippet, but placeholders for future expansions.
+        use_cache (bool, optional, defaults to True):
+            Whether to use past key-values to speed up decoding in
+            an AR loop (if your decoder supports it).
+        early_stopping (bool, optional, defaults to False):
+            If True, and an `eos_token_value` is set, generation stops
+            early if all tokens match `eos_token_value`.
+        decoder_start_token_value (float, optional):
+            If given, starts the decoder with a special token instead
+            of the last input value.
+        eos_token_value (float, optional):
+            Value that triggers early stopping if encountered in
+            all predicted steps.
+        output_attentions (bool, optional):
+            If True, returns attentions from each decode step.
+
+    Returns:
+        torch.Tensor of shape [B, prediction_length, Q]
+        containing the rolling forecasts. (Q might be 1 or
+        `num_quantiles`, depending on your config.)
+
+    Example:
+        >>> model = TimeSeriesTransformerARPrediction(config)
+        >>> input_ids = torch.randn(16, 48, config.feature_size)  # 48-step context
+        >>> # Generate a 12-step forecast in an AR loop:
+        >>> preds = model.generate(
+        ...     input_ids=input_ids,
+        ...     prediction_length=12
+        ... )
+        >>> preds.shape  # [16, 12, Q]
     """
 
     def generate(
