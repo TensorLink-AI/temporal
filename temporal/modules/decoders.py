@@ -4,9 +4,9 @@ import torch.nn.functional as F
 from typing import Optional, Tuple, List, Union
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
-from temporal.modules.embedding import TimeSeriesValueEmbedding, TimeSeriesSinusoidalPositionalEmbedding
-from temporal.modules.attention import TimeSeriesAttention
-
+#from temporal.modules.embedding import TimeSeriesValueEmbedding,TimeSeriesSinusoidalPositionalEmbedding
+from temporal.modules.attention import AutoTimeSeriesAttention
+from temporal.modules.embeddings import AutoTimeSeriesEmbedding
 
 class BaseLayer(nn.Module):
     """Base layer for all transformer components."""
@@ -46,11 +46,15 @@ class TimeSeriesTransformerDecoderLayer(BaseLayer):
         super().__init__(config)
         self.embed_dim = config.hidden_size
 
-        # Self-attention
-        self.self_attn = TimeSeriesAttention(config)
+        # Self-attention layer
+        # Make an abstract layer to define attention
+        self.self_attn = AutoTimeSeriesAttention(config, attention_context="self")
 
-        # Cross-attention
-        self.encoder_attn = TimeSeriesAttention(config)
+
+        # Cross-attention layer
+        # Make an abstract layer to define attention
+
+        self.encoder_attn =AutoTimeSeriesAttention(config,attention_context="cross")
 
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
@@ -150,12 +154,10 @@ class TimeSeriesTransformerDecoder(BaseDecoder):
         self.layers = nn.ModuleList([
             TimeSeriesTransformerDecoderLayer(config) for _ in range(config.num_hidden_layers)
         ])
-        self.value_embedding = TimeSeriesValueEmbedding(
-            feature_size=config.feature_size, d_model=config.hidden_size
-        )
-        self.embed_positions = TimeSeriesSinusoidalPositionalEmbedding(
-            config.context_length + config.prediction_length, config.hidden_size
-        )
+
+        self.value_embedding = AutoTimeSeriesEmbedding.from_config(config, embedding_type=config.value_embedding_type)
+        self.pos_embedding = AutoTimeSeriesEmbedding.from_config(config, embedding_type=config.pos_embedding_type)
+        
         self.output_projection = nn.Linear(config.hidden_size, 1)
         self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 

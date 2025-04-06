@@ -133,7 +133,9 @@ class BaseTimeSeriesConfig(PretrainedConfig):
         use_layer_norm: bool = True,
         use_positional_encoding: bool = True,
         use_skip_connections: bool = True,
-        
+        value_embedding_type: str = "value",
+        pos_embedding_type: str = "positional_sinusoidal",    
+
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -163,7 +165,8 @@ class BaseTimeSeriesConfig(PretrainedConfig):
         self.use_layer_norm = use_layer_norm
         self.use_positional_encoding = use_positional_encoding
         self.use_skip_connections = use_skip_connections
-
+        self.value_embedding_type = value_embedding_type
+        self.pos_embedding_type = pos_embedding_type
         # Number of output quantiles
         from . import PROBABILISTIC_LOSSES  # or define at top
         self.num_quantiles = len(self.quantiles) if self.loss_type in PROBABILISTIC_LOSSES else 1

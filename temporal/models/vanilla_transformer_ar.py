@@ -11,7 +11,6 @@ from temporal.modules.losses import TimeSeriesLoss
 from temporal.modules.attention_head_agg import HeadAggregator
 from .basemodel import BaseTimeSeriesModel
 from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
-from temporal.modules.attention import TimeSeriesAttention
 
 # We assume you already have these defined in your code.
 def expand_encoder_mask_2d(mask_2d: torch.Tensor, seq_len: int, dtype: torch.dtype) -> torch.Tensor:
@@ -68,35 +67,6 @@ def build_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
 
 
 def expand_mask_4d(mask_2d: torch.Tensor, tgt_len: int, dtype: torch.dtype) -> torch.Tensor:
-    """
-    Expand a 2D or 3D mask into a 4D mask for self-attention or cross-attention.
-
-    Typically used for building a causal mask or cross-attn mask:
-      - shape => [B, seq_len, seq_len] or [B, seq_len]
-      - expand => [B, 1, seq_len, seq_len]
-    then convert 1 => 0.0 keep, 0 => -1e9 mask.
-
-    Args:
-        mask_2d (torch.Tensor):
-            Mask of shape [B, seq_len, seq_len] or [B, seq_len].
-        tgt_len (int):
-            The target sequence length (if needed to shape the final mask).
-        dtype (torch.dtype):
-            The dtype for the returned mask.
-
-    Returns:
-        torch.Tensor of shape [B, 1, seq_len, seq_len].
-        Positions to block become -1e9, positions to keep are 0.0.
-    """
-    bsz, src_len = mask_2d.shape[:2]
-    expanded = mask_2d[:, None].expand(bsz, 1, src_len, src_len)
-    expanded = expanded.to(dtype=dtype)
-    expanded = (1.0 - expanded) * -1e9
-    return expanded
-
-
-
-class TimeSeriesTransformerModel(BaseTimeSeriesModel):
     """
     A base time-series Transformer model for encoder–decoder tasks,
     supporting multi-step teacher forcing in a single forward pass.

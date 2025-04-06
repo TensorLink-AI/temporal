@@ -3,6 +3,14 @@ import torch.nn as nn
 import numpy as np
 from typing import Optional, Tuple
 
+
+EMBEDDING_REGISTRY = {
+    "value": TimeSeriesValueEmbedding,
+    "positional_sinusoidal": TimeSeriesSinusoidalPositionalEmbedding,
+    # Add others like "learned_positional", "categorical", etc.
+}
+
+
 class BaseEmbedding(nn.Module):
     """Base class for embedding layers to ensure generalization across different types."""
     
@@ -59,5 +67,30 @@ class TimeSeriesValueEmbedding(BaseEmbedding):
 
     
 
-    # FeatureEmbedder tht can be call in encoders, decoders etc
-    # TimeSeriesEmbedding that can be call in that same vein
+class AutoTimeSeriesEmbedding:
+    @staticmethod
+    def from_config(
+        config: BaseTimeSeriesConfig,
+        embedding_type: str = "value",
+        **kwargs
+    ):
+        embedding_cls = EMBEDDING_REGISTRY.get(embedding_type)
+        if embedding_cls is None:
+            raise ValueError(f"Unknown embedding type '{embedding_type}'. Available: {list(EMBEDDING_REGISTRY.keys())}")
+
+        # Filter kwargs by class signature
+        sig = inspect.signature(embedding_cls.__init__)
+        accepted_keys = set(sig.parameters.keys()) - {"self"}
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_keys}
+
+        # Add common values from config if not explicitly passed
+        if "d_model" in accepted_keys and "d_model" not in filtered_kwargs:
+            filtered_kwargs["d_model"] = config.hidden_size
+        if "embedding_dim" in accepted_keys and "embedding_dim" not in filtered_kwargs:
+            filtered_kwargs["embedding_dim"] = config.hidden_size
+        if "feature_size" in accepted_keys and "feature_size" not in filtered_kwargs:
+            filtered_kwargs["feature_size"] = getattr(config, "feature_size", None)
+        if "num_positions" in accepted_keys and "num_positions" not in filtered_kwargs:
+            filtered_kwargs["num_positions"] = config.context_length + config.prediction_length
+
+        return embedding_cls(**filtered_kwargs)
