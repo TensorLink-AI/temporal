@@ -36,12 +36,6 @@ def expand_mask(
     inverted_mask = (1.0 - expanded_mask) * -1e9
     return inverted_mask
 
-
-import BaseTimeSeriesConfig
-
-
-
-
 class BaseMultiHeadAttention(nn.Module):
     def __init__(
         self,
@@ -169,7 +163,7 @@ class BaseMultiHeadAttention(nn.Module):
             return attn_output, None, present_key_value
 
 
-class TimeSeriesAttention(BaseMultiHeadAttention):
+class DotProductAttention(BaseMultiHeadAttention):
     """
     Standard Multi-Head Attention for Time Series data.
     Inherits logic from BaseAttention, but sets up from config.
@@ -184,42 +178,98 @@ class TimeSeriesAttention(BaseMultiHeadAttention):
         )
 
 
-ATTENTION_REGISTRY = {
-    "timeseries": TimeSeriesAttention,
-    # "custom": MyCustomAttention,
-}
 
-import inspect
+class FlashAttentionMultiHeadAttention(BaseMultiHeadAttention):
+    """
+    Multi-head attention using FlashAttention for a fused, efficient
+    matmul+softmax+dropout kernel. 
+    - Does *not* show cross-attention or outputting attention weights 
+      (which is trickier to do with FlashAttention).
+    - Minimal example to illustrate the approach.
+    """
 
-class AutoTimeSeriesAttention:
-    @staticmethod
-    def from_config(
-        config: BaseTimeSeriesConfig,
-        attention_context: str = "self",  # could be "self", "cross", "encoder"
-        **kwargs
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        key_value_states: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        output_attentions: bool = False,
     ):
-        attention_type = getattr(config, "attention_type", "base")
-        attention_cls = ATTENTION_REGISTRY.get(attention_type)
+        if flash_attn_func is None:
+            raise ImportError("flash_attn is not installed or could not be imported.")
 
-        if attention_cls is None:
-            raise ValueError(f"Unknown attention_type '{attention_type}'. Available: {list(ATTENTION_REGISTRY.keys())}")
+        bsz, tgt_len, _ = hidden_states.size()
+        is_cross_attention = key_value_states is not None
 
-        # Extract only valid kwargs
-        sig = inspect.signature(attention_cls.__init__)
-        accepted_keys = set(sig.parameters.keys()) - {"self"}
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_keys}
+        # 1) Project Q, K, V
+        query_states = self.q_proj(hidden_states) * self.scaling
+        if is_cross_attention:
+            key_states = self.k_proj(key_value_states)
+            value_states = self.v_proj(key_value_states)
+        else:
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
 
-        # Add derived arguments
-        is_decoder = (attention_context in ["self", "cross"])
-        is_cross_attention = (attention_context == "cross")
+        # 2) Reshape => [B, T, H, D]
+        query_states = self._shape(query_states, tgt_len, bsz)
+        key_states = self._shape(key_states, -1, bsz)
+        value_states = self._shape(value_states, -1, bsz)
 
-        return attention_cls(
-            embed_dim=config.hidden_size,
-            num_heads=config.num_attention_heads,
-            dropout=config.attention_dropout,
-            is_decoder=is_decoder,
-            is_cross_attention=is_cross_attention,
-            bias=True,
-            **filtered_kwargs,
+        # 3) Past key-value
+        # Note: Handling past_key_value caching with FlashAttention is non-trivial
+        # because FlashAttn expects contiguous segments. This snippet omits that.
+        present_key_value = None
+        if past_key_value is not None:
+            raise NotImplementedError(
+                "past_key_value + FlashAttention not fully implemented in this snippet."
+            )
+
+        # 4) If you have an attention mask, convert it to a boolean or additive mask
+        #    that FlashAttention supports. For standard "padding" masks, FlashAttention
+        #    can handle them via `flash_attn_func` arguments or by zeroing out Q/K as needed.
+        #    Typically it wants shape [B, T] or a causal flag. We'll do a minimal check:
+        causal = False  # set True if you want causal (decoder) attention
+        if attention_mask is not None:
+            # Often you pass a boolean key_padding_mask or a block mask to flash_attn_func.
+            # If it's an additive mask, you'd need to convert it. Minimal example:
+            # shape => [B, 1, T_q, T_k], 0 => keep, -1e9 => mask
+            # We'll just say if there's any -1e9, we treat that token as "masked."
+            bool_mask = (attention_mask >= 0).squeeze(1)  # => [B, T_q, T_k]
+        else:
+            bool_mask = None
+
+        # 5) Transpose for FlashAttn => [B, T, H, D] is usually accepted directly by flash_attn_func.
+        #    (Check your version if it needs [B, H, T, D].)
+
+        # 6) Call fused flash attention
+        #    dropout_p => typically the same as self.dropout (in training mode).
+        #    softmax_scale => optional, can set to self.scaling if you want:
+        #                     scale = 1.0 / math.sqrt(self.head_dim)
+        attn_output = flash_attn_func(
+            query_states,
+            key_states,
+            value_states,
+            dropout_p=self.dropout if self.training else 0.0,
+            softmax_scale=None,   # or 1.0 / math.sqrt(self.head_dim)
+            causal=causal,
+            key_padding_mask=bool_mask,  # If using a padding mask
         )
-        
+        # attn_output => [B, T, H, D]
+
+        # 7) Reshape => [B, T, H, D] -> [B, T, H*D]
+        attn_output = attn_output.reshape(bsz, tgt_len, self.num_heads * self.head_dim)
+        attn_output = self.out_proj(attn_output)
+
+        # 8) [Optional] head_mask not trivially integrated into flash_attn. 
+        #    Typically you'd have to re-implement a portion of the kernel or do a separate pass.
+
+        # 9) Return 
+        #    FlashAttention doesn't natively return attn_probs. 
+        #    Some advanced variants let you extract them, but that undermines memory savings.
+        if output_attentions:
+            # Not straightforward to get attn_probs from flash_attn without extra overhead.
+            return attn_output, None, present_key_value
+        else:
+            return attn_output, None, present_key_value
