@@ -87,3 +87,64 @@ class TimeSeriesLoss(BaseLoss):
             loss = losses.mean()
 
         return loss
+
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class GaussianNLLLoss(nn.Module):
+    """
+    Computes the negative log-likelihood of a Gaussian distribution
+    where the model predicts mean and log-variance (logσ²) or log-std.
+
+    Inputs:
+        preds: Tensor of shape [B, T, 2] = [μ, logσ]
+        targets: Tensor of shape [B, T] or [B, T, 1]
+    Returns:
+        scalar loss (mean across batch and time)
+    """
+
+    def __init__(self, reduction="mean", log_sigma=True):
+        super().__init__()
+        self.reduction = reduction
+        self.log_sigma = log_sigma
+
+    def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        mu, log_sigma = preds.unbind(dim=-1)  # [B, T]
+        sigma = F.softplus(log_sigma) + 1e-3  # ensure positive std
+
+        # Gaussian NLL: 0.5 * ((y - μ)² / σ² + log σ²)
+        nll = 0.5 * ((targets - mu) ** 2 / (sigma ** 2)) + torch.log(sigma)
+
+        if self.reduction == "mean":
+            return nll.mean()
+        elif self.reduction == "sum":
+            return nll.sum()
+        else:
+            return nll  # no reduction
+
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class TDistributionLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, preds, targets):
+        # preds: [B, T, 3] => μ, log(σ), log(ν)
+        mu, log_sigma, log_nu = preds.unbind(dim=-1)
+        sigma = F.softplus(log_sigma) + 1e-3  # Ensure positivity
+        nu = F.softplus(log_nu) + 2.0         # ν > 2 for finite variance
+
+        # Compute the negative log-likelihood
+        term1 = torch.lgamma((nu + 1) / 2) - torch.lgamma(nu / 2)
+        term2 = -0.5 * torch.log(nu * torch.pi * sigma ** 2)
+        term3 = -((nu + 1) / 2) * torch.log(1 + ((targets - mu) ** 2) / (nu * sigma ** 2))
+        nll = -(term1 + term2 + term3)
+        return nll.mean()

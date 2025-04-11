@@ -7,6 +7,9 @@ MODULE_REGISTRY = {
     "head_agg": {},
     "normalization": {},
     "loss": {},
+    "block": {},
+    "output_head": {},  # ✅ NEW
+
 }
 
 def register_module(kind: str, name: str):

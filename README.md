@@ -1,32 +1,59 @@
 ⏳ Temporal: A Modern Time Series Foundation Model Toolkit
-Temporal is a modular, flexible, and extensible deep learning framework for building foundation models for time series data. Inspired by Hugging Face’s transformers, Temporal provides a clean, unified interface for developing, training, and deploying powerful time series transformer models — with full support for probabilistic forecasting, autoregressive decoding, dynamic features, and advanced output head aggregation strategies.
+Temporal is a modular, extensible deep learning framework for building next-generation foundation models for time series data. Inspired by Hugging Face’s transformers, Temporal offers a clean, registry-based interface for designing, training, and deploying powerful time series models — with full support for distributional outputs, autoregressive decoding, Monte Carlo dropout ensembles, and custom hybrid attention mechanisms.
 
-Whether you're building models for finance, forecasting, anomaly detection, or real-world sensor data, Temporal aims to be your go-to foundation.
+Whether you're working in finance, energy, healthcare, sensors, or any other temporal domain, Temporal is built to be your go-to foundation for general-purpose time series modeling.
 
 ✨ Key Features
-🧠 Encoder-decoder architecture designed for time series prediction tasks.
+🧱 Block-based Transformer Architecture
+Build encoder-decoder or decoder-only models with modular blocks composed of attention, FFN, normalization, and hybrid structures.
 
-📈 Autoregressive inference with caching and flexible forecast horizons.
+🧠 Registry-First Modular Design
+Every component — attention, block, head, embedding, loss — is registered and dynamically resolved from config.
 
-📊 Quantile and point forecasting with hybrid and composable loss functions.
+📐 Hybrid Multi-Head Attention with Custom Fusion
+Assign different attention types (dot, sparse, wavelet) to each head and fuse with SE, attention, mean, or gated mechanisms.
 
-🧩 Pluggable output head aggregation (mean, attention, fusion, weighted, stacked, etc.).
+🔁 Autoregressive & Multistep Decoding
+Easily switch between .generate(), .generate_multistep(), and .forward() with full support for causal masks and caching.
 
-🔧 Fully configurable with TimeSeriesConfig and from_pretrained() style loading.
+🎯 Monte Carlo Dropout Ensembles
+Perform stochastic inference at test time by enabling dropout for empirical ensemble sampling and uncertainty quantification.
 
-🧪 Modular components: attention mechanisms, embeddings, losses, aggregators.
+📊 Distributional Output Heads
+Swap in Linear, MultiQuantile, Gaussian, or TDistribution heads and automatically receive the matching loss (e.g., CRPS, NLL, quantile).
 
-🚀 Ready for large-scale, general-purpose time series foundation models.
+🔄 Flexible Output Head Aggregation
+Fuse outputs from multiple output heads using registered aggregation strategies (e.g., mean, head2head, moe, low_rank).
+
+🧪 Fully Configurable via JSON or Code
+Drive your entire model via TransformerTimeSeriesConfig — with structured subconfigs for attention, heads, loss, and architecture.
+
+💾 FromPretrained + Serialization
+Save models, config, and training metadata with .save_pretrained() and reload them with .from_pretrained().
 
 🔨 Example Use Cases
-Forecasting electricity demand
+🔋 Forecasting electricity demand or load balancing
 
-Predicting crypto/futures prices
+📈 Predicting asset prices or futures spreads
 
-Modeling sensor or health data
+🩺 Modeling patient health data or hospital readmission risk
 
-*Learning residuals and dynamic regimes
+🛠️ Monitoring sensors in industrial IoT environments
 
-Time series data augmentation via generative modeling
+💡 Learning residual signals or latent temporal regimes
 
+🧪 Generating synthetic time series for augmentation
 
+🚀 Get Started
+bash
+Copy
+Edit
+pip install temporal  # or your package name
+python
+Copy
+Edit
+from temporal.models import build_time_series_transformer
+from temporal.configs import TransformerTimeSeriesConfig
+
+config = TransformerTimeSeriesConfig(...)
+model = build_time_series_transformer(config)

@@ -45,6 +45,17 @@ class AttentionConfig:
             kwargs=d.get("kwargs", {})
         )
 
+class OutputHeadConfig:
+    def __init__(self, type="linear", kwargs=None):
+        self.type = type
+        self.kwargs = kwargs or {}
+
+    def to_dict(self):
+        return {"type": self.type, "kwargs": self.kwargs}
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(type=d.get("type", "linear"), kwargs=d.get("kwargs", {}))
 
 class TransformerAttentionBlockConfig:
     def __init__(self, encoder_attention=None, decoder_attention=None, decoder_cross_attention=None):
@@ -176,6 +187,8 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         attention_blocks=None,
         embedding_config=None,
         feedforward_config=None,
+        outputhead_config=None,
+        block_configs=None,
         norm_config=None,
         head_agg_config=None,
         hidden_size=64,
@@ -183,7 +196,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         num_quantiles=3,
         output_attentions=False,
         output_hidden_states=False,
-        use_teacher_forcing: bool = True
+        use_teacher_forcing: bool = True,
 
         **kwargs
     ):
@@ -195,7 +208,8 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.feedforward_config = feedforward_config or FeedForwardConfig()
         self.norm_config = norm_config or NormalizationConfig()
         self.head_agg_config = head_agg_config or HeadAggregationConfig()
-
+        self.block_configs=  block_configs or TransformerBlockConfig()
+        self.output_head_config = output_head_config or OutputHeadConfig()
         self.hidden_size = hidden_size
         self.output_token_lengths = output_token_lengths
         self.num_quantiles = num_quantiles
@@ -239,5 +253,51 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
                     num_heads=d["num_attention_heads"]
                 )
             )
+        )
+
+    def to_dict(self):
+    return {
+        "architecture": self.architecture.to_dict(),
+        "attention_blocks": self.attention_blocks.to_dict(),
+        "embedding_config": self.embedding_config.to_dict(),
+        "feedforward_config": self.feedforward_config.to_dict(),
+        "norm_config": self.norm_config.to_dict(),
+        "head_agg_config": self.head_agg_config.to_dict(),
+        "block_configs": self.block_configs.to_dict() if isinstance(self.block_configs, TransformerBlockConfig) else [b.to_dict() for b in self.block_configs],
+        "output_head_config": self.output_head_config.to_dict(),
+        "hidden_size": self.hidden_size,
+        "output_token_lengths": self.output_token_lengths,
+        "num_quantiles": self.num_quantiles,
+        "output_attentions": self.output_attentions,
+        "output_hidden_states": self.output_hidden_states,
+        "use_teacher_forcing": self.use_teacher_forcing,
+        **super().to_dict()  # if BaseTimeSeriesConfig defines anything
+    }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            architecture=TransformerArchitectureConfig.from_dict(d["architecture"]),
+            attention_blocks=TransformerAttentionBlockConfig.from_dict(d["attention_blocks"]),
+            embedding_config=EmbeddingConfig.from_dict(d["embedding_config"]),
+            feedforward_config=FeedForwardConfig.from_dict(d["feedforward_config"]),
+            norm_config=NormalizationConfig.from_dict(d["norm_config"]),
+            head_agg_config=HeadAggregationConfig.from_dict(d["head_agg_config"]),
+            output_head_config=OutputHeadConfig.from_dict(d["output_head_config"]),
+            block_configs=[
+                TransformerBlockConfig.from_dict(b) for b in d["block_configs"]
+            ] if isinstance(d.get("block_configs"), list) else TransformerBlockConfig.from_dict(d["block_configs"]),
+            hidden_size=d["hidden_size"],
+            output_token_lengths=d["output_token_lengths"],
+            num_quantiles=d["num_quantiles"],
+            output_attentions=d["output_attentions"],
+            output_hidden_states=d["output_hidden_states"],
+            use_teacher_forcing=d.get("use_teacher_forcing", True),
+            **{k: v for k, v in d.items() if k not in {
+                "architecture", "attention_blocks", "embedding_config", "feedforward_config",
+                "norm_config", "head_agg_config", "output_head_config", "block_configs",
+                "hidden_size", "output_token_lengths", "num_quantiles",
+                "output_attentions", "output_hidden_states", "use_teacher_forcing"
+            }}
         )
 

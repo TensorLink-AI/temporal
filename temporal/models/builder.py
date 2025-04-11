@@ -4,9 +4,9 @@ from temporal.registry.core import resolve
 from temporal.registry.generate import resolve_generate
 from temporal.models.base_model import BaseTimeSeriesModel
 from temporal.models.block_builder import BlockBuilder
+from temporal.models.output_head_builder import OutputHeadBuilder
 from temporal.modules.encoders.transformer_encoder import TimeSeriesTransformerEncoder
 from temporal.modules.decoders.transformer_decoder import TimeSeriesTransformerDecoder
-from temporal.modules.loss import TimeSeriesLoss
 from temporal.configs.transformer_config import TransformerTimeSeriesConfig
 from temporal.configs.subconfigs import (
     AttentionConfig,
@@ -129,21 +129,16 @@ def build_time_series_transformer(
                 "Consider adding a projection layer or aligning hidden sizes."
             )
 
-    # === Output heads + loss ===
-    output_heads = nn.ModuleList([
-        nn.Linear(config.hidden_size, config.num_quantiles)
-        for _ in range(config.output_token_lengths)
-    ])
-    
-    head_aggregator = builder.build_head_aggregator()
-    loss_fn = TimeSeriesLoss(config, loss_type=config.loss_type)
+    # === Output head + matching loss ===
+    output_head_builder = OutputHeadBuilder(config)
+    output_head, loss_fn = output_head_builder.build()
 
+    # === Construct model ===
     model = BaseTimeSeriesModel(
         config=config,
         encoder=encoder,
         decoder=decoder,
-        output_heads=output_heads,
-        head_aggregator=head_aggregator,
+        output_head=output_head,
         loss_fn=loss_fn,
     )
 
