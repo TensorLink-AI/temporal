@@ -8,7 +8,7 @@ from temporal.models.output_head_builder import OutputHeadBuilder
 from temporal.modules.encoders.transformer_encoder import TimeSeriesTransformerEncoder
 from temporal.modules.decoders.transformer_decoder import TimeSeriesTransformerDecoder
 from temporal.configs.transformer_config import TransformerTimeSeriesConfig
-from temporal.configs.subconfigs import (
+from temporal.configs.transformer_config import (
     AttentionConfig,
     FeedForwardConfig,
     EmbeddingConfig,
@@ -17,12 +17,11 @@ from temporal.configs.subconfigs import (
     TransformerBlockConfig,
 )
 
-
 class ModuleBuilder:
     def __init__(self, config):
         self.config = config
 
-    def build_attention(self, attn_cfg: AttentionConfig):
+    def build_attention(self, attn_cfg):
         cls = resolve("attention", attn_cfg.attention_type)
         return cls(
             embed_dim=self.config.hidden_size,
@@ -31,8 +30,8 @@ class ModuleBuilder:
             **attn_cfg.kwargs,
         )
 
-    def build_feedforward(self):
-        cfg: FeedForwardConfig = self.config.feedforward_config
+    def build_feedforward(self, ffn_cfg=None):
+        cfg = ffn_cfg or self.config.feedforward_config
         cls = resolve("feedforward", cfg.type)
         return cls(
             hidden_size=self.config.hidden_size,
@@ -42,8 +41,8 @@ class ModuleBuilder:
             **cfg.kwargs,
         )
 
-    def build_embedding(self):
-        cfg: EmbeddingConfig = self.config.embedding_config
+    def build_value_embedding(self):
+        cfg = self.config.value_embedding_config
         cls = resolve("embedding", cfg.type)
         return cls(
             input_size=self.config.feature_size,
@@ -52,14 +51,30 @@ class ModuleBuilder:
             **cfg.kwargs,
         )
 
-    def build_head_aggregator(self):
-        cfg: HeadAggregationConfig = self.config.head_agg_config
-        cls = resolve("head_agg", cfg.type)
+    def build_positional_embedding(self):
+        cfg = self.config.positional_embedding_config
+        cls = resolve("embedding", cfg.type)
         return cls(
-            hidden_size=self.config.hidden_size,
-            num_heads=self.config.output_token_lengths,
-            output_size=self.config.num_quantiles,
+            num_positions=self.config.context_length + self.config.prediction_length,
+            embedding_dim=self.config.hidden_size,
             **cfg.kwargs,
+        )
+
+
+    def build_head_aggregator(self):
+        cfg = self.config.head_agg_config
+        cls = resolve("head_agg", cfg.type)
+
+        # Determine input size = output head output size
+        output_size = self.config.output_head_config.output_size
+        if output_size is None:
+            raise ValueError("output_head_config.output_size must be set to build head aggregator.")
+
+        return cls(
+            input_size=output_size,  # Q
+            num_heads=self.config.output_token_lengths,
+            output_size=output_size,  # Optional for some aggregators
+            **cfg.kwargs
         )
 
     def build_normalization(self):
@@ -68,83 +83,55 @@ class ModuleBuilder:
         return cls(eps=cfg.eps, normalized_shape=self.config.hidden_size)
 
 
-def build_time_series_transformer(
-    config: TransformerTimeSeriesConfig,
-    generate_strategy: str = None
-) -> BaseTimeSeriesModel:
+def build_time_series_transformer(config, generate_strategy=None):
+    if hasattr(config, "validate_config"):
+        config.validate_config()  # ✅ fail-fast if invalid
+    else:
+        raise ValueError("Config object does not implement validate_config()")
     builder = ModuleBuilder(config)
     block_builder = BlockBuilder(config, builder)
-
-    # === Create block configs if not already present ===
-    if not hasattr(config, "encoder_blocks"):
-        config.encoder_blocks = [
-            TransformerBlockConfig(
-                block_type="default_encoder",
-                attention_config=config.attention_blocks.encoder_attention,
-                ffn_config=config.feedforward_config,
-            ) for _ in range(config.architecture.num_encoder_layers)
-        ]
-
-    if not hasattr(config, "decoder_blocks"):
-        config.decoder_blocks = [
-            TransformerBlockConfig(
-                block_type="default_decoder",
-                attention_config=config.attention_blocks.decoder_attention,
-                ffn_config=config.feedforward_config,
-                kwargs={"cross_attention_config": config.attention_blocks.decoder_cross_attention}
-            ) for _ in range(config.architecture.num_decoder_layers)
-        ]
+    output_head_builder = OutputHeadBuilder(config)
 
     # === Encoder ===
     encoder = None
-    encoder_output_dim = config.hidden_size
     if config.architecture.layout in ("encoder", "encoder-decoder"):
+        if not getattr(config, "encoder_blocks", None):
+            raise ValueError("Missing encoder_blocks in config")
         encoder = TimeSeriesTransformerEncoder(
             config=config,
             builder=builder,
             block_configs=config.encoder_blocks
         )
-        if hasattr(encoder, "output_dim"):
-            encoder_output_dim = encoder.output_dim
 
     # === Decoder ===
     decoder = None
-    decoder_input_dim = config.hidden_size
     if config.architecture.layout in ("decoder", "encoder-decoder"):
+        if not getattr(config, "decoder_blocks", None):
+            raise ValueError("Missing decoder_blocks in config")
         decoder = TimeSeriesTransformerDecoder(
             config=config,
             builder=builder,
             block_configs=config.decoder_blocks
         )
-        if hasattr(decoder, "input_dim"):
-            decoder_input_dim = decoder.input_dim
 
-    # === Compatibility check
-    if encoder and decoder:
-        if encoder_output_dim != decoder_input_dim:
-            raise ValueError(
-                f"[build] Encoder and decoder hidden size mismatch:\n"
-                f"    encoder output dim: {encoder_output_dim}\n"
-                f"    decoder input dim:  {decoder_input_dim}\n"
-                "Consider adding a projection layer or aligning hidden sizes."
-            )
-
-    # === Output head + matching loss ===
-    output_head_builder = OutputHeadBuilder(config)
+    # === Output head + loss
     output_head, loss_fn = output_head_builder.build()
 
-    # === Construct model ===
-    model = BaseTimeSeriesModel(
+    # === Head aggregator (optional)
+    head_aggregator = None
+    if config.output_token_lengths > 1:
+        head_aggregator = builder.build_head_aggregator()
+
+    # === Determine final model class from model_type (safe dispatch)
+    model_cls = resolve_generate(config.model_type) if generate_strategy is None else resolve_generate(generate_strategy)
+
+    model = model_cls(
         config=config,
         encoder=encoder,
         decoder=decoder,
         output_head=output_head,
         loss_fn=loss_fn,
+        head_aggregator=head_aggregator
     )
-
-    # === Inject .generate() behavior if needed ===
-    if generate_strategy is not None:
-        wrapper_cls = resolve_generate(generate_strategy)
-        model.__class__ = wrapper_cls
 
     return model

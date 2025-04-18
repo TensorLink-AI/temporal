@@ -1,31 +1,40 @@
 from temporal.registry.core import resolve
+import inspect
+from temporal.registry.core import resolve
 
 
 class BlockBuilder:
-    def __init__(self, config, module_builder):
+    def __init__(self, config, builder):
         self.config = config
-        self.builder = module_builder
+        self.builder = builder
 
     def build_block(self, block_cfg):
         block_type = block_cfg.block_type
         block_cls = resolve("block", block_type)
 
-        # Use dynamic dispatch based on class signature
+        # Introspect constructor to safely map arguments
+        sig = inspect.signature(block_cls.__init__)
+        accepted = set(sig.parameters.keys()) - {"self"}
+
         init_kwargs = {}
 
-        if "attention" in block_cls.__init__.__code__.co_varnames:
+        # === Attention
+        if "attention" in accepted:
             init_kwargs["attention"] = self.builder.build_attention(block_cfg.attention_config)
 
-        if "ffn" in block_cls.__init__.__code__.co_varnames and block_cfg.ffn_config:
-            init_kwargs["ffn"] = self.builder.build_feedforward()
+        # === FFN
+        if "ffn" in accepted and block_cfg.ffn_config is not None:
+            init_kwargs["ffn"] = self.builder.build_feedforward(block_cfg.ffn_config)
 
-        if "norm_fn" in block_cls.__init__.__code__.co_varnames:
+        # === Norm
+        if "norm_fn" in accepted:
             init_kwargs["norm_fn"] = self.builder.build_normalization
 
-        if "config" in block_cls.__init__.__code__.co_varnames:
-            init_kwargs["config"] = self.config
-
-        # Add kwargs from config
-        init_kwargs.update(block_cfg.kwargs or {})
+        # === Pass extra block-specific kwargs (e.g., for EffiTime, Hybrid, etc.)
+        if "kwargs" in accepted:
+            init_kwargs["kwargs"] = block_cfg.kwargs
+        else:
+            init_kwargs.update(block_cfg.kwargs)
 
         return block_cls(**init_kwargs)
+

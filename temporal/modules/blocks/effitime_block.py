@@ -36,8 +36,16 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
 
         # TLDC
         self.dw_conv = nn.Conv1d(embed_dim, embed_dim, kernel_size, padding=kernel_size // 2, groups=embed_dim)
-        self.dwd_conv = nn.Conv1d(embed_dim, embed_dim, kernel_size=(kernel_size + 1) // dilation,
-                                  padding=dilation, dilation=dilation, groups=embed_dim)
+        effective_kernel = (kernel_size - 1) * dilation + 1
+        correct_padding = (effective_kernel - 1) // 2
+        self.dwd_conv = nn.Conv1d(
+            self.d_model, self.d_model,
+            kernel_size=kernel_size,
+            padding=correct_padding,
+            dilation=dilation,
+            groups=self.d_model
+        )
+
         self.pw_conv = nn.Conv1d(embed_dim, embed_dim, kernel_size=1)
 
         # SE
@@ -73,7 +81,7 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         # [3] Dual SE
         t_pool = F.adaptive_avg_pool1d(x_pw, 1).squeeze(-1)
         t_attn = self.sigmoid(self.temporal_fc2(self.relu(self.temporal_fc1(t_pool)))).unsqueeze(-1)
-        c_pool = F.adaptive_avg_pool1d(x_pw.transpose(1, 2), 1).squeeze(-1)
+        c_pool = F.adaptive_avg_pool1d(x_pw, 1).squeeze(-1)  # [B, D]
         c_attn = self.sigmoid(self.channel_fc2(self.relu(self.channel_fc1(c_pool)))).unsqueeze(-1)
         x_mod = self.sigmoid(x_pw * t_attn * c_attn).transpose(1, 2)
 
@@ -90,6 +98,6 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         )
 
         # [6] Feedback modulation
-        out = self.norm_attn(residual * attn_out)
+        out = self.norm_attn(residual + attn_out)
 
         return out, attn_probs, present_kv

@@ -34,14 +34,12 @@ class BaseTemporalModel(nn.Module):
             json.dump(self.config.to_dict(), f, indent=2)
 
     @classmethod
-    def from_pretrained(cls, load_path: str, config_cls):
-        config_path = os.path.join(load_path, "config.json")
-        weights_path = os.path.join(load_path, "pytorch_model.bin")
+    def from_pretrained(cls, path: str, config_cls=None):
+        with open(os.path.join(path, "config.json"), "r") as f:
+            config_dict = json.load(f)
+        config = config_cls.from_dict(config_dict) if config_cls else config_dict
 
-        with open(config_path, "r") as f:
-            config = config_cls.from_dict(json.load(f))
-
-        from temporal.models.builder import build_time_series_transformer
-        model = build_time_series_transformer(config)
-        model.load_state_dict(torch.load(weights_path, map_location="cpu"))
+        model = cls(config)  # ✅ This is the key fix: use cls, not a builder
+        model.load_state_dict(torch.load(os.path.join(path, "pytorch_model.bin")))
         return model
+

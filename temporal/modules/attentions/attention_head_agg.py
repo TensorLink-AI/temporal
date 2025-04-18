@@ -19,15 +19,19 @@ class MeanAggregator(nn.Module):
 # =========================
 @register_module("head_agg", "gated")
 class GatedAggregator(nn.Module):
-    def __init__(self, hidden_size: int, **kwargs):
+    def __init__(self, input_size: int):
         super().__init__()
-        self.gate = nn.Linear(hidden_size, 1)
+        self.gate = nn.Linear(input_size, 1)
 
-    def forward(self, head_outputs: List[torch.Tensor]) -> torch.Tensor:
-        stacked = torch.stack(head_outputs, dim=0)
-        gates = torch.stack([self.gate(h) for h in head_outputs], dim=0)
-        weights = torch.sigmoid(gates)
-        return (stacked * weights).sum(dim=0) / (weights.sum(dim=0) + 1e-8)
+    def forward(self, head_outputs: list[torch.Tensor]) -> torch.Tensor:
+        # Each head: [B, T, Q]
+        gated = []
+        for h in head_outputs:
+            w = torch.sigmoid(self.gate(h))  # [B, T, 1]
+            gated.append(h * w)
+        stacked = torch.stack(gated, dim=0)  # [H, B, T, Q]
+        return stacked.sum(dim=0)  # [B, T, Q]
+
 
 
 # =========================
@@ -74,47 +78,43 @@ class SEAggregator(nn.Module):
 # =========================
 @register_module("head_agg", "moe")
 class MoEAggregator(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, moe_hidden_size: int = 64, **kwargs):
+    def __init__(self, input_size: int, hidden_size: int = 64):
         super().__init__()
         self.gate_net = nn.Sequential(
-            nn.Linear(hidden_size, moe_hidden_size),
+            nn.Linear(input_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(moe_hidden_size, 1)
+            nn.Linear(hidden_size, 1)
         )
-        self.softmax = nn.Softmax(dim=0)
 
-    def forward(self, head_outputs: List[torch.Tensor]) -> torch.Tensor:
-        stacked = torch.stack(head_outputs, dim=0)  # (H, B, T, Q)
-        gating = []
+    def forward(self, head_outputs: list[torch.Tensor]) -> torch.Tensor:
+        # [H, B, T, Q] → gate over heads
+        scores = []
         for h in head_outputs:
-            h_mean = h.mean(dim=-1, keepdim=True)
-            g = self.gate_net(h_mean)
-            gating.append(g)
-        gating = torch.stack(gating, dim=0)         # (H, B, T, 1)
-        weights = self.softmax(gating)
-        return (stacked * weights).sum(dim=0)
+            mean_h = h.mean(dim=-1, keepdim=True)  # [B, T, 1]
+            gate = self.gate_net(mean_h)  # [B, T, 1]
+            scores.append(gate)
+        weights = torch.softmax(torch.stack(scores, dim=0), dim=0)  # [H, B, T, 1]
+        stacked = torch.stack(head_outputs, dim=0)  # [H, B, T, Q]
+        return (weights * stacked).sum(dim=0)  # [B, T, Q]
 
         # =========================
 # Head2Head Aggregator
 # =========================
 @register_module("head_agg", "head2head")
 class Head2HeadAggregator(nn.Module):
-    def __init__(self, hidden_size: int, aggregator_attn_heads: int = 4, **kwargs):
+    def __init__(self, input_size: int, num_heads: int = 4):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.attn = nn.MultiheadAttention(
-            embed_dim=hidden_size,
-            num_heads=aggregator_attn_heads,
-            batch_first=True
-        )
+        self.attn = nn.MultiheadAttention(embed_dim=input_size, num_heads=num_heads, batch_first=True)
 
-    def forward(self, head_outputs: List[torch.Tensor]) -> torch.Tensor:
-        # stacked: (H, B, T, Q)
-        H, B, T, Q = torch.stack(head_outputs, dim=0).shape
-        x = torch.stack(head_outputs, dim=0).permute(1, 2, 0, 3).reshape(B * T, H, Q)  # (B*T, H, Q)
-        out, _ = self.attn(x, x, x)  # self-attention over heads
-        out = out.mean(dim=1)        # average over heads
-        return out.view(B, T, Q)
+    def forward(self, head_outputs: list[torch.Tensor]) -> torch.Tensor:
+        # [H, B, T, Q] → [B*T, H, Q]
+        H, B, T, Q = len(head_outputs), *head_outputs[0].shape
+        x = torch.stack(head_outputs, dim=0)  # [H, B, T, Q]
+        x = x.permute(1, 2, 0, 3).reshape(B * T, H, Q)
+        attn_out, _ = self.attn(x, x, x)
+        out = attn_out.mean(dim=1).view(B, T, Q)
+        return out
+
 
 
 # =========================
@@ -151,3 +151,5 @@ class SmallMLPAggregator(nn.Module):
         H, B, T, Q = torch.stack(head_outputs, dim=0).shape
         fused = torch.stack(head_outputs, dim=0).permute(1, 2, 0, 3).reshape(B, T, H * Q)  # (B, T, H*Q)
         return self.mlp(fused)
+
+

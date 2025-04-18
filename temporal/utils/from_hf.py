@@ -1,45 +1,57 @@
+import os
 import torch
 from transformers import PreTrainedModel
-import os
+
+from temporal.configs.transformer_config import TransformerTimeSeriesConfig
+from temporal.models.builder import build_time_series_transformer
+
 
 class TimeSeriesTransformerModel(PreTrainedModel):
+    """
+    Hugging Face-compatible wrapper for loading a Temporal transformer model
+    from a local checkpoint (not from hub yet).
+    """
+    config_class = TransformerTimeSeriesConfig
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = build_time_series_transformer(config)
+
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
+
     @classmethod
     def from_pretrained(cls, model_path: str, config=None, device=None, **kwargs):
         """
-        Load a pretrained TimeSeriesTransformerModel from a checkpoint.
+        Load a model from a local checkpoint folder (containing config.json and pytorch_model.bin).
 
         Args:
-            model_path (str): Path to the model checkpoint or directory.
-            config (Optional[TimeSeriesConfig]): Configuration for the model.
-            device (Optional[str]): Device to load the model onto ('cpu' or 'cuda').
-            **kwargs: Additional arguments for fine-tuning or model overrides.
-
-        Returns:
-            TimeSeriesTransformerModel: The loaded model instance.
+            model_path: path to folder
+            config: optional pre-loaded config object
+            device: optional device to move model to
         """
-        if not os.path.exists(model_path):
-            raise ValueError(f"Model path {model_path} does not exist.")
+        if not os.path.isdir(model_path):
+            raise ValueError(f"{model_path} is not a valid directory.")
 
-        # Load configuration if provided, otherwise infer from checkpoint
+        # === Load config ===
+        config_path = os.path.join(model_path, "config.json")
         if config is None:
-            config_path = os.path.join(model_path, "config.json")
             if not os.path.exists(config_path):
-                raise ValueError(f"Config file not found in {config_path}. Provide a config manually.")
-            config = TimeSeriesConfig.from_json_file(config_path)
+                raise FileNotFoundError(f"config.json not found at {config_path}")
+            config = cls.config_class.from_json(config_path)
 
-        # Initialize model
+        # === Initialize model ===
         model = cls(config)
 
-        # Load state_dict from checkpoint
+        # === Load weights ===
         checkpoint_path = os.path.join(model_path, "pytorch_model.bin")
         if not os.path.exists(checkpoint_path):
-            raise ValueError(f"Checkpoint file not found in {checkpoint_path}")
+            raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+        state_dict = torch.load(checkpoint_path, map_location=device or "cpu")
+        model.load_state_dict(state_dict, strict=False)
 
-        state_dict = torch.load(checkpoint_path, map_location=torch.device(device or "cpu"))
-        model.load_state_dict(state_dict, strict=False)  # Allow missing keys in case of partial finetuning
-
-        # Move model to specified device
-        model.to(device or "cpu")
-        model.eval()  # Set model to evaluation mode
-
+        # === Finalize ===
+        if device is not None:
+            model = model.to(device)
+        model.eval()
         return model
