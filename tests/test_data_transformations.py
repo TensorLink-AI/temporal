@@ -2,7 +2,7 @@
 
 import pytest
 import torch
-from temporal.data.transformations import # Replace with actual transformations
+from temporal.data.transformations import t # Replace with actual transformations
 
 # Example test (replace with actual transformations and data)
 # def test_transformation_x():

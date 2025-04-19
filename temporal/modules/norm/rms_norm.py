@@ -3,11 +3,6 @@ import torch.nn as nn
 from temporal.registry.core import register_module
 
 
-@register_module("normalization", "rms")
-import torch
-import torch.nn as nn
-from temporal.registry.core import register_module
-
 
 @register_module("normalization", "rms")
 class RMSNorm(nn.Module):

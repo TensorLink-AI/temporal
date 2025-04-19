@@ -3,7 +3,7 @@
 import pytest
 import torch
 from temporal.losses.crps_loss_ensemble import crps_loss_ensemble
-from temporal.losses.loss_functions import # Replace with actual loss functions
+from temporal.losses.loss_functions import test # Replace with actual loss functions
 
 
 def test_crps_loss_ensemble():
