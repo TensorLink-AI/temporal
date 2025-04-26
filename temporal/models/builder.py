@@ -2,7 +2,7 @@ import torch.nn as nn
 
 from temporal.registry.core import resolve
 from temporal.registry.generate import resolve_generate
-from temporal.models.base_model import BaseTimeSeriesModel
+from temporal.models.base_model import BaseTemporalModel
 from temporal.models.block_builder import BlockBuilder
 from temporal.models.output_head_builder import OutputHeadBuilder
 from temporal.modules.encoders.transformer_encoder import TimeSeriesTransformerEncoder
@@ -141,7 +141,7 @@ class ModuleBuilder:
 def build_time_series_transformer(
     config: TransformerTimeSeriesConfig,
     generate_strategy: str = None
-) -> BaseTimeSeriesModel:
+) -> BaseTemporalModel:
     """
     Construct a full transformer-based time series model from configuration.
 
