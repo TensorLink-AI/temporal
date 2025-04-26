@@ -367,7 +367,7 @@ class HeadAggregationConfig:
 
         Returns:
             HeadAggregationConfig: New instance.
-        """\
+        """
         return cls(
             type=d.get("type", "mean"),
             kwargs=d.get("kwargs", {})
@@ -392,7 +392,7 @@ class NormalizationConfig:
 
         Returns:
             dict: Dictionary of normalization settings.
-        """\
+        """
         return {
             "norm_type": self.norm_type,
             "eps": self.eps
@@ -408,7 +408,7 @@ class NormalizationConfig:
 
         Returns:
             NormalizationConfig: New instance.
-        """\
+        """
         return cls(
             norm_type=d.get("norm_type", "layer"),
             eps=d.get("eps", 1e-5)
@@ -424,7 +424,7 @@ class TransformerBlockConfig:
         attention_config (AttentionConfig): Configuration for attention sublayer.
         ffn_config (FeedForwardConfig): Configuration for feed-forward sublayer.
         kwargs (dict): Additional arguments for the block.
-    """\
+    """
     def __init__(self, block_type="standard", attention_config=None, ffn_config=None, kwargs=None):
         self.block_type = block_type
         self.attention_config = attention_config
@@ -437,7 +437,7 @@ class TransformerBlockConfig:
 
         Returns:
             dict: Dictionary of block settings.
-        """\
+        """
         return {
             "block_type": self.block_type,
             "attention_config": self.attention_config.to_dict() if self.attention_config else None,
@@ -455,7 +455,7 @@ class TransformerBlockConfig:
 
         Returns:
             TransformerBlockConfig: New instance.
-        """\
+        """
         return cls(
             block_type=d.get("block_type", "standard"),
             attention_config=AttentionConfig.from_dict(d["attention_config"]) if d.get("attention_config") else None,
@@ -552,7 +552,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
 
         Returns:
             dict: A mapping of all config fields for serialization.
-        """\
+        """
         base = super().to_dict()
         own = {
             "architecture":                self.architecture.to_dict(),
@@ -584,7 +584,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
 
         Raises:
             AssertionError: If any setting is invalid or inconsistent.
-        """\
+        """
         # base checks (e.g. context_length, quantiles)  
         super().validate_config()
 
@@ -617,7 +617,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
 
         Returns:
             TransformerTimeSeriesConfig
-        """\
+        """
         # Ensure nested dictionaries are converted to config objects
         for key, config_cls in [
             ("architecture", TransformerArchitectureConfig),
