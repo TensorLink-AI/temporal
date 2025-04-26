@@ -4,7 +4,8 @@ import torch.nn.functional as F
 from transformers.modeling_outputs import BaseModelOutput
 from typing import Optional, List
 
-from temporal.models.builder import ModuleBuilder
+# Import ModuleBuilder from the new helper file
+from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.models.block_builder import BlockBuilder
 from temporal.configs.transformer_config import TransformerBlockConfig
 
