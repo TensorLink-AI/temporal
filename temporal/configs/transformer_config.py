@@ -501,50 +501,45 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         hidden_dropout_prob: float        = 0.1,
 
         **kwargs
-    ):
         """
-        Initialize a TransformerTimeSeriesConfig.
+    
+    # Assign transformer-specific attributes *before* calling super().__init__
+    self.architecture               = architecture or TransformerArchitectureConfig()
+    self.attention_blocks           = attention_blocks or TransformerAttentionBlockConfig()
+    self.value_embedding_config     = value_embedding_config or EmbeddingConfig(type="value")
+    self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
+    self.feedforward_config         = feedforward_config or FeedForwardConfig()
+    self.output_head_config         = output_head_config or OutputHeadConfig()
+    # Handle encoder_blocks and decoder_blocks
+    self.encoder_blocks = encoder_blocks
+    self.decoder_blocks = decoder_blocks
+    self.norm_config                = norm_config or NormalizationConfig()
+    self.head_agg_config            = head_agg_config or HeadAggregationConfig()
 
-        All base fields are initialized via super(), then transformer-specific
-        sub-configs and hyperparameters are set.
-        """
-        # Assign transformer-specific attributes *before* calling super().__init__
-        self.architecture               = architecture or TransformerArchitectureConfig()
-        self.attention_blocks           = attention_blocks or TransformerAttentionBlockConfig()
-        self.value_embedding_config     = value_embedding_config or EmbeddingConfig(type="value")
-        self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
-        self.feedforward_config         = feedforward_config or FeedForwardConfig()
-        self.output_head_config         = output_head_config or OutputHeadConfig()
-        # Handle encoder_blocks and decoder_blocks
-        self.encoder_blocks = encoder_blocks
-        self.decoder_blocks = decoder_blocks
-        self.norm_config                = norm_config or NormalizationConfig()
-        self.head_agg_config            = head_agg_config or HeadAggregationConfig()
+    self.hidden_size               = hidden_size
+    self.num_quantiles             = num_quantiles
+    self.output_attentions         = output_attentions
+    self.output_hidden_states      = output_hidden_states
+    self.use_teacher_forcing       = use_teacher_forcing
+    self.hidden_dropout_prob = hidden_dropout_prob
 
-        self.hidden_size               = hidden_size
-        self.num_quantiles             = num_quantiles
-        self.output_attentions         = output_attentions
-        self.output_hidden_states      = output_hidden_states
-        self.use_teacher_forcing       = use_teacher_forcing
-        self.hidden_dropout_prob = hidden_dropout_prob
+    # Initialize BaseTimeSeriesConfig fields
+    super().__init__(
+        feature_size=feature_size,
+        context_length=context_length,
+        prediction_length=prediction_length,
+        quantiles=quantiles,
+        output_token_lengths=output_token_lengths,
+        loss_type=loss_type,
+        use_dynamic_features=use_dynamic_features,
+        use_static_features=use_static_features,
+        autoregressive=autoregressive,
+        is_decoder=is_decoder,
+        **kwargs
+    )
 
-        # Initialize BaseTimeSeriesConfig fields
-        super().__init__(
-            feature_size=feature_size,
-            context_length=context_length,
-            prediction_length=prediction_length,
-            quantiles=quantiles,
-            output_token_lengths=output_token_lengths,
-            loss_type=loss_type,
-            use_dynamic_features=use_dynamic_features,
-            use_static_features=use_static_features,
-            autoregressive=autoregressive,
-            is_decoder=is_decoder,
-            **kwargs
-        )
-
-        # final consistency check
-        self.validate_config()
+    # final consistency check
+    self.validate_config()
 
     def to_dict(self) -> dict:
         """
