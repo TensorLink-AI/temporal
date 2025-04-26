@@ -5,8 +5,8 @@ from temporal.registry.generate import resolve_generate
 from temporal.models.base_model import BaseTemporalModel
 from temporal.models.block_builder import BlockBuilder
 from temporal.models.output_head_builder import OutputHeadBuilder
-from temporal.modules.encoders.transformer_encoder import TimeSeriesTransformerEncoder
-from temporal.modules.decoders.transformer_decoder import TimeSeriesTransformerDecoder
+from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
+from temporal.modules.decoders.decoders import TimeSeriesTransformerDecoder
 from temporal.configs.transformer_config import TransformerTimeSeriesConfig
 from temporal.configs.transformer_config import (
     AttentionConfig,
