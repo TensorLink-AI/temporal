@@ -178,10 +178,6 @@ class TimeSeriesIterableDataset(IterableDataset):
             print(f"Error in _process_item({idx}): {str(e)}")
             return []
 
-import torch
-import numpy as np
-from typing import List, Dict, Any
-
 
 def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     """

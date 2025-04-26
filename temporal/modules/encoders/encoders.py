@@ -1,16 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
-
-from temporal.models.builder import ModuleBuilder
-from temporal.models.block_builder import BlockBuilder  # ✅ use this
-from temporal.configs.transformer_block_config import TransformerBlockConfig
-
-import torch
-import torch.nn as nn
-from typing import Optional, List
 from transformers.modeling_outputs import BaseModelOutput
+from typing import Optional, List
 
 from temporal.models.builder import ModuleBuilder
 from temporal.models.block_builder import BlockBuilder

@@ -6,7 +6,7 @@ from typing import Optional, Tuple, List, Union
 
 from temporal.models.builder import ModuleBuilder
 from temporal.models.block_builder import BlockBuilder
-from temporal.configs.transformer_block_config import TransformerBlockConfig
+from temporal.configs.transformer_config import TransformerBlockConfig
 
 
 class TimeSeriesTransformerDecoder(nn.Module):
@@ -55,10 +55,10 @@ class TimeSeriesTransformerDecoder(nn.Module):
 
         # === Embedding ===
         # Embed raw float input features
-        hidden_states = self.value_embedding(input_values)  # [B, T, D]
+        hidden_states = self.value_embedding(input_ids)  # Corrected variable name from input_values to input_ids [B, T, D]
 
         # Generate sinusoidal position encoding based on shape
-        position_ids = torch.arange(input_values.shape[1], device=input_values.device).unsqueeze(0).expand(input_values.shape[0], -1)
+        position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0).expand(input_ids.shape[0], -1)
         pos_embed = self.positional_embedding(position_ids)  # [B, T, D]
 
         # Sum + norm + dropout

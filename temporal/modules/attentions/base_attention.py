@@ -6,6 +6,11 @@ from typing import Optional, Tuple
 
 from temporal.registry.core import register_module
 
+try:
+    from flash_attn.flash_attn_interface import flash_attn_func
+except ImportError:
+    flash_attn_func = None
+    print("Warning: flash_attn is not installed. Flash attention will not be available.")
 
 def expand_mask(attention_mask: torch.Tensor, tgt_len: int, dtype: torch.dtype) -> torch.Tensor:
     if attention_mask.dim() != 2:
