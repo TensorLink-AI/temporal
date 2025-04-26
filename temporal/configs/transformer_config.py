@@ -501,7 +501,24 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         **kwargs: Additional kwargs for BaseTimeSeriesConfig (e.g. name_or_path).
     """
     model_type    = "transformer_time_series"
-    attribute_map = dict(BaseTimeSeriesConfig.attribute_map)
+    # Explicitly define attribute map including transformer-specific keys
+    attribute_map = {
+        **BaseTimeSeriesConfig.attribute_map,
+        "architecture": "architecture",
+        "attention_blocks": "attention_blocks",
+        "value_embedding_config": "value_embedding_config",
+        "positional_embedding_config": "positional_embedding_config",
+        "feedforward_config": "feedforward_config",
+        "output_head_config": "output_head_config",
+        "block_configs": "block_configs",
+        "norm_config": "norm_config",
+        "head_agg_config": "head_agg_config",
+        "hidden_size": "hidden_size",
+        "num_quantiles": "num_quantiles",
+        "output_attentions": "output_attentions",
+        "output_hidden_states": "output_hidden_states",
+        "use_teacher_forcing": "use_teacher_forcing",
+    }
 
     def __init__(
         self,
@@ -603,7 +620,11 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             "output_hidden_states":        self.output_hidden_states,
             "use_teacher_forcing":         self.use_teacher_forcing,
         }
-        return {**base, **own}
+        # Ensure all keys from the explicit map are included if they exist as attributes
+        mapped_keys = {k: getattr(self, k).to_dict() if hasattr(getattr(self, k, None), 'to_dict') else getattr(self, k, None)
+                       for k in self.attribute_map if hasattr(self, k) and k not in base}
+
+        return {**base, **own, **mapped_keys} # Combine base, explicitly added, and mapped keys
 
     def validate_config(self):
         """
@@ -643,17 +664,39 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         Returns:
             TransformerTimeSeriesConfig
         """
+        # Ensure nested dictionaries are converted to config objects
+        for key, config_cls in [
+            ("architecture", TransformerArchitectureConfig),
+            ("attention_blocks", TransformerAttentionBlockConfig),
+            ("value_embedding_config", EmbeddingConfig),
+            ("positional_embedding_config", EmbeddingConfig),
+            ("feedforward_config", FeedForwardConfig),
+            ("output_head_config", OutputHeadConfig),
+            # block_configs can be a list or single object, handle later
+            ("norm_config", NormalizationConfig),
+            ("head_agg_config", HeadAggregationConfig),
+        ]:
+            if key in d and isinstance(d[key], dict):
+                d[key] = config_cls.from_dict(d[key])
+
+        # Handle block_configs separately
+        block_configs_data = d.get("block_configs")
+        if isinstance(block_configs_data, dict):
+            d["block_configs"] = TransformerBlockConfig.from_dict(block_configs_data)
+        elif isinstance(block_configs_data, list):
+            d["block_configs"] = [TransformerBlockConfig.from_dict(item) for item in block_configs_data]
+
         return cls(**d)
 
 
 # ----------------------------------------------------------------
-# AUTO-REGISTER transformer-specific keys in attribute_map
+# COMMENTED OUT: AUTO-REGISTER transformer-specific keys in attribute_map
 # ----------------------------------------------------------------
-_dummy = TransformerTimeSeriesConfig(
-    feature_size=1,
-    context_length=1,
-    prediction_length=1,
-    _name_or_path="transformer_time_series"
-)
-TransformerTimeSeriesConfig.attribute_map.update({k: k for k in _dummy.to_dict().keys()})
-del _dummy
+# _dummy = TransformerTimeSeriesConfig(
+#     feature_size=1,
+#     context_length=1,
+#     prediction_length=1,
+#     _name_or_path="transformer_time_series"
+# )
+# TransformerTimeSeriesConfig.attribute_map.update({k: k for k in _dummy.to_dict().keys()})
+# del _dummy
