@@ -1,6 +1,6 @@
 from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 from transformers import PretrainedConfig
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Any
 
 
 class TransformerArchitectureConfig:
