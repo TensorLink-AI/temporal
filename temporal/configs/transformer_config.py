@@ -483,63 +483,14 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         is_decoder (bool): If True, configures model for decoder-only use.
 
         # Transformer-specific args:
-        architecture (TransformerArchitectureConfig): Layout & weight-sharing.
-        attention_blocks (TransformerAttentionBlockConfig): Nested attention configs.
-        value_embedding_config (EmbeddingConfig): Config for value embeddings.
-        positional_embedding_config (EmbeddingConfig): Config for positional embeddings.
-        feedforward_config (FeedForwardConfig): Config for feed-forward sublayers.
-        output_head_config (OutputHeadConfig): Config for prediction head.
-        block_configs (TransformerBlockConfig or list): Config(s) for each transformer block.
-        norm_config (NormalizationConfig): Config for normalization layers.
-        head_agg_config (HeadAggregationConfig): Config for combining multiple output heads.
-        hidden_size (int): Dimensionality of hidden representations.
-        num_quantiles (int): Number of quantiles (should match len(quantiles)).
-        output_attentions (bool): If True, return attention weights.
-        output_hidden_states (bool): If True, return hidden states.
-        use_teacher_forcing (bool): If True, apply teacher forcing during training.
-
-        **kwargs: Additional kwargs for BaseTimeSeriesConfig (e.g. name_or_path).
-    """
-    model_type    = "transformer_time_series"
-    # Explicitly define attribute map including transformer-specific keys
-    attribute_map = {
-        **BaseTimeSeriesConfig.attribute_map,
-        "architecture": "architecture",
-        "attention_blocks": "attention_blocks",
-        "value_embedding_config": "value_embedding_config",
-        "positional_embedding_config": "positional_embedding_config",
-        "feedforward_config": "feedforward_config",
-        "output_head_config": "output_head_config",
-        "block_configs": "block_configs",
-        "norm_config": "norm_config",
-        "head_agg_config": "head_agg_config",
-        "hidden_size": "hidden_size",
-        "num_quantiles": "num_quantiles",
-        "output_attentions": "output_attentions",
-        "output_hidden_states": "output_hidden_states",
-        "use_teacher_forcing": "use_teacher_forcing",
-    }
-
-    def __init__(
-        self,
-        feature_size: int,
-        context_length: int,
-        prediction_length: int,
-        quantiles: List[float]           = [0.1, 0.5, 0.9],
-        output_token_lengths: int        = 1,
-        loss_type: str                   = "quantile",
-        use_dynamic_features: bool       = False,
-        use_static_features: bool        = False,
-        autoregressive: bool             = True,
-        is_decoder: bool                 = False,
-
         architecture: Optional[TransformerArchitectureConfig]       = None,
         attention_blocks: Optional[TransformerAttentionBlockConfig] = None,
         value_embedding_config: Optional[EmbeddingConfig]           = None,
         positional_embedding_config: Optional[EmbeddingConfig]      = None,
         feedforward_config: Optional[FeedForwardConfig]             = None,
         output_head_config: Optional[OutputHeadConfig]              = None,
-        block_configs: Union[TransformerBlockConfig, List[TransformerBlockConfig], None] = None,
+        encoder_blocks: Optional[List[TransformerBlockConfig]] = None,
+        decoder_blocks: Optional[List[TransformerBlockConfig]] = None,
         norm_config: Optional[NormalizationConfig]                  = None,
         head_agg_config: Optional[HeadAggregationConfig]            = None,
         hidden_size: int                  = 64,
@@ -547,6 +498,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         output_attentions: bool           = False,
         output_hidden_states: bool        = False,
         use_teacher_forcing: bool         = True,
+        hidden_dropout_prob: float        = 0.1, # Added hidden_dropout_prob
 
         **kwargs
     ):
@@ -563,7 +515,9 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
         self.feedforward_config         = feedforward_config or FeedForwardConfig()
         self.output_head_config         = output_head_config or OutputHeadConfig()
-        self.block_configs              = block_configs or TransformerBlockConfig()
+        # Handle encoder_blocks and decoder_blocks
+        self.encoder_blocks = encoder_blocks
+        self.decoder_blocks = decoder_blocks
         self.norm_config                = norm_config or NormalizationConfig()
         self.head_agg_config            = head_agg_config or HeadAggregationConfig()
 
@@ -572,6 +526,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.output_attentions         = output_attentions
         self.output_hidden_states      = output_hidden_states
         self.use_teacher_forcing       = use_teacher_forcing
+        self.hidden_dropout_prob = hidden_dropout_prob # Assign hidden_dropout_prob
 
         # Initialize BaseTimeSeriesConfig fields
         super().__init__(
@@ -606,11 +561,8 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             "positional_embedding_config": self.positional_embedding_config.to_dict(),
             "feedforward_config":          self.feedforward_config.to_dict(),
             "output_head_config":          self.output_head_config.to_dict(),
-            "block_configs": (
-                [b.to_dict() for b in self.block_configs]
-                if isinstance(self.block_configs, list)
-                else self.block_configs.to_dict()
-            ),
+            "encoder_blocks":              [b.to_dict() for b in self.encoder_blocks] if self.encoder_blocks is not None else None,
+            "decoder_blocks":              [b.to_dict() for b in self.decoder_blocks] if self.decoder_blocks is not None else None,
             "norm_config":                 self.norm_config.to_dict(),
             "head_agg_config":             self.head_agg_config.to_dict(),
             "hidden_size":                 self.hidden_size,
@@ -618,6 +570,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             "output_attentions":           self.output_attentions,
             "output_hidden_states":        self.output_hidden_states,
             "use_teacher_forcing":         self.use_teacher_forcing,
+            "hidden_dropout_prob":         self.hidden_dropout_prob, # Include hidden_dropout_prob
         }
         # Ensure all keys from the explicit map are included if they exist as attributes
         mapped_keys = {k: getattr(self, k).to_dict() if hasattr(getattr(self, k, None), 'to_dict') else getattr(self, k, None)
@@ -636,12 +589,14 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         super().validate_config()
 
         # hidden-size / heads divisibility
-        enc_heads = self.attention_blocks.encoder_attention.num_heads
-        assert self.hidden_size % enc_heads == 0, \
-            "hidden_size must be divisible by encoder_attention.num_heads"
-        dec_heads = self.attention_blocks.decoder_attention.num_heads
-        assert self.hidden_size % dec_heads == 0, \
-            "hidden_size must be divisible by decoder_attention.num_heads"
+        if self.attention_blocks and self.attention_blocks.encoder_attention:
+            enc_heads = self.attention_blocks.encoder_attention.num_heads
+            assert self.hidden_size % enc_heads == 0, \
+                "hidden_size must be divisible by encoder_attention.num_heads"
+        if self.attention_blocks and self.attention_blocks.decoder_attention:
+            dec_heads = self.attention_blocks.decoder_attention.num_heads
+            assert self.hidden_size % dec_heads == 0, \
+                "hidden_size must be divisible by decoder_attention.num_heads"
 
         # quantiles length vs declared
         assert self.num_quantiles > 0, "num_quantiles must be > 0"
@@ -671,19 +626,23 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             ("positional_embedding_config", EmbeddingConfig),
             ("feedforward_config", FeedForwardConfig),
             ("output_head_config", OutputHeadConfig),
-            # block_configs can be a list or single object, handle later
             ("norm_config", NormalizationConfig),
             ("head_agg_config", HeadAggregationConfig),
         ]:
             if key in d and isinstance(d[key], dict):
                 d[key] = config_cls.from_dict(d[key])
 
-        # Handle block_configs separately
-        block_configs_data = d.get("block_configs")
-        if isinstance(block_configs_data, dict):
-            d["block_configs"] = TransformerBlockConfig.from_dict(block_configs_data)
-        elif isinstance(block_configs_data, list):
-            d["block_configs"] = [TransformerBlockConfig.from_dict(item) for item in block_configs_data]
+        # Handle block_configs, encoder_blocks, decoder_blocks separately
+        if "block_configs" in d and isinstance(d["block_configs"], dict):
+             d["block_configs"] = TransformerBlockConfig.from_dict(d["block_configs"])
+        elif "block_configs" in d and isinstance(d["block_configs"], list):
+            d["block_configs"] = [TransformerBlockConfig.from_dict(item) for item in d["block_configs"]]
+
+        if "encoder_blocks" in d and isinstance(d["encoder_blocks"], list):
+             d["encoder_blocks"] = [TransformerBlockConfig.from_dict(item) for item in d["encoder_blocks"]]
+
+        if "decoder_blocks" in d and isinstance(d["decoder_blocks"], list):
+             d["decoder_blocks"] = [TransformerBlockConfig.from_dict(item) for item in d["decoder_blocks"]]
 
         return cls(**d)
 
