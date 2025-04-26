@@ -556,7 +556,24 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         All base fields are initialized via super(), then transformer-specific
         sub-configs and hyperparameters are set.
         """
-        # initialize BaseTimeSeriesConfig fields
+        # Assign transformer-specific attributes *before* calling super().__init__
+        self.architecture               = architecture or TransformerArchitectureConfig()
+        self.attention_blocks           = attention_blocks or TransformerAttentionBlockConfig()
+        self.value_embedding_config     = value_embedding_config or EmbeddingConfig(type="value")
+        self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
+        self.feedforward_config         = feedforward_config or FeedForwardConfig()
+        self.output_head_config         = output_head_config or OutputHeadConfig()
+        self.block_configs              = block_configs or TransformerBlockConfig()
+        self.norm_config                = norm_config or NormalizationConfig()
+        self.head_agg_config            = head_agg_config or HeadAggregationConfig()
+
+        self.hidden_size               = hidden_size
+        self.num_quantiles             = num_quantiles
+        self.output_attentions         = output_attentions
+        self.output_hidden_states      = output_hidden_states
+        self.use_teacher_forcing       = use_teacher_forcing
+
+        # Initialize BaseTimeSeriesConfig fields
         super().__init__(
             feature_size=feature_size,
             context_length=context_length,
@@ -570,24 +587,6 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             is_decoder=is_decoder,
             **kwargs
         )
-
-        # Transformer sub-configs (with defaults)
-        self.architecture               = architecture or TransformerArchitectureConfig()
-        self.attention_blocks           = attention_blocks or TransformerAttentionBlockConfig()
-        self.value_embedding_config     = value_embedding_config or EmbeddingConfig(type="value")
-        self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
-        self.feedforward_config         = feedforward_config or FeedForwardConfig()
-        self.output_head_config         = output_head_config or OutputHeadConfig()
-        self.block_configs              = block_configs or TransformerBlockConfig()
-        self.norm_config                = norm_config or NormalizationConfig()
-        self.head_agg_config            = head_agg_config or HeadAggregationConfig()
-
-        # Transformer hyperparameters
-        self.hidden_size               = hidden_size
-        self.num_quantiles             = num_quantiles
-        self.output_attentions         = output_attentions
-        self.output_hidden_states      = output_hidden_states
-        self.use_teacher_forcing       = use_teacher_forcing
 
         # final consistency check
         self.validate_config()
