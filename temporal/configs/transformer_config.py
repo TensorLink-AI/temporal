@@ -1,4 +1,6 @@
 from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
+from transformers import PretrainedConfig
+from typing import Optional, Union, List
 
 
 class TransformerArchitectureConfig:
@@ -461,7 +463,6 @@ class TransformerBlockConfig:
             kwargs=d.get("kwargs", {})
         )
 
-
 class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     """
     Configuration for a transformer-based time series forecasting model.
@@ -469,227 +470,152 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     Extends BaseTimeSeriesConfig with transformer-specific options.
 
     Args:
-        architecture (TransformerArchitectureConfig): Transformer architecture settings.
-        attention_blocks (TransformerAttentionBlockConfig): Nested attention configurations.
+        # BaseTimeSeriesConfig args:
+        feature_size (int): Number of input features per time step.
+        context_length (int): Length of the historical context window.
+        prediction_length (int): Forecast horizon length.
+        quantiles (List[float]): Quantile levels for probabilistic forecasting.
+        output_token_lengths (int): Number of output tokens per prediction step.
+        loss_type (str): Loss function type; one of PROBABILISTIC_LOSSES or a point-wise loss.
+        use_dynamic_features (bool): Whether to include dynamic covariates.
+        use_static_features (bool): Whether to include static covariates.
+        autoregressive (bool): If True, model predicts autoregressively.
+        is_decoder (bool): If True, configures model for decoder-only use.
+
+        # Transformer-specific args:
+        architecture (TransformerArchitectureConfig): Layout & weight-sharing.
+        attention_blocks (TransformerAttentionBlockConfig): Nested attention configs.
         value_embedding_config (EmbeddingConfig): Config for value embeddings.
         positional_embedding_config (EmbeddingConfig): Config for positional embeddings.
-        feedforward_config (FeedForwardConfig): Config for feed-forward networks.
-        output_head_config (OutputHeadConfig): Config for output prediction head.
-        block_configs (TransformerBlockConfig or list): Config(s) for transformer blocks.
+        feedforward_config (FeedForwardConfig): Config for feed-forward sublayers.
+        output_head_config (OutputHeadConfig): Config for prediction head.
+        block_configs (TransformerBlockConfig or list): Config(s) for each transformer block.
         norm_config (NormalizationConfig): Config for normalization layers.
-        head_agg_config (HeadAggregationConfig): Config for combining multiple heads.
+        head_agg_config (HeadAggregationConfig): Config for combining multiple output heads.
         hidden_size (int): Dimensionality of hidden representations.
-        output_token_lengths (int): Number of tokens produced by output head.
-        num_quantiles (int): Number of quantiles for probabilistic forecasts.
-        output_attentions (bool): If True, return attention weights in outputs.
-        output_hidden_states (bool): If True, return all hidden states in outputs.
+        num_quantiles (int): Number of quantiles (should match len(quantiles)).
+        output_attentions (bool): If True, return attention weights.
+        output_hidden_states (bool): If True, return hidden states.
         use_teacher_forcing (bool): If True, apply teacher forcing during training.
-        **kwargs: Additional arguments passed to BaseTimeSeriesConfig.
+
+        **kwargs: Additional kwargs for BaseTimeSeriesConfig (e.g. name_or_path).
     """
-    model_type = "transformer_time_series"
+    model_type    = "transformer_time_series"
+    attribute_map = dict(BaseTimeSeriesConfig.attribute_map)
 
     def __init__(
         self,
-        architecture=None,
-        attention_blocks=None,
-        value_embedding_config=None,
-        positional_embedding_config=None,
-        feedforward_config=None,
-        output_head_config=None,
-        block_configs=None,
-        norm_config=None,
-        head_agg_config=None,
-        hidden_size=64,
-        output_token_lengths=1,
-        num_quantiles=3,
-        output_attentions=False,
-        output_hidden_states=False,
-        use_teacher_forcing: bool = True,
+        feature_size: int,
+        context_length: int,
+        prediction_length: int,
+        quantiles: List[float]           = [0.1, 0.5, 0.9],
+        output_token_lengths: int        = 1,
+        loss_type: str                   = "quantile",
+        use_dynamic_features: bool       = False,
+        use_static_features: bool        = False,
+        autoregressive: bool             = True,
+        is_decoder: bool                 = False,
+
+        architecture: Optional[TransformerArchitectureConfig]       = None,
+        attention_blocks: Optional[TransformerAttentionBlockConfig] = None,
+        value_embedding_config: Optional[EmbeddingConfig]           = None,
+        positional_embedding_config: Optional[EmbeddingConfig]      = None,
+        feedforward_config: Optional[FeedForwardConfig]             = None,
+        output_head_config: Optional[OutputHeadConfig]              = None,
+        block_configs: Union[TransformerBlockConfig, List[TransformerBlockConfig], None] = None,
+        norm_config: Optional[NormalizationConfig]                  = None,
+        head_agg_config: Optional[HeadAggregationConfig]            = None,
+        hidden_size: int                  = 64,
+        num_quantiles: int                = 3,
+        output_attentions: bool           = False,
+        output_hidden_states: bool        = False,
+        use_teacher_forcing: bool         = True,
 
         **kwargs
     ):
-        super().__init__(**kwargs)
-
-        self.architecture = architecture or TransformerArchitectureConfig()
-        self.attention_blocks = attention_blocks or TransformerAttentionBlockConfig()
-        self.feedforward_config = feedforward_config or FeedForwardConfig()
-        self.norm_config = norm_config or NormalizationConfig()
-        self.head_agg_config = head_agg_config or HeadAggregationConfig()
-        self.block_configs = block_configs or TransformerBlockConfig()
-        self.output_head_config = output_head_config or OutputHeadConfig()
-
-        self.hidden_size = hidden_size
-        self.output_token_lengths = output_token_lengths
-        self.num_quantiles = num_quantiles
-        self.output_attentions = output_attentions
-        self.output_hidden_states = output_hidden_states
-        self.use_teacher_forcing = use_teacher_forcing
-
-        self.value_embedding_config = value_embedding_config or EmbeddingConfig(type="value")
-        self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
-
-        self.value_embedding_type = self.value_embedding_config.type
-        self.pos_embedding_type = self.positional_embedding_config.type
-
-    def save_json(self, path):
         """
-        Save the configuration to a JSON file.
+        Initialize a TransformerTimeSeriesConfig.
 
-        Args:
-            path (str): File path to write JSON.
+        All base fields are initialized via super(), then transformer-specific
+        sub-configs and hyperparameters are set.
         """
-        import json
-        with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
-
-    @classmethod
-    def from_json(cls, path):
-        """
-        Load configuration from a JSON file.
-
-        Args:
-            path (str): File path of JSON to read.
-
-        Returns:
-            TransformerTimeSeriesConfig: Loaded configuration instance.
-        """
-        import json
-        with open(path, "r") as f:
-            data = json.load(f)
-        return cls(**data)
-
-    def to_flat_dict(self):
-        """
-        Return a flattened dictionary of core configuration values.
-
-        Returns:
-            dict: Flat dictionary of key hyperparameters.
-        """
-        return {
-            "hidden_size": self.hidden_size,
-            "prediction_length": self.prediction_length,
-            "context_length": self.context_length,
-            "attention_type": self.attention_blocks.encoder_attention.attention_type,
-            "num_attention_heads": self.attention_blocks.encoder_attention.num_heads,
-        }
-
-    @classmethod
-    def from_flat_dict(cls, d):
-        """
-        Create configuration from a flattened dictionary.
-
-        Args:
-            d (dict): Dictionary containing keys 'hidden_size', 'prediction_length', 'context_length',
-                      'attention_type', and 'num_attention_heads'.
-
-        Returns:
-            TransformerTimeSeriesConfig: New config instance.
-        """
-        return cls(
-            hidden_size=d.get("hidden_size", 64),
-            prediction_length=d.get("prediction_length", 12),
-            context_length=d.get("context_length", 128),
-            attention_blocks=TransformerAttentionBlockConfig(
-                encoder_attention=AttentionConfig(
-                    attention_type=d.get("attention_type", "full"),
-                    num_heads=d.get("num_attention_heads", 4)
-                )
-            )
+        # initialize BaseTimeSeriesConfig fields
+        super().__init__(
+            feature_size=feature_size,
+            context_length=context_length,
+            prediction_length=prediction_length,
+            quantiles=quantiles,
+            output_token_lengths=output_token_lengths,
+            loss_type=loss_type,
+            use_dynamic_features=use_dynamic_features,
+            use_static_features=use_static_features,
+            autoregressive=autoregressive,
+            is_decoder=is_decoder,
+            **kwargs
         )
 
-    def to_dict(self):
+        # Transformer sub-configs (with defaults)
+        self.architecture               = architecture or TransformerArchitectureConfig()
+        self.attention_blocks           = attention_blocks or TransformerAttentionBlockConfig()
+        self.value_embedding_config     = value_embedding_config or EmbeddingConfig(type="value")
+        self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
+        self.feedforward_config         = feedforward_config or FeedForwardConfig()
+        self.output_head_config         = output_head_config or OutputHeadConfig()
+        self.block_configs              = block_configs or TransformerBlockConfig()
+        self.norm_config                = norm_config or NormalizationConfig()
+        self.head_agg_config            = head_agg_config or HeadAggregationConfig()
+
+        # Transformer hyperparameters
+        self.hidden_size               = hidden_size
+        self.num_quantiles             = num_quantiles
+        self.output_attentions         = output_attentions
+        self.output_hidden_states      = output_hidden_states
+        self.use_teacher_forcing       = use_teacher_forcing
+
+        # final consistency check
+        self.validate_config()
+
+    def to_dict(self) -> dict:
         """
-        Convert entire transformer time series configuration to a dictionary.
+        Convert the full config (base + transformer-specific) to a dict.
 
         Returns:
-            dict: Dictionary representation of the full config.
+            dict: A mapping of all config fields for serialization.
         """
         base = super().to_dict()
-        return {
-            "architecture": self.architecture.to_dict(),
-            "attention_blocks": self.attention_blocks.to_dict(),
-            "value_embedding_config": self.value_embedding_config.to_dict(),
+        own = {
+            "architecture":                self.architecture.to_dict(),
+            "attention_blocks":            self.attention_blocks.to_dict(),
+            "value_embedding_config":      self.value_embedding_config.to_dict(),
             "positional_embedding_config": self.positional_embedding_config.to_dict(),
-            "feedforward_config": self.feedforward_config.to_dict(),
-            "norm_config": self.norm_config.to_dict(),
-            "head_agg_config": self.head_agg_config.to_dict(),
-            "block_configs": self.block_configs.to_dict() if hasattr(self.block_configs, 'to_dict') else [b.to_dict() for b in self.block_configs],
-            "output_head_config": self.output_head_config.to_dict(),
-            "hidden_size": self.hidden_size,
-            "output_token_lengths": self.output_token_lengths,
-            "num_quantiles": self.num_quantiles,
-            "output_attentions": self.output_attentions,
-            "output_hidden_states": self.output_hidden_states,
-            "use_teacher_forcing": self.use_teacher_forcing,
-            **base
+            "feedforward_config":          self.feedforward_config.to_dict(),
+            "output_head_config":          self.output_head_config.to_dict(),
+            "block_configs": (
+                [b.to_dict() for b in self.block_configs]
+                if isinstance(self.block_configs, list)
+                else self.block_configs.to_dict()
+            ),
+            "norm_config":                 self.norm_config.to_dict(),
+            "head_agg_config":             self.head_agg_config.to_dict(),
+            "hidden_size":                 self.hidden_size,
+            "num_quantiles":               self.num_quantiles,
+            "output_attentions":           self.output_attentions,
+            "output_hidden_states":        self.output_hidden_states,
+            "use_teacher_forcing":         self.use_teacher_forcing,
         }
-
-    @classmethod
-    def from_dict(cls, d):
-        """
-        Instantiate configuration from a dictionary.
-
-        Args:
-            d (dict): Dictionary matching the output of to_dict().
-
-        Returns:
-            TransformerTimeSeriesConfig: New config instance.
-        """
-        return cls(
-            architecture=TransformerArchitectureConfig.from_dict(d.get("architecture", {})),
-            attention_blocks=TransformerAttentionBlockConfig.from_dict(d.get("attention_blocks", {})),
-            value_embedding_config=EmbeddingConfig.from_dict(d.get("value_embedding_config", {})),
-            positional_embedding_config=EmbeddingConfig.from_dict(d.get("positional_embedding_config", {})),
-            feedforward_config=FeedForwardConfig.from_dict(d.get("feedforward_config", {})),
-            norm_config=NormalizationConfig.from_dict(d.get("norm_config", {})),
-            head_agg_config=HeadAggregationConfig.from_dict(d.get("head_agg_config", {})),
-            output_head_config=OutputHeadConfig.from_dict(d.get("output_head_config", {})),
-            block_configs=[TransformerBlockConfig.from_dict(b) for b in d.get("block_configs", [])] if isinstance(d.get("block_configs"), list) else TransformerBlockConfig.from_dict(d.get("block_configs", {})),
-            hidden_size=d.get("hidden_size", 64),
-            output_token_lengths=d.get("output_token_lengths", 1),
-            num_quantiles=d.get("num_quantiles", 3),
-            output_attentions=d.get("output_attentions", False),
-            output_hidden_states=d.get("output_hidden_states", False),
-            use_teacher_forcing=d.get("use_teacher_forcing", True),
-            **{k: v for k, v in d.items() if k not in {
-                "architecture", "attention_blocks", "value_embedding_config", "positional_embedding_config",
-                "feedforward_config", "norm_config", "head_agg_config", "output_head_config",
-                "block_configs", "hidden_size", "output_token_lengths", "num_quantiles",
-                "output_attentions", "output_hidden_states", "use_teacher_forcing"
-            }}
-        )
+        return {**base, **own}
 
     def validate_config(self):
         """
-        Validate transformer time series configuration for consistency and correctness.
+        Validate transformer-specific and base configuration for correctness.
 
         Raises:
             AssertionError: If any setting is invalid or inconsistent.
         """
-        # Basic hyperparameter checks
-        assert self.hidden_size > 0, "hidden_size must be > 0"
-        assert self.output_token_lengths > 0, "output_token_lengths must be > 0"
-        assert self.num_quantiles > 0, "num_quantiles must be > 0"
-        assert self.output_head_config.output_size is not None, "output_head_config.output_size must be set"
+        # base checks (e.g. context_length, quantiles)  
+        super().validate_config()
 
-        # Validate embedded configs
-        if hasattr(self.value_embedding_config, 'validate'):
-            self.value_embedding_config.validate()
-        if hasattr(self.positional_embedding_config, 'validate'):
-            self.positional_embedding_config.validate()
-
-        # Validate feed-forward and attention blocks
-        if hasattr(self.feedforward_config, 'validate'):
-            self.feedforward_config.validate()
-        for attn in [
-            self.attention_blocks.encoder_attention,
-            self.attention_blocks.decoder_attention,
-            self.attention_blocks.decoder_cross_attention
-        ]:
-            if hasattr(attn, 'validate'):
-                attn.validate()
-
-        # Dimensional consistency
+        # hidden-size / heads divisibility
         enc_heads = self.attention_blocks.encoder_attention.num_heads
         assert self.hidden_size % enc_heads == 0, \
             "hidden_size must be divisible by encoder_attention.num_heads"
@@ -697,21 +623,37 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         assert self.hidden_size % dec_heads == 0, \
             "hidden_size must be divisible by decoder_attention.num_heads"
 
-        # Normalization and aggregation
-        if hasattr(self.norm_config, 'validate'):
-            self.norm_config.validate()
-        if self.output_token_lengths > 1 and hasattr(self.head_agg_config, 'validate'):
-            self.head_agg_config.validate()
+        # quantiles length vs declared
+        assert self.num_quantiles > 0, "num_quantiles must be > 0"
+        assert len(self.quantiles) == self.num_quantiles, \
+            "len(quantiles) must equal num_quantiles"
 
-        # Layout and block count
-        layout = self.architecture.layout
-        assert layout in {"encoder", "decoder", "encoder-decoder"}, \
-            f"Invalid architecture layout: {layout}"
-        if layout in {"encoder", "encoder-decoder"}:
-            assert self.architecture.num_encoder_layers > 0, "Must have at least one encoder layer"
-        if layout in {"decoder", "encoder-decoder"}:
-            assert self.architecture.num_decoder_layers > 0, "Must have at least one decoder layer"
+        # output settings
+        assert self.output_token_lengths > 0, "output_token_lengths must be > 0"
 
-        # Quantiles validation if probabilistic
-        if getattr(self, 'quantiles', None):
-            assert all(0 < q < 1 for q in self.quantiles), "All quantiles must be in (0, 1)"
+
+    @classmethod
+    def from_dict(cls, d: dict):
+        """
+        Instantiate from a dictionary (e.g. loaded JSON).
+
+        Args:
+            d (dict): Dict matching to_dict() output.
+
+        Returns:
+            TransformerTimeSeriesConfig
+        """
+        return cls(**d)
+
+
+# ----------------------------------------------------------------
+# AUTO-REGISTER transformer-specific keys in attribute_map
+# ----------------------------------------------------------------
+_dummy = TransformerTimeSeriesConfig(
+    feature_size=1,
+    context_length=1,
+    prediction_length=1,
+    _name_or_path="transformer_time_series"
+)
+TransformerTimeSeriesConfig.attribute_map.update({k: k for k in _dummy.to_dict().keys()})
+del _dummy
