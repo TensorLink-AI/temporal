@@ -465,78 +465,77 @@ class TransformerBlockConfig:
 
 class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     """
-    Configuration for a transformer-based time series forecasting model.
+    Configuration for a transformer-based time-series forecasting model.
+    Extends ``BaseTimeSeriesConfig`` with transformer-specific options.
+    """
 
-    Extends BaseTimeSeriesConfig with transformer-specific options.
+    def __init__(
+        self,
+        # ---------- BaseTimeSeriesConfig ----------
+        feature_size:              int,
+        context_length:            int,
+        prediction_length:         int,
+        quantiles:                 List[float],
+        output_token_lengths:      int = 1,
+        loss_type:                 str = "mse",
+        use_dynamic_features:      bool = False,
+        use_static_features:       bool = False,
+        autoregressive:            bool = False,
+        is_decoder:                bool = False,
 
-    Args:
-        # BaseTimeSeriesConfig args:
-        feature_size (int): Number of input features per time step.
-        context_length (int): Length of the historical context window.
-        prediction_length (int): Forecast horizon length.
-        quantiles (List[float]): Quantile levels for probabilistic forecasting.
-        output_token_lengths (int): Number of output tokens per prediction step.
-        loss_type (str): Loss function type; one of PROBABILISTIC_LOSSES or a point-wise loss.
-        use_dynamic_features (bool): Whether to include dynamic covariates.
-        use_static_features (bool): Whether to include static covariates.
-        autoregressive (bool): If True, model predicts autoregressively.
-        is_decoder (bool): If True, configures model for decoder-only use.
+        # ---------- Transformer-specific ----------
+        architecture:              Optional[TransformerArchitectureConfig]       = None,
+        attention_blocks:          Optional[TransformerAttentionBlockConfig]     = None,
+        value_embedding_config:    Optional[EmbeddingConfig]                     = None,
+        positional_embedding_config: Optional[EmbeddingConfig]                   = None,
+        feedforward_config:        Optional[FeedForwardConfig]                   = None,
+        output_head_config:        Optional[OutputHeadConfig]                    = None,
+        encoder_blocks:            Optional[List[TransformerBlockConfig]]        = None,
+        decoder_blocks:            Optional[List[TransformerBlockConfig]]        = None,
+        norm_config:               Optional[NormalizationConfig]                 = None,
+        head_agg_config:           Optional[HeadAggregationConfig]               = None,
+        hidden_size:               int = 64,
+        num_quantiles:             int = 3,
+        output_attentions:         bool = False,
+        output_hidden_states:      bool = False,
+        use_teacher_forcing:       bool = True,
+        hidden_dropout_prob:       float = 0.1,
+        **kwargs: Any,
+    ):
+        # ---- First, set transformer-specific fields ----------------
+        self.architecture                = architecture or TransformerArchitectureConfig()
+        self.attention_blocks            = attention_blocks or TransformerAttentionBlockConfig()
+        self.value_embedding_config      = value_embedding_config or EmbeddingConfig(type="value")
+        self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
+        self.feedforward_config          = feedforward_config or FeedForwardConfig()
+        self.output_head_config          = output_head_config or OutputHeadConfig()
+        self.encoder_blocks              = encoder_blocks
+        self.decoder_blocks              = decoder_blocks
+        self.norm_config                 = norm_config or NormalizationConfig()
+        self.head_agg_config             = head_agg_config or HeadAggregationConfig()
 
-        # Transformer-specific args:
-        architecture: Optional[TransformerArchitectureConfig]       = None,
-        attention_blocks: Optional[TransformerAttentionBlockConfig] = None,
-        value_embedding_config: Optional[EmbeddingConfig]           = None,
-        positional_embedding_config: Optional[EmbeddingConfig]      = None,
-        feedforward_config: Optional[FeedForwardConfig]             = None,
-        output_head_config: Optional[OutputHeadConfig]              = None,
-        encoder_blocks: Optional[List[TransformerBlockConfig]] = None,
-        decoder_blocks: Optional[List[TransformerBlockConfig]] = None,
-        norm_config: Optional[NormalizationConfig]                  = None,
-        head_agg_config: Optional[HeadAggregationConfig]            = None,
-        hidden_size: int                  = 64,
-        num_quantiles: int                = 3,
-        output_attentions: bool           = False,
-        output_hidden_states: bool        = False,
-        use_teacher_forcing: bool         = True,
-        hidden_dropout_prob: float        = 0.1,
+        self.hidden_size           = hidden_size
+        self.num_quantiles         = num_quantiles
+        self.output_attentions     = output_attentions
+        self.output_hidden_states  = output_hidden_states
+        self.use_teacher_forcing   = use_teacher_forcing
+        self.hidden_dropout_prob   = hidden_dropout_prob
 
-        **kwargs
-        """
-    
-    # Assign transformer-specific attributes *before* calling super().__init__
-    self.architecture               = architecture or TransformerArchitectureConfig()
-    self.attention_blocks           = attention_blocks or TransformerAttentionBlockConfig()
-    self.value_embedding_config     = value_embedding_config or EmbeddingConfig(type="value")
-    self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
-    self.feedforward_config         = feedforward_config or FeedForwardConfig()
-    self.output_head_config         = output_head_config or OutputHeadConfig()
-    # Handle encoder_blocks and decoder_blocks
-    self.encoder_blocks = encoder_blocks
-    self.decoder_blocks = decoder_blocks
-    self.norm_config                = norm_config or NormalizationConfig()
-    self.head_agg_config            = head_agg_config or HeadAggregationConfig()
+        # ---- Now initialise the *base* time-series part ------------
+        super().__init__(
+            feature_size          = feature_size,
+            context_length        = context_length,
+            prediction_length     = prediction_length,
+            quantiles             = quantiles,
+            output_token_lengths  = output_token_lengths,
+            loss_type             = loss_type,
+            use_dynamic_features  = use_dynamic_features,
+            use_static_features   = use_static_features,
+            autoregressive        = autoregressive,
+            is_decoder            = is_decoder,
+            **kwargs,
+        )
 
-    self.hidden_size               = hidden_size
-    self.num_quantiles             = num_quantiles
-    self.output_attentions         = output_attentions
-    self.output_hidden_states      = output_hidden_states
-    self.use_teacher_forcing       = use_teacher_forcing
-    self.hidden_dropout_prob = hidden_dropout_prob
-
-    # Initialize BaseTimeSeriesConfig fields
-    super().__init__(
-        feature_size=feature_size,
-        context_length=context_length,
-        prediction_length=prediction_length,
-        quantiles=quantiles,
-        output_token_lengths=output_token_lengths,
-        loss_type=loss_type,
-        use_dynamic_features=use_dynamic_features,
-        use_static_features=use_static_features,
-        autoregressive=autoregressive,
-        is_decoder=is_decoder,
-        **kwargs
-    )
 
     # final consistency check
     self.validate_config()
