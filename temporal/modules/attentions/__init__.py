@@ -1,5 +1,16 @@
-import os
+# ---- Attention kernels --------------------------------------------
+from .common_attentions import FullAttention, LocalAttention, FlashAttention
+from .diff_attention    import DifferenceAttention
+from .hybrid_attention  import HybridAttention
+from .time_attention    import TimeFeatureAttention
+from .timer_attention   import TimerAttention
 
-os.makedirs("temporal/modules", exist_ok=True)
-with open("temporal/modules/__init__.py", "w") as f:
-    pass
+__all__ = [
+    "FullAttention",
+    "LocalAttention",
+    "FlashAttention",
+    "DifferenceAttention",
+    "HybridAttention",
+    "TimeFeatureAttention",
+    "TimerAttention",
+]

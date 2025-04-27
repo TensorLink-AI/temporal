@@ -1,1 +1,7 @@
-# temporal/utils/__init__.py
+# ---- Decoder stacks -----------------------------------------------
+from .decoders import TransformerDecoder, TransformerDecoderLayer
+
+__all__ = [
+    "TransformerDecoder",
+    "TransformerDecoderLayer",
+]

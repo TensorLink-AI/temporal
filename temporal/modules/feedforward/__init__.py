@@ -1,1 +1,6 @@
-# temporal/utils/__init__.py
+# ---- Feed-Forward blocks ------------------------------------------
+from .standard import StandardFeedForward
+
+__all__ = [
+    "StandardFeedForward",
+]
