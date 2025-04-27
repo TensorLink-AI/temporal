@@ -277,7 +277,7 @@ class EmbeddingConfig:
     Configuration for embedding layers in the transformer.
 
     Args:
-        type (str): Type of embedding ('value', 'patch', 'positional_sinusoidal', 'learned').
+        type (str): Type of embedding ('value', 'patch', 'sinusoidal', 'learned').
         dropout (float): Dropout probability applied to embeddings.
         embedding_dim (int): Dimensionality of positional embeddings (if applicable).
         kwargs (dict): Additional arguments for embedding implementation.
@@ -327,7 +327,7 @@ class EmbeddingConfig:
         Raises:
             AssertionError: If any configuration value is invalid.
         """
-        assert self.type in {"value", "patch", "positional_sinusoidal", "learned"}, \
+        assert self.type in {"value", "patch", "sinusoidal", "learned"}, \
             f"Invalid embedding type: {self.type}"
         if "positional" in self.type:
             assert self.embedding_dim is not None, "Positional embedding must set embedding_dim"
@@ -506,7 +506,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.architecture                = architecture or TransformerArchitectureConfig()
         self.attention_blocks            = attention_blocks or TransformerAttentionBlockConfig()
         self.value_embedding_config      = value_embedding_config or EmbeddingConfig(type="value")
-        self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="positional_sinusoidal")
+        self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="sinusoidal")
         self.feedforward_config          = feedforward_config or FeedForwardConfig()
         self.output_head_config          = output_head_config or OutputHeadConfig()
         self.encoder_blocks              = encoder_blocks
