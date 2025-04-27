@@ -26,7 +26,7 @@ class BinaryAttentionBias(nn.Module):
 
 
 @register_module("attention", "time")
-class TimeSeriesAttention(BaseMultiHeadAttention):
+class TimeAttention(BaseMultiHeadAttention):
     """
     Example time-aware attention using optional projection + additive bias.
     """

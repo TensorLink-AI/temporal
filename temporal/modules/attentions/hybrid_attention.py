@@ -7,7 +7,7 @@ from temporal.registry.core import register_module, resolve
 
 
 @register_module("attention", "hybrid")
-class HybridMultiHeadAttention(nn.Module):
+class HybridAttention(nn.Module):
     """
     Multi-head attention with per-group attention kernel types.
 

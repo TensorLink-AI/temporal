@@ -1,8 +1,8 @@
 # ---- Attention kernels --------------------------------------------
 from .base_attention import FullAttention,  FlashAttention
-from .diff_attention    import DiffWistAttentionWithCache
+from .diff_attention    import DifferentialAttention
 from .hybrid_attention  import HybridAttention
-from .time_attention    import TimeFeatureAttention
+from .time_attention    import TimeAttention
 from .timer_attention   import TimerAttention
 
 __all__ = [

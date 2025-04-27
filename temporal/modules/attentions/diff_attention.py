@@ -68,7 +68,7 @@ def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> t
 
 
 @register_module("attention", "diffwist")
-class DiffWistAttentionWithCache(BaseMultiHeadAttention):
+class DifferentialAttention(BaseMultiHeadAttention):
     """
     DiffWist attention: rotary + grouped query + learnable gating with caching.
     """
