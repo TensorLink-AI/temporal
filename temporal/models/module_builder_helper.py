@@ -21,6 +21,27 @@ class ModuleBuilder:
     """
     def __init__(self, config):
         self.config = config
+    def _prepare_args(
+        self, cls: type[nn.Module], user_kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Filter/augment kwargs so they match `cls.__init__`.
+        * Adds hidden-size under whichever name the class expects.
+        * Silently ignores keys not accepted by the constructor.
+        """
+        sig = inspect.signature(cls.__init__)
+
+        # Map of "common aliases" → self.config.hidden_size
+        hidden_aliases = ("d_model", "dim", "embedding_dim")
+
+        args = dict(user_kwargs)  # copy
+        for name in hidden_aliases:
+            if name in sig.parameters and name not in args:
+                args[name] = self.config.hidden_size
+
+        # Drop keys the constructor doesn't know (prevents TypeError)
+        allowed = {p for p in sig.parameters if p not in ("self", "args", "kwargs")}
+        return {k: v for k, v in args.items() if k in allowed}
 
     def build_attention(self, attn_cfg: AttentionConfig) -> nn.Module:
         """
@@ -94,9 +115,10 @@ class ModuleBuilder:
         from temporal.registry.core import resolve
         cfg = self.config.positional_embedding_config
         cls = resolve("embedding", cfg.type)
+        args = self._prepare_args(cls, cfg.kwargs)
+
         return cls(
-            #embedding_dim=self.config.hidden_size,
-            **cfg.kwargs,
+            **args
         )
 
     def build_head_aggregator(self) -> nn.Module:
