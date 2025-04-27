@@ -1,4 +1,5 @@
 import torch.nn as nn
+from typing import Dict, Any
 
 from temporal.registry.core import resolve
 from temporal.configs.transformer_config import (
