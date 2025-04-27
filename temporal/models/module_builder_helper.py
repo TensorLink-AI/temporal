@@ -79,7 +79,6 @@ class ModuleBuilder:
         return cls(
             feature_size=self.config.feature_size, 
             d_model=self.config.hidden_size,      
-            dropout=cfg.dropout,
             **cfg.kwargs,
         )
 
