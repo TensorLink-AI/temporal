@@ -95,7 +95,7 @@ class ModuleBuilder:
         cfg = self.config.positional_embedding_config
         cls = resolve("embedding", cfg.type)
         return cls(
-            embedding_dim=self.config.hidden_size,
+            #embedding_dim=self.config.hidden_size,
             **cfg.kwargs,
         )
 
