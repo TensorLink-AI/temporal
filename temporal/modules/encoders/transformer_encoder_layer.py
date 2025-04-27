@@ -6,13 +6,6 @@ from temporal.models.builder import ModuleBuilder
 from temporal.registry.core import register_module
 
 @register_module("block", "default_encoder")
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional
-from temporal.models.builder import ModuleBuilder
-
-
 class TimeSeriesTransformerEncoderLayer(nn.Module):
     def __init__(self, config, builder: ModuleBuilder):
         super().__init__()
