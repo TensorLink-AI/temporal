@@ -1,7 +1,14 @@
 # ---- Output heads --------------------------------------------------
-from .output_heads import LinearOutputHead, QuantileOutputHead
+from .output_heads import (
+    LinearOutputHead,
+    GaussianHead,
+    TDistributionHead,
+    MultiQuantileHead,
+)
 
 __all__ = [
     "LinearOutputHead",
-    "QuantileOutputHead",
+    "GaussianHead",
+    "TDistributionHead",
+    "MultiQuantileHead",
 ]

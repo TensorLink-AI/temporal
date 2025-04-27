@@ -1,6 +1,6 @@
 # ---- Feed-Forward blocks ------------------------------------------
-from .standard import StandardFeedForward
+from .standard import StandardFFN
 
 __all__ = [
-    "StandardFeedForward",
+    "StandardFFN",
 ]

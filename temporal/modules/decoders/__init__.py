@@ -1,8 +1,8 @@
 # ---- Encoder stacks -----------------------------------------------
-from .encoders                   import TimeSeriesTransformerEncoder
-from .transformer_encoder_layer  import TransformerEncoderLayer
+from .decoders                  import TimeSeriesTransformerDecoder
+from .transformer_decoder_layer  import TimeSeriesTransformerDecoderLayer
 
 __all__ = [
-    "TimeSeriesTransformerEncoder",
-    "TransformerEncoderLayer",
+    "TimeSeriesTransformerDecoder",
+    "TransformerDecoderLayer",
 ]

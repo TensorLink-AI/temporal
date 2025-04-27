@@ -1,8 +1,6 @@
 # ---- Loss functions ------------------------------------------------
-from .losses import MSELoss, MAELoss, QuantileLoss
+from .losses import TimeSeriesLoss
 
 __all__ = [
-    "MSELoss",
-    "MAELoss",
-    "QuantileLoss",
+    "TimeSeriesLoss",
 ]

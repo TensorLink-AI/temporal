@@ -8,8 +8,8 @@ from .timer_attention   import TimerAttention
 __all__ = [
     "FullAttention",
     "FlashAttention",
-    "DiffWistAttentionWithCache",
+    "DifferentialAttention",
     "HybridAttention",
-    "TimeFeatureAttention",
+    "TimeAttention",
     "TimerAttention",
 ]
