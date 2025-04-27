@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from temporal.registry.core import register_module
+from typing import Optional, Tuple
 
 
 @register_module("block", "multiscale")
