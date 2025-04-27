@@ -127,7 +127,7 @@ class FullAttention(BaseMultiHeadAttention):
 
         
 @register_module("attention", "flash")
-class FlashAttentionMultiHeadAttention(BaseMultiHeadAttention):
+class FlashAttention(BaseMultiHeadAttention):
     def __init__(self, embed_dim, num_heads, dropout=0.1, is_decoder=False, is_cross_attention=False, bias=True, **kwargs):
         super().__init__(embed_dim, num_heads, dropout, is_decoder, is_cross_attention, bias, **kwargs)
 
