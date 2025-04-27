@@ -121,7 +121,7 @@ class BaseMultiHeadAttention(nn.Module):
 # ------------------------------------------------------------------
 
 @register_module("attention", "full")
-class DotProductAttention(BaseMultiHeadAttention):
+class FullAttention(BaseMultiHeadAttention):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
