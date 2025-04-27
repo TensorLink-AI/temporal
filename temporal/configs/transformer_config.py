@@ -535,10 +535,11 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             is_decoder            = is_decoder,
             **kwargs,
         )
+        # final consistency check
+        self.validate_config()
 
 
-    # final consistency check
-    self.validate_config()
+
 
     def to_dict(self) -> dict:
         """
