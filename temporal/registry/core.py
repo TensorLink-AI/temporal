@@ -8,7 +8,7 @@ MODULE_REGISTRY = {
     "normalization": {},
     "loss": {},
     "block": {},
-    "output_head": {},  # ✅ NEW
+    "output_head": {},  
 
 }
 

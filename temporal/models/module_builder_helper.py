@@ -77,11 +77,12 @@ class ModuleBuilder:
         cfg = self.config.value_embedding_config
         cls = resolve("embedding", cfg.type)
         return cls(
-            input_size=self.config.feature_size,
-            hidden_size=self.config.hidden_size,
+            feature_size=self.config.feature_size, 
+            d_model=self.config.hidden_size,      
             dropout=cfg.dropout,
             **cfg.kwargs,
         )
+
 
     def build_positional_embedding(self) -> nn.Module:
         """
