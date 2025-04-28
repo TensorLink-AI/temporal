@@ -1,6 +1,6 @@
 from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 from transformers import PretrainedConfig
-from typing import Optional, Union, List, Any
+from typing import Optional, Union, List, Any, Dict # Added Dict
 
 
 class TransformerArchitectureConfig:
@@ -379,12 +379,14 @@ class NormalizationConfig:
     Configuration for normalization layers.
 
     Args:
-        norm_type (str): Type of normalization ('layer').
+        norm_type (str): Type of normalization ('layer', 'rms', 'scale').
         eps (float): Small epsilon value for numerical stability.
+        kwargs (Dict[str, Any]): Additional keyword arguments for the normalization layer.
     """
-    def __init__(self, norm_type="layer", eps=1e-5):
+    def __init__(self, norm_type="layer", eps=1e-5, kwargs: Optional[Dict[str, Any]] = None):
         self.norm_type = norm_type
         self.eps = eps
+        self.kwargs = kwargs or {}
 
     def to_dict(self):
         """
@@ -395,7 +397,8 @@ class NormalizationConfig:
         """
         return {
             "norm_type": self.norm_type,
-            "eps": self.eps
+            "eps": self.eps,
+            "kwargs": self.kwargs  # Added kwargs
         }
 
     @classmethod
@@ -411,7 +414,8 @@ class NormalizationConfig:
         """
         return cls(
             norm_type=d.get("norm_type", "layer"),
-            eps=d.get("eps", 1e-5)
+            eps=d.get("eps", 1e-5),
+            kwargs=d.get("kwargs", {}) # Added kwargs
         )
 
 

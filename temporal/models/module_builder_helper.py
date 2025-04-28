@@ -85,10 +85,11 @@ class ModuleBuilder:
         cfg = self.config.norm_config
         # Pass hidden_size directly to base_kwargs, which will be handled by _prepare_args
         # for classes like LayerNorm expecting 'normalized_shape'
+        # Pass cfg.kwargs now that NormalizationConfig has it.
         return self._build(
             "normalization", cfg.norm_type,
             base_kwargs=dict(hidden_size=self.config.hidden_size, eps=cfg.eps),
-            user_kwargs=cfg.kwargs # Added user_kwargs here to pass elementwise_affine etc.
+            user_kwargs=cfg.kwargs
         )
 
     def build_head_aggregator(self):
