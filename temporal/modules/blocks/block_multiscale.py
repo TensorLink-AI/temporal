@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F # Added missing import
 from einops import rearrange
 from temporal.registry.core import register_module
 from typing import Optional, Tuple

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional # Added missing import
 from temporal.models.module_builder_helper import ModuleBuilder
 
 from temporal.registry.core import register_module
