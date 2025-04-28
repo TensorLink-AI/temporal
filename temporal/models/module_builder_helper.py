@@ -16,7 +16,7 @@ def _prepare_args(cls: type[nn.Module],
     # handle common hidden-size aliases
     hidden = args.get("hidden_size")
     if hidden is not None:
-        for alias in ("d_model", "dim", "embedding_dim"):
+        for alias in ("d_model", "dim", "embedding_dim", "normalized_shape"): # Added normalized_shape here
             if alias in params and alias not in args:
                 args[alias] = hidden
 
@@ -83,9 +83,12 @@ class ModuleBuilder:
 
     def build_normalization(self):
         cfg = self.config.norm_config
+        # Pass hidden_size directly to base_kwargs, which will be handled by _prepare_args
+        # for classes like LayerNorm expecting 'normalized_shape'
         return self._build(
             "normalization", cfg.norm_type,
             base_kwargs=dict(hidden_size=self.config.hidden_size, eps=cfg.eps),
+            user_kwargs=cfg.kwargs # Added user_kwargs here to pass elementwise_affine etc.
         )
 
     def build_head_aggregator(self):
