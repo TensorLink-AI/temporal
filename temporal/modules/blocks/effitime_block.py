@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 
 from temporal.registry.core import register_module
-from temporal.modules.utils import expand_mask
+from temporal.utils.utils import expand_mask  # Corrected import path
 
 
 @register_module("block", "effitime")
