@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Assuming these loss functions are defined in temporal/losses/loss_functions.py
-from temporal.losses.loss_functions import (
+from temporal.modules.losses.loss_functions import (
     QuantileLoss,
     MQLoss,
     WeightedQuantileLoss,
