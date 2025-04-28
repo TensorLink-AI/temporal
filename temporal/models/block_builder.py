@@ -48,26 +48,54 @@ class BlockBuilder:
 
         init_kwargs = {}
 
+        # --- Add config and builder if accepted --- 
+        if "config" in accepted:
+            init_kwargs["config"] = self.config
+        if "builder" in accepted:
+            init_kwargs["builder"] = self.builder
+        # -----------------------------------------
+
         # Map attention submodule if constructor accepts
+        # Note: The config/builder logic above handles the specific case for default blocks.
+        # More generic blocks might accept 'attention' directly.
         if "attention" in accepted:
-            init_kwargs["attention"] = self.builder.build_attention(
-                block_cfg.attention_config
-            )
+            # Ensure we don't overwrite if config/builder added it via specific logic
+            if "attention" not in init_kwargs:
+                # Check if the block_cfg *itself* has an attention_config
+                # (As opposed to the global config passed to the builder)
+                if hasattr(block_cfg, 'attention_config') and block_cfg.attention_config:
+                    init_kwargs["attention"] = self.builder.build_attention(
+                        block_cfg.attention_config
+                    )
+                # else: Maybe log a warning if attention is expected but no config provided?
 
         # Map feed-forward submodule if accepted and configured
         if "ffn" in accepted and block_cfg.ffn_config is not None:
-            init_kwargs["ffn"] = self.builder.build_feedforward(
-                block_cfg.ffn_config
-            )
+             if "ffn" not in init_kwargs: # Avoid overwriting if already set by builder
+                init_kwargs["ffn"] = self.builder.build_feedforward(
+                    block_cfg.ffn_config
+                )
 
         # Map normalization function if accepted
         if "norm_fn" in accepted:
-            init_kwargs["norm_fn"] = self.builder.build_normalization
+            if "norm_fn" not in init_kwargs:
+                init_kwargs["norm_fn"] = self.builder.build_normalization
 
-        # Pass through any extra kwargs
-        if "kwargs" in accepted:
-            init_kwargs["kwargs"] = block_cfg.kwargs
-        else:
-            init_kwargs.update(block_cfg.kwargs)
+        # Pass through any extra kwargs from the block_cfg
+        if hasattr(block_cfg, 'kwargs') and block_cfg.kwargs:
+            # Prioritize kwargs specifically accepted by the constructor
+            ctor_kwargs = {k: v for k, v in block_cfg.kwargs.items() if k in accepted}
+            init_kwargs.update(ctor_kwargs)
 
-        return block_cls(**init_kwargs)
+            # If the constructor accepts **kwargs, pass everything
+            if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                 init_kwargs.update(block_cfg.kwargs) # Add potentially unlisted kwargs
+
+
+        # --- Final instantiation --- 
+        try:
+            return block_cls(**init_kwargs)
+        except TypeError as e:
+            print(f"Error instantiating {block_cls.__name__} with kwargs: {init_kwargs}")
+            print(f"Constructor signature: {sig}")
+            raise e
