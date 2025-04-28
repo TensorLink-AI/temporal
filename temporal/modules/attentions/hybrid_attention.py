@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, List, dict
+from typing import Optional, List
 
 from temporal.registry.core import register_module, resolve
 
