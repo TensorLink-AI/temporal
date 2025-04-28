@@ -15,10 +15,10 @@ class BlockBuilder:
             for constructing subcomponents (attention, feedforward, normalization).
     """
     def __init__(self, config, builder):
-        self.config = config
-        self.builder = builder
+        self.config = config # Main config
+        self.builder = builder # ModuleBuilder instance
 
-    def build_block(self, block_cfg):
+    def build_block(self, block_cfg): # block_cfg is the specific TransformerBlockConfig
         """
         Instantiate a block module from its configuration.
 
@@ -48,30 +48,32 @@ class BlockBuilder:
 
         init_kwargs = {}
 
-        # --- Add config and builder if accepted --- 
+        # --- Add config and builder if accepted ---
+        # *** MODIFICATION START ***
+        # If the constructor accepts 'config', pass the BLOCK config (block_cfg),
+        # NOT the main config (self.config).
         if "config" in accepted:
-            init_kwargs["config"] = self.config
+            init_kwargs["config"] = block_cfg # Pass the specific block config
+        # *** MODIFICATION END ***
+
+        # Pass the builder if accepted (this remains the same)
         if "builder" in accepted:
             init_kwargs["builder"] = self.builder
         # -----------------------------------------
 
-        # Map attention submodule if constructor accepts
-        # Note: The config/builder logic above handles the specific case for default blocks.
-        # More generic blocks might accept 'attention' directly.
+        # Map attention submodule if constructor accepts 'attention' directly
+        # (Our default layers don't accept 'attention' directly, they use the builder)
         if "attention" in accepted:
-            # Ensure we don't overwrite if config/builder added it via specific logic
             if "attention" not in init_kwargs:
-                # Check if the block_cfg *itself* has an attention_config
-                # (As opposed to the global config passed to the builder)
                 if hasattr(block_cfg, 'attention_config') and block_cfg.attention_config:
                     init_kwargs["attention"] = self.builder.build_attention(
                         block_cfg.attention_config
                     )
-                # else: Maybe log a warning if attention is expected but no config provided?
 
         # Map feed-forward submodule if accepted and configured
+        # (Our default layers don't accept 'ffn' directly, they use the builder)
         if "ffn" in accepted and block_cfg.ffn_config is not None:
-             if "ffn" not in init_kwargs: # Avoid overwriting if already set by builder
+             if "ffn" not in init_kwargs:
                 init_kwargs["ffn"] = self.builder.build_feedforward(
                     block_cfg.ffn_config
                 )
@@ -83,17 +85,15 @@ class BlockBuilder:
 
         # Pass through any extra kwargs from the block_cfg
         if hasattr(block_cfg, 'kwargs') and block_cfg.kwargs:
-            # Prioritize kwargs specifically accepted by the constructor
             ctor_kwargs = {k: v for k, v in block_cfg.kwargs.items() if k in accepted}
             init_kwargs.update(ctor_kwargs)
-
-            # If the constructor accepts **kwargs, pass everything
             if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-                 init_kwargs.update(block_cfg.kwargs) # Add potentially unlisted kwargs
-
+                 init_kwargs.update(block_cfg.kwargs)
 
         # --- Final instantiation --- 
         try:
+            # Pass the specific block_cfg via the 'config' key if needed
+            # Pass the builder via the 'builder' key if needed
             return block_cls(**init_kwargs)
         except TypeError as e:
             print(f"Error instantiating {block_cls.__name__} with kwargs: {init_kwargs}")
