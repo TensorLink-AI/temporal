@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from temporal.models.builder import ModuleBuilder
+from temporal.models.module_builder_helper import ModuleBuilder
 
 from temporal.registry.core import register_module
 
