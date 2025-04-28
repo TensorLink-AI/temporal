@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from temporal.registry.core import register_module
 from temporal.modules.heads.base_output_head import BaseOutputHead
-from temporal.modules.losses.loss_main import TimeSeriesLoss
+from temporal.modules.losses.losses import TimeSeriesLoss
 from temporal.modules.losses.distributional import TDistributionLoss
 from temporal.modules.losses.quantile import QuantileLoss
 
