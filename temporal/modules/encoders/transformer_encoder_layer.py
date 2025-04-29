@@ -1,75 +1,114 @@
+# Modified temporal/modules/encoders/transformer_encoder_layer.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
-# Import the specific block config type hint
-from temporal.configs.transformer_config import TransformerBlockConfig, AttentionConfig, FeedForwardConfig
+from typing import Optional, Tuple # Added Tuple for return type consistency
+# Import necessary config types
+from temporal.configs.transformer_config import TransformerBlockConfig, AttentionConfig, FeedForwardConfig, TransformerTimeSeriesConfig
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.registry.core import register_module
 
 @register_module("block", "default_encoder")
 class TimeSeriesTransformerEncoderLayer(nn.Module):
-    # Assume 'config' passed is the specific TransformerBlockConfig for this layer
-    # Builder provides access to main config and helper methods
     def __init__(self, config: TransformerBlockConfig, builder: ModuleBuilder):
         super().__init__()
         self.config = config # Stores the block config
+        main_config: TransformerTimeSeriesConfig = builder.config # Get main config from builder
 
-        # Ensure config.attention_config is an AttentionConfig object
-        if not isinstance(config.attention_config, AttentionConfig):
-             raise TypeError(f"Expected attention_config to be AttentionConfig, got {type(config.attention_config)}")
+        # --- Resolve Attention Config ---
+        # Priority: 1. Block-specific config, 2. Global encoder config
+        resolved_attn_config = config.attention_config # Try block specific first
 
-        # Build self-attention using the block's specific attention config
-        self.self_attn = builder.build_attention(config.attention_config)
+        if resolved_attn_config is None:
+             # Fallback to the global config's encoder attention
+             if hasattr(main_config, 'attention_config_global') and main_config.attention_config_global:
+                 resolved_attn_config = main_config.attention_config_global.encoder_attention
+             else:
+                 raise ValueError("No attention configuration found for encoder layer (neither block-specific nor global).")
 
-        # Ensure config.ffn_config is a FeedForwardConfig object
-        if not isinstance(config.ffn_config, FeedForwardConfig):
-            raise TypeError(f"Expected ffn_config to be FeedForwardConfig, got {type(config.ffn_config)}")
+        # Ensure we have a valid AttentionConfig object now
+        if not isinstance(resolved_attn_config, AttentionConfig):
+             raise TypeError(f"Resolved attention configuration is not an AttentionConfig instance, got {type(resolved_attn_config)}")
 
-        # Build FFN using the block's specific FFN config
-        self.ffn = builder.build_feedforward(config.ffn_config)
+        # Build self-attention using the resolved config (builder handles embed_dim)
+        self.self_attn = builder.build_attention(resolved_attn_config)
+        # --- End Resolve Attention Config ---
 
-        # Build normalization - assume builder handles config lookup (e.g., from main config)
+
+        # --- Resolve FFN Config ---
+        # Priority: 1. Block-specific config, 2. Global config
+        resolved_ffn_config = config.ffn_config
+        if resolved_ffn_config is None:
+            # Fallback to the main config's feedforward config
+            if hasattr(main_config, 'feedforward_config') and main_config.feedforward_config:
+                resolved_ffn_config = main_config.feedforward_config
+            else:
+                 raise ValueError("No feedforward configuration found for encoder layer (neither block-specific nor global).")
+
+        # Ensure we have a valid FeedForwardConfig object
+        if not isinstance(resolved_ffn_config, FeedForwardConfig):
+             raise TypeError(f"Resolved feedforward configuration is not a FeedForwardConfig instance, got {type(resolved_ffn_config)}")
+
+        # Build FFN using the resolved config
+        self.ffn = builder.build_feedforward(resolved_ffn_config)
+        # --- End Resolve FFN Config ---
+
+
+        # Build normalization - builder uses main_config.norm_config by default
         self.norm1 = builder.build_normalization()
         self.norm2 = builder.build_normalization()
 
-        # Get dropout probability from the main config via the builder
-        # Assuming builder has 'main_config' attribute holding TransformerTimeSeriesConfig
-        dropout_prob = 0.1 # Default dropout
-        if hasattr(builder, 'main_config') and hasattr(builder.main_config, 'hidden_dropout_prob'):
-            dropout_prob = builder.main_config.hidden_dropout_prob
-        elif hasattr(config, 'dropout') and config.dropout is not None: # Fallback to block config dropout if exists
-             dropout_prob = config.dropout
-
+        # Get dropout probability from the main config
+        dropout_prob = getattr(main_config, 'hidden_dropout_prob', 0.1) # Default 0.1
 
         self.dropout = nn.Dropout(dropout_prob)
+
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         output_attentions: Optional[bool] = False,
-    ):
-        # === Self-Attention ===
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]: # Ensure return type is a tuple
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`): attention mask of size
+                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+        """
         residual = hidden_states
-        # Original forward logic uses dropout after residual connection, let's keep it
-        attn_output_tensor, attn_probs, _ = self.self_attn(
-            hidden_states,
+        attn_probs = None # Initialize
+
+        # --- Self-Attention ---
+        # Assuming the attention module returns (output, weights, past_kv)
+        # For encoder, past_kv is usually None or not used.
+        attn_outputs = self.self_attn(
+            query=hidden_states,
+            key=hidden_states,
+            value=hidden_states,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
         )
-        # Apply dropout *after* attention, before adding residual and norm
-        hidden_states = self.norm1(residual + self.dropout(attn_output_tensor))
+        attn_output = attn_outputs[0]
+        if output_attentions:
+             attn_probs = attn_outputs[1]
 
-        # === Feedforward ===
+        hidden_states = self.norm1(residual + self.dropout(attn_output))
+        # --- End Self-Attention ---
+
+
+        # --- Feedforward ---
         residual = hidden_states
         ffn_output = self.ffn(hidden_states)
-        # Apply dropout *after* FFN, before adding residual and norm
         hidden_states = self.norm2(residual + self.dropout(ffn_output))
+        # --- End Feedforward ---
 
-        # The original returned (hidden_states, attn_probs) or (hidden_states,)
-        # Let's match that exactly.
+        # The layer should return a tuple: (hidden_states, attention_probs (optional))
+        outputs = (hidden_states,)
         if output_attentions:
-            return (hidden_states, attn_probs)
-        else:
-             return (hidden_states,)
+            outputs = outputs + (attn_probs,)
+
+        return outputs
