@@ -13,13 +13,19 @@ class AutoregressiveMixin:
     def _get_scalar_value(self, value: Union[torch.Tensor, float, int, Any], name: str) -> float:
         """ Safely converts a potential tensor value to a float scalar. """
         if torch.is_tensor(value):
-            if value.numel() == 1:
-                return float(value.item())
+            # Keep taking the first element until we have a single-element tensor
+            temp_value = value
+            while temp_value.numel() > 1:
+                 print(f"Warning: {name} tensor had {temp_value.numel()} elements. Taking first element.")
+                 temp_value = temp_value[0]
+            # Now temp_value should have 1 element
+            if temp_value.numel() == 1:
+                 return float(temp_value.item())
             else:
-                # This case is usually unexpected for start/eos tokens
-                print(f"Warning: {name} was a tensor with {value.numel()} elements. Using first element.")
-                return float(value[0].item())
+                 # Should be unreachable if the loop worked, but handle defensively
+                 raise ValueError(f"Could not reduce {name} tensor (original shape {value.shape}) to a scalar.")
         try:
+            # Handle non-tensor inputs
             return float(value)
         except (TypeError, ValueError) as e:
             raise TypeError(f"Could not convert {name}={value} (type {type(value)}) to float scalar. Error: {e}")
