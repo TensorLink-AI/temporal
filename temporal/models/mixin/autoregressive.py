@@ -13,19 +13,15 @@ class AutoregressiveMixin:
     def _get_scalar_value(self, value: Union[torch.Tensor, float, int, Any], name: str) -> float:
         """ Safely converts a potential tensor value to a float scalar. """
         if torch.is_tensor(value):
-            # Keep taking the first element until we have a single-element tensor
             temp_value = value
             while temp_value.numel() > 1:
                  print(f"Warning: {name} tensor had {temp_value.numel()} elements. Taking first element.")
                  temp_value = temp_value[0]
-            # Now temp_value should have 1 element
             if temp_value.numel() == 1:
                  return float(temp_value.item())
             else:
-                 # Should be unreachable if the loop worked, but handle defensively
                  raise ValueError(f"Could not reduce {name} tensor (original shape {value.shape}) to a scalar.")
         try:
-            # Handle non-tensor inputs
             return float(value)
         except (TypeError, ValueError) as e:
             raise TypeError(f"Could not convert {name}={value} (type {type(value)}) to float scalar. Error: {e}")
@@ -42,7 +38,6 @@ class AutoregressiveMixin:
         eos_token_id: Optional[Any] = None,           # Allow Tensor or scalar
         early_stopping: bool = False,
         output_attentions: bool = False,
-        # feedback_strategy: str = "raw",  # Options: "raw", "mean", "first", "sample"
         **kwargs,
     ) -> torch.Tensor:
         """Autoregressive generation, supporting encoder-decoder and decoder-only.
@@ -69,6 +64,7 @@ class AutoregressiveMixin:
 
         # 1) Prepare Encoder Output
         encoder_hidden_states = None
+        input_feature_size = input_ids.shape[-1] # Get feature size from input
         if hasattr(self, 'encoder') and self.encoder is not None:
             if input_ids is None: raise ValueError("Encoder exists but input_ids are None.")
             encoder_outputs = self.encoder(
@@ -88,15 +84,15 @@ class AutoregressiveMixin:
              # Encoder-Decoder Path
              if effective_start_token_id is None: raise ValueError("Start token ID is None unexpectedly.")
              
-             model_dim = getattr(self.config, 'hidden_size', getattr(self.config, 'd_model', None))
-             if model_dim is None and hasattr(self, 'decoder') and self.decoder and hasattr(self.decoder, 'config'):
-                  model_dim = getattr(self.decoder.config, 'hidden_size', getattr(self.decoder.config, 'd_model', None))
-             if model_dim is None: raise AttributeError("Could not determine model dimension")
+             # Use input_feature_size determined from the actual input tensor
+             model_feature_size = input_feature_size 
 
              start_value_scalar = self._get_scalar_value(effective_start_token_id, "decoder_start_token_id")
 
+             # Initialize with the correct feature dimension
              decoder_input_ids = torch.full(
-                 (batch_size, 1, model_dim), start_value_scalar,
+                 (batch_size, 1, model_feature_size), # Shape [B, 1, Feat_Enc]
+                 start_value_scalar, 
                  dtype=encoder_hidden_states.dtype if encoder_hidden_states is not None else torch.float32,
                  device=device,
              )
@@ -113,13 +109,14 @@ class AutoregressiveMixin:
 
         # 3) Autoregressive Loop
         for step in range(prediction_length):
+            # Use last *feature* step as input if using cache, otherwise full history
             step_input_ids = decoder_input_ids[:, -1:, :] if use_cache and past_key_values is not None else decoder_input_ids
             step_attention_mask = internal_decoder_attention_mask if not use_cache or past_key_values is None else None
 
             if not hasattr(self, 'decoder') or self.decoder is None: raise AttributeError("Model missing decoder")
 
             decoder_outputs = self.decoder(
-                input_ids=step_input_ids,
+                input_ids=step_input_ids, # Shape [B, 1, Feat] or [B, T, Feat]
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=attention_mask,
                 attention_mask=step_attention_mask,
@@ -130,16 +127,12 @@ class AutoregressiveMixin:
                 **kwargs.get("decoder_kwargs", {}),
             )
 
-            last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]
+            last_hidden = decoder_outputs.last_hidden_state[:, -1:, :] # Shape [B, 1, HiddenSize]
 
-            # --- Pass through Output Heads --- 
+            # Pass through Output Heads 
             if not hasattr(self, 'output_heads'): raise AttributeError("Model missing output_heads")
-            
-            # Ensure input is contiguous before linear layer (output head)
             last_hidden_contiguous = last_hidden.contiguous()
-            
             if isinstance(self.output_heads, nn.ModuleList):
-                # Apply contiguous to input for each head
                 head_outputs = [head(last_hidden_contiguous) for head in self.output_heads]
                 if hasattr(self, 'head_aggregator') and self.head_aggregator:
                     next_pred_features = self.head_aggregator(head_outputs)
@@ -147,34 +140,23 @@ class AutoregressiveMixin:
                     next_pred_features = head_outputs[0]
                 else: raise ValueError("Output heads list empty")
             else:
-                # Apply contiguous to input for single head
-                next_pred_features = self.output_heads(last_hidden_contiguous)
-            # --- End Output Heads --- 
+                next_pred_features = self.output_heads(last_hidden_contiguous) # Shape [B, 1, OutputFeatures]
             
             predictions.append(next_pred_features)
 
-            # Prepare input for the next step
-            model_dim = getattr(self.config, 'hidden_size', getattr(self.config, 'd_model', None))
-            if model_dim is None and hasattr(self, 'decoder') and self.decoder and hasattr(self.decoder, 'config'):
-                  model_dim = getattr(self.decoder.config, 'hidden_size', getattr(self.decoder.config, 'd_model', None))
-            if model_dim is None: raise AttributeError("Could not determine model dim for next step")
+            # Prepare input for the next step - Use the predicted features directly.
+            # The decoder's value_embedding should handle projection from OutputFeatures to HiddenSize.
+            next_decoder_input_step = next_pred_features.contiguous() 
 
-            output_feature_size = next_pred_features.shape[-1]
-            if output_feature_size == model_dim:
-                next_decoder_input_step = next_pred_features
-            elif hasattr(self.decoder, 'value_embedding'):
-                 try: 
-                     # Ensure input to value_embedding is also contiguous
-                     next_decoder_input_step = self.decoder.value_embedding(next_pred_features.contiguous())
-                 except RuntimeError as e: raise RuntimeError(f"Output feature/embedding mismatch? Error: {e}")
-            else:
-                 raise NotImplementedError(f"Output/model dim mismatch ({output_feature_size} vs {model_dim}), no value_embedding found.")
+            # NOTE: The previous logic assuming the input to the next step should be model_dim was likely incorrect.
+            # The standard flow is: predict features -> feed features back -> value_embedding projects features to model_dim.
 
             decoder_input_ids = torch.cat([decoder_input_ids, next_decoder_input_step], dim=1)
             current_seq_len += 1
 
             if internal_decoder_attention_mask is not None and not use_cache:
                  try:
+                     # Simple mask update assuming [B, Seq] - needs adjustment if mask is 4D
                      new_mask_column = torch.ones((batch_size, 1), dtype=internal_decoder_attention_mask.dtype, device=device)
                      internal_decoder_attention_mask = torch.cat([internal_decoder_attention_mask, new_mask_column], dim=1)
                  except Exception as e: print(f"Warning: Mask update failed: {e}")
@@ -187,10 +169,11 @@ class AutoregressiveMixin:
                 except IndexError: print("Warning: EOS check failed (IndexError)")
 
         if not predictions:
-             output_feature_size = 1
+             output_feature_size = 1 # Default
              if hasattr(self, 'output_heads'):
                  try:
                      out_head = self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
+                     # Infer output feature size from head
                      if hasattr(out_head, 'output_size'): output_feature_size = out_head.output_size
                      elif hasattr(out_head, 'out_features'): output_feature_size = out_head.out_features
                      elif hasattr(out_head, 'decoder') and hasattr(out_head.decoder, 'out_features'): output_feature_size = out_head.decoder.out_features
