@@ -87,17 +87,12 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         bsz, seq_len = input_shape[:2]
 
         # Handle potential tensor inputs from tracing/compilation
-        # Use .item() only if it's a single-element tensor, otherwise default (e.g., to 1 for seq_len)
-        # or raise an error if a multi-element tensor is truly unexpected here.
         if torch.is_tensor(seq_len):
             if seq_len.numel() == 1:
                 _seq_len = int(seq_len.item())
             else:
-                # This case is suspicious - seq_len should usually be scalar here.
-                # Maybe take the first element? Or raise an error?
                 print(f"Warning: seq_len was a tensor with {seq_len.numel()} elements. Using first element.")
-                _seq_len = int(seq_len[0].item()) # Example: Use first element
-                # OR raise ValueError(f"seq_len tensor had unexpected number of elements: {seq_len.numel()}")
+                _seq_len = int(seq_len[0].item()) # Use first element as fallback
         else:
             _seq_len = int(seq_len)
 
@@ -105,11 +100,19 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
             if past_key_values_length.numel() == 1:
                 _start = int(past_key_values_length.item())
             else:
-                # Similar handling for past_key_values_length if it can become a tensor
                 print(f"Warning: past_key_values_length was a tensor with {past_key_values_length.numel()} elements. Using first element.")
                 _start = int(past_key_values_length[0].item())
         else:
             _start = int(past_key_values_length)
+
+        # If _seq_len is non-positive, arange will be empty or invalid.
+        # Return an empty tensor with the correct embedding dimension.
+        if _seq_len <= 0:
+             print(f"Warning: Calculated sequence length is {_seq_len}. Returning empty positional embedding.")
+             # Shape: [batch_size, sequence_length=0, embedding_dim]
+             # Need batch size from input_shape[0]
+             _bsz = int(bsz.item()) if torch.is_tensor(bsz) and bsz.numel()==1 else int(bsz)
+             return torch.empty((_bsz, 0, self.dim), device=self.weight.device, dtype=self.weight.dtype)
 
         _end = _start + _seq_len
 
@@ -120,12 +123,20 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
             device=self.weight.device,
         )
 
-        # Ensure positions do not exceed max_seq_len
-        if positions.max() >= self.max_seq_len:
-             raise IndexError(
-                 f"Requested position index {positions.max()} is out of bounds for " +
-                 f"SinusoidalPositionalEmbedding with max_seq_len {self.max_seq_len}."
+        # Check bounds ONLY if positions tensor is not empty
+        if positions.numel() > 0:
+             if positions.max() >= self.max_seq_len:
+                 raise IndexError(
+                     f"Requested position index {positions.max()} is out of bounds for " +
+                     f"SinusoidalPositionalEmbedding with max_seq_len {self.max_seq_len}."
                  )
+        # Handle case where positions might still be empty if _start >= _end unexpectedly
+        # (e.g., if _seq_len became 0 after the initial check)
+        if positions.numel() == 0:
+            print(f"Warning: Position tensor is empty after arange(_start={_start}, _end={_end}). Returning empty embedding.")
+            _bsz = int(bsz.item()) if torch.is_tensor(bsz) and bsz.numel()==1 else int(bsz)
+            return torch.empty((_bsz, 0, self.dim), device=self.weight.device, dtype=self.weight.dtype)
+
         return self.weight[positions]
 
 
