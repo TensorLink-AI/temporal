@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple # Added Tuple for return type consistency
+from typing import Optional, Tuple
 # Import necessary config types
 from temporal.configs.transformer_config import TransformerBlockConfig, AttentionConfig, FeedForwardConfig, TransformerTimeSeriesConfig
 from temporal.models.module_builder_helper import ModuleBuilder
@@ -12,8 +12,8 @@ from temporal.registry.core import register_module
 class TimeSeriesTransformerEncoderLayer(nn.Module):
     def __init__(self, config: TransformerBlockConfig, builder: ModuleBuilder):
         super().__init__()
-        self.config = config # Stores the block config
-        main_config: TransformerTimeSeriesConfig = builder.config # Get main config from builder
+        self.config = config 
+        main_config: TransformerTimeSeriesConfig = builder.config 
 
         # --- Resolve Attention Config ---
         resolved_attn_config = config.attention_config 
@@ -49,34 +49,32 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         output_attentions: Optional[bool] = False,
-        # Encoder layer doesn't typically use past_kv or encoder context
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]: # Return signature matches expected tuple
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]: # Return signature adjusted
         """
         Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`): attention mask of size
-                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-                 Note: BaseMultiHeadAttention handles expansion if input is [B, S]
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attention probabilities.
+            hidden_states (`torch.FloatTensor`): input shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`): mask shape `(batch, 1, tgt_len, src_len)`
+            output_attentions (`bool`, *optional*): Whether to return attention probabilities.
+        Returns:
+             Tuple: (hidden_states, attn_probs)
+                    attn_probs is None if output_attentions is False or not returned by attn layer.
         """
         residual = hidden_states
-        attn_probs = None # Initialize
+        attn_probs = None 
 
         # --- Self-Attention ---
-        # Call attention layer with the expected signature: (hidden_states, key_value=None, past_kv=None, mask, ...)
-        # Encoder self-attention: hidden_states acts as Q, K, V. key_value_states is None.
         attn_outputs = self.self_attn(
-            hidden_states=hidden_states, # Pass the input as hidden_states
-            key_value_states=None,      # Explicitly None for self-attention
-            past_key_value=None,        # Encoder doesn't use caching
+            hidden_states=hidden_states,
+            key_value_states=None,      
+            past_key_value=None,        
             attention_mask=attention_mask,
             output_attentions=output_attentions,
-            use_cache=False             # Explicitly False for encoder
+            use_cache=False             
         )
         attn_output = attn_outputs[0]
-        if output_attentions:
-             attn_probs = attn_outputs[1] # Assuming attn_probs is the second element
+        # Capture attn_probs only if output_attentions is True AND the attn module returned them
+        if output_attentions and len(attn_outputs) > 1:
+             attn_probs = attn_outputs[1] 
 
         hidden_states = self.norm1(residual + self.dropout(attn_output))
         # --- End Self-Attention ---
@@ -87,14 +85,5 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         hidden_states = self.norm2(residual + self.dropout(ffn_output))
         # --- End Feedforward ---
 
-        # The layer returns a tuple: (hidden_states, attention_probs (optional))
-        outputs = (hidden_states,)
-        if output_attentions and attn_probs is not None:
-            outputs = outputs + (attn_probs,)
-        elif output_attentions:
-            # If output_attentions is True but attn_probs is None (e.g., FlashAttention)
-            # Add None placeholder to maintain tuple structure if expected by caller
-             outputs = outputs + (None,)
-        
-        # Return only hidden_states if not output_attentions
-        return outputs[0] if not output_attentions else outputs
+        # Always return a tuple (hidden_states, attn_probs or None)
+        return (hidden_states, attn_probs)
