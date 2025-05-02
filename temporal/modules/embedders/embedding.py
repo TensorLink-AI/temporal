@@ -85,13 +85,23 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
     @torch.no_grad()
     def forward(self, input_shape: torch.Size, past_key_values_length: int = 0) -> torch.Tensor:
         bsz, seq_len = input_shape[:2]
+
+        # make sure both are Python ints for torch.arange
+        seq_len = int(seq_len)                             # new
+        start   = int(past_key_values_length)              # keep explicit
+        end     = start + seq_len
+
         positions = torch.arange(
-            past_key_values_length, past_key_values_length + seq_len, dtype=torch.long, device=self.weight.device
+            start,
+            end,
+            dtype=torch.long,
+            device=self.weight.device,
         )
+
         # Ensure positions do not exceed max_seq_len
         if positions.max() >= self.max_seq_len:
              raise IndexError(
-                 f"Requested position index {positions.max()} is out of bounds for " + 
+                 f"Requested position index {positions.max()} is out of bounds for " +
                  f"SinusoidalPositionalEmbedding with max_seq_len {self.max_seq_len}."
                  )
         return self.weight[positions]
