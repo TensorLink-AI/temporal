@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers.modeling_outputs import BaseModelOutput
-from typing import Optional, List, Tuple # Added Tuple
+from typing import Optional, List, Tuple, Union # Added Union
 
 # Import ModuleBuilder from the new helper file
 from temporal.models.module_builder_helper import ModuleBuilder
@@ -48,7 +48,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = True,
-    ) -> Union[BaseModelOutput, Tuple]: # Update return type hint
+    ) -> Union[BaseModelOutput, Tuple]: # Updated return type hint
 
         # === Embedding ===
         value_embeds = self.value_embedding(input_values)  # [B, L, D]
