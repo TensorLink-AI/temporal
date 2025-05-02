@@ -17,7 +17,6 @@ class BaseEmbedding(nn.Module):
         self.d_model = d_model
 
     def forward(self, *args, **kwargs):
-        # Changed signature to allow different forward args for subclasses
         raise NotImplementedError("Each embedding must implement its own forward method.")
 
 
@@ -31,19 +30,18 @@ class TimeSeriesValueEmbedding(BaseEmbedding):
         self.value_projection = nn.Linear(feature_size, d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Signature: (B, L, F) -> (B, L, D)
         return self.value_projection(x)
 
 
 # -----------------------------
-# Positional Embedding (Original - for reference)
+# Positional Embedding (Original - Commented Out)
 # -----------------------------
 # @register_module("embedding", "positional")
 # class PositionalEmbedding(BaseEmbedding):
 #     ...
 
 # -----------------------------
-# Sinusoidal Positional Embedding (Refactored)
+# Sinusoidal Positional Embedding (Flexible Signature)
 # -----------------------------
 @register_module("embedding", "sinusoidal")
 class SinusoidalPositionalEmbedding(BaseEmbedding):
@@ -51,9 +49,8 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         super().__init__(d_model=dim)
         self.dim = dim
         self.max_seq_len = max_seq_len
-        # Create and register the positional embedding weights buffer
         weights = self._init_weights()
-        self.register_buffer('weight', weights) # Register as buffer, not parameter
+        self.register_buffer('weight', weights)
 
     def _init_weights(self) -> torch.Tensor:
         position_enc = np.array(
@@ -66,66 +63,117 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         sentinel = self.dim // 2 if self.dim % 2 == 0 else (self.dim // 2) + 1
         out[:, 0:sentinel] = torch.FloatTensor(np.sin(position_enc[:, 0::2]))
         out[:, sentinel:] = torch.FloatTensor(np.cos(position_enc[:, 1::2]))
-        return out # Return the tensor directly
+        return out
 
-    @torch.no_grad() # Embeddings typically don't require gradients
-    def forward(self, batch_size: int, seq_len: int, past_key_values_length: int = 0) -> torch.Tensor:
+    @torch.no_grad()
+    def forward(self, *args, past_key_values_length: int = 0) -> torch.Tensor:
         """
-        Generates positional embeddings based on explicit batch size, sequence length,
-        and the length of any past sequence (for caching).
-
-        Args:
-            batch_size (int): The batch size of the input.
-            seq_len (int): The sequence length of the *current* input.
-            past_key_values_length (int): The length of the sequence already processed
-                                          (used for KV caching in autoregressive generation).
-
-        Returns:
-            torch.Tensor: Positional embeddings of shape [batch_size, seq_len, d_model]
-                          (or [1, seq_len, d_model] if batch_size=1 for broadcasing)
+        Accepts either:
+          * forward(batch_size, seq_len, past_key_values_length=0) [New Style]
+          * forward(input_shape, past_key_values_length=0)      [Old Style]
+            where input_shape is a tuple/Tensor like (batch, seq_len, ...)
         """
-        # Ensure inputs are integers
-        _bsz = int(batch_size)
-        _seq_len = int(seq_len)
-        _start = int(past_key_values_length)
+        # --------------------------------------------
+        # 1) Unpack arguments & Handle potential tensor values robustly
+        batch_size: int
+        seq_len: int
 
-        if _seq_len <= 0:
-            # Return an empty tensor with correct shape [B, 0, D]
-            return torch.empty((_bsz, 0, self.dim), device=self.weight.device, dtype=self.weight.dtype)
+        if len(args) == 1:
+            # Old style: forward(input_shape, past_key_values_length=...)
+            input_shape = args[0]
+            try:
+                bsz_arg = input_shape[0]
+                seq_len_arg = input_shape[1]
 
-        _end = _start + _seq_len
+                # --- Robust conversion to int --- 
+                if torch.is_tensor(bsz_arg):
+                    if bsz_arg.numel() == 1:
+                        batch_size = int(bsz_arg.item())
+                    else:
+                        print(f"Warning (forward/old): bsz_arg was tensor {bsz_arg.shape}. Using first element.")
+                        batch_size = int(bsz_arg[0].item())
+                else:
+                    batch_size = int(bsz_arg)
 
-        # Calculate positions for the current sequence chunk
-        positions = torch.arange(
-            _start,
-            _end,
-            dtype=torch.long,
-            device=self.weight.device,
-        )
+                if torch.is_tensor(seq_len_arg):
+                    if seq_len_arg.numel() == 1:
+                        seq_len = int(seq_len_arg.item())
+                    else:
+                        print(f"Warning (forward/old): seq_len_arg was tensor {seq_len_arg.shape}. Using first element.")
+                        seq_len = int(seq_len_arg[0].item())
+                else:
+                    seq_len = int(seq_len_arg)
+                # --- End robust conversion --- 
 
-        # Check bounds ONLY if positions tensor is not empty
-        if positions.numel() > 0:
-            max_pos = positions.max()
-            if max_pos >= self.max_seq_len:
-                raise IndexError(
-                    f"Requested position index {max_pos} is out of bounds for "
-                    f"SinusoidalPositionalEmbedding with max_seq_len {self.max_seq_len}."
+            except (TypeError, IndexError) as e:
+                 raise TypeError(
+                    f"SinusoidalPositionalEmbedding.forward: Could not unpack batch_size and seq_len "
+                    f"from single argument input_shape={input_shape}. Error: {e}"
                 )
+
+        elif len(args) == 2:
+            # New style: forward(batch_size, seq_len, past_key_values_length=...)
+            # Assume these are already reasonably convertible to int
+            try:
+                 batch_size = int(args[0])
+                 seq_len    = int(args[1])
+            except (TypeError, ValueError) as e:
+                 raise TypeError(
+                     f"SinusoidalPositionalEmbedding.forward: Could not convert batch_size={args[0]} "
+                     f"and seq_len={args[1]} to integers. Error: {e}"
+                 )
         else:
-            # This case should ideally not be reached if _seq_len > 0, but handle defensively
-            print(f"Warning: Position tensor empty after arange(start={_start}, end={_end}).")
-            return torch.empty((_bsz, 0, self.dim), device=self.weight.device, dtype=self.weight.dtype)
+            raise TypeError(
+                f"SinusoidalPositionalEmbedding.forward expected 1 (input_shape) or 2 (batch_size, seq_len) "
+                f"positional arguments, got {len(args)} args={args}"
+            )
 
-        # Retrieve embeddings for calculated positions and expand for batch
-        # self.weight shape: [max_seq_len, dim]
-        # positions shape: [calculated_seq_len]
-        # result shape: [calculated_seq_len, dim]
-        selected_embeddings = self.weight[positions]
+        # Handle past_key_values_length (robustly, just in case)
+        if torch.is_tensor(past_key_values_length):
+             if past_key_values_length.numel() == 1:
+                 past_len = int(past_key_values_length.item())
+             else:
+                 print(f"Warning (forward): past_key_values_length was tensor {past_key_values_length.shape}. Using first element.")
+                 past_len = int(past_key_values_length[0].item())
+        else:
+             past_len = int(past_key_values_length)
+        # --------------------------------------------
 
-        # Expand to match batch size: [calculated_seq_len, dim] -> [1, calculated_seq_len, dim]
-        # Broadcasting will handle the batch dimension during addition in the calling module
-        # Alternatively, explicitly expand: .expand(_bsz, -1, -1)
-        return selected_embeddings.unsqueeze(0)
+        # 2) Early-exit on empty sequence
+        if seq_len <= 0:
+            # Use the derived integer batch_size here
+            return torch.empty((batch_size, 0, self.dim),
+                               device=self.weight.device,
+                               dtype=self.weight.dtype)
+
+        # 3) Build position indices
+        start = past_len
+        end   = past_len + seq_len
+        if end > self.max_seq_len:
+             # Check against the maximum position index (end - 1)
+             max_req_pos = end - 1
+             raise IndexError(
+                 f"Requested position index {max_req_pos} is out of bounds for "
+                 f"SinusoidalPositionalEmbedding with max_seq_len {self.max_seq_len}."
+             )
+
+        positions = torch.arange(start, end, dtype=torch.long,
+                                 device=self.weight.device)
+
+        # Check bounds ONLY if positions is not empty (redundant given seq_len > 0 check, but safe)
+        if positions.numel() > 0:
+             # We already checked end > max_seq_len, this check is slightly redundant
+             # max_pos = positions.max()
+             # if max_pos >= self.max_seq_len:
+             #     raise IndexError(...) # Should not happen if end check is correct
+             pass
+        else:
+             # This should not happen if seq_len > 0
+             print(f"Warning: Position tensor empty after arange(start={start}, end={end}). Should not happen if seq_len > 0.")
+             return torch.empty((batch_size, 0, self.dim), device=self.weight.device, dtype=self.weight.dtype)
+
+        # 4) Gather + unsqueeze for batch broadcast
+        return self.weight[positions].unsqueeze(0)  # [1, seq_len, dim]
 
 
 # -----------------------------
