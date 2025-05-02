@@ -86,14 +86,36 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
     def forward(self, input_shape: torch.Size, past_key_values_length: int = 0) -> torch.Tensor:
         bsz, seq_len = input_shape[:2]
 
-        # make sure both are Python ints for torch.arange
-        seq_len = int(seq_len)                             # new
-        start   = int(past_key_values_length)              # keep explicit
-        end     = start + seq_len
+        # Handle potential tensor inputs from tracing/compilation
+        # Use .item() only if it's a single-element tensor, otherwise default (e.g., to 1 for seq_len)
+        # or raise an error if a multi-element tensor is truly unexpected here.
+        if torch.is_tensor(seq_len):
+            if seq_len.numel() == 1:
+                _seq_len = int(seq_len.item())
+            else:
+                # This case is suspicious - seq_len should usually be scalar here.
+                # Maybe take the first element? Or raise an error?
+                print(f"Warning: seq_len was a tensor with {seq_len.numel()} elements. Using first element.")
+                _seq_len = int(seq_len[0].item()) # Example: Use first element
+                # OR raise ValueError(f"seq_len tensor had unexpected number of elements: {seq_len.numel()}")
+        else:
+            _seq_len = int(seq_len)
+
+        if torch.is_tensor(past_key_values_length):
+            if past_key_values_length.numel() == 1:
+                _start = int(past_key_values_length.item())
+            else:
+                # Similar handling for past_key_values_length if it can become a tensor
+                print(f"Warning: past_key_values_length was a tensor with {past_key_values_length.numel()} elements. Using first element.")
+                _start = int(past_key_values_length[0].item())
+        else:
+            _start = int(past_key_values_length)
+
+        _end = _start + _seq_len
 
         positions = torch.arange(
-            start,
-            end,
+            _start,
+            _end,
             dtype=torch.long,
             device=self.weight.device,
         )
