@@ -67,67 +67,49 @@ class AutoregressiveMixin:
         batch_size = input_ids.shape[0]
         device = input_ids.device
 
-        # 1) Prepare Encoder Output (if encoder exists)
+        # 1) Prepare Encoder Output
         encoder_hidden_states = None
         if hasattr(self, 'encoder') and self.encoder is not None:
-            if input_ids is None:
-                 raise ValueError("Encoder exists but input_ids are None.")
+            if input_ids is None: raise ValueError("Encoder exists but input_ids are None.")
             encoder_outputs = self.encoder(
-                input_ids,
-                attention_mask=attention_mask,
-                output_attentions=output_attentions,
-                return_dict=True,
-                **kwargs.get("encoder_kwargs", {}), # Pass specific encoder args
+                input_ids, attention_mask=attention_mask, output_attentions=output_attentions,
+                return_dict=True, **kwargs.get("encoder_kwargs", {}),
             )
-            if hasattr(encoder_outputs, 'last_hidden_state'):
-                encoder_hidden_states = encoder_outputs.last_hidden_state
-            else:
-                encoder_hidden_states = encoder_outputs # Assume raw tensor
-        else:
-            pass # encoder_hidden_states remains None
+            encoder_hidden_states = getattr(encoder_outputs, 'last_hidden_state', encoder_outputs)
 
         # 2) Initialize Decoder Input Sequence
         effective_start_token_id = decoder_start_token_id
         if hasattr(self, 'encoder') and self.encoder is not None and effective_start_token_id is None:
-             if hasattr(self.config, "decoder_start_token_id") and self.config.decoder_start_token_id is not None:
-                  effective_start_token_id = self.config.decoder_start_token_id
-             else:
-                  raise ValueError("Encoder-decoder generation requires a decoder_start_token_id via argument or config.")
+             effective_start_token_id = getattr(self.config, "decoder_start_token_id", None)
+             if effective_start_token_id is None: 
+                  raise ValueError("Encoder-decoder requires decoder_start_token_id via arg or config.")
 
         if hasattr(self, 'encoder') and self.encoder is not None:
              # Encoder-Decoder Path
-             if effective_start_token_id is None:
-                 raise ValueError("Encoder-decoder effective_start_token_id is None unexpectedly.")
+             if effective_start_token_id is None: raise ValueError("Start token ID is None unexpectedly.")
              
-             model_dim = getattr(self.config, 'hidden_size', None)
-             if model_dim is None: model_dim = getattr(self.config, 'd_model', None)
+             model_dim = getattr(self.config, 'hidden_size', getattr(self.config, 'd_model', None))
              if model_dim is None and hasattr(self, 'decoder') and self.decoder and hasattr(self.decoder, 'config'):
                   model_dim = getattr(self.decoder.config, 'hidden_size', getattr(self.decoder.config, 'd_model', None))
-             if model_dim is None: raise AttributeError("Could not determine model dimension (hidden_size/d_model)")
+             if model_dim is None: raise AttributeError("Could not determine model dimension")
 
-             # Safely get scalar start value
              start_value_scalar = self._get_scalar_value(effective_start_token_id, "decoder_start_token_id")
 
              decoder_input_ids = torch.full(
-                 (batch_size, 1, model_dim), 
-                 start_value_scalar, # Use the ensured scalar value
-                 dtype=torch.float32 if encoder_hidden_states is None else encoder_hidden_states.dtype,
+                 (batch_size, 1, model_dim), start_value_scalar,
+                 dtype=encoder_hidden_states.dtype if encoder_hidden_states is not None else torch.float32,
                  device=device,
              )
              current_seq_len = 1
         
-        elif not (hasattr(self, 'encoder') and self.encoder is not None):
+        else: # Decoder-Only Path
              decoder_input_ids = input_ids
              current_seq_len = decoder_input_ids.shape[1]
 
         predictions = []
         past_key_values = None
         internal_decoder_attention_mask = decoder_attention_mask
-
-        # Safely get scalar eos value if needed
-        eos_value_scalar = None
-        if early_stopping and eos_token_id is not None:
-            eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
+        eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id") if early_stopping and eos_token_id is not None else None
 
         # 3) Autoregressive Loop
         for step in range(prediction_length):
@@ -150,21 +132,28 @@ class AutoregressiveMixin:
 
             last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]
 
+            # --- Pass through Output Heads --- 
             if not hasattr(self, 'output_heads'): raise AttributeError("Model missing output_heads")
-
+            
+            # Ensure input is contiguous before linear layer (output head)
+            last_hidden_contiguous = last_hidden.contiguous()
+            
             if isinstance(self.output_heads, nn.ModuleList):
-                head_outputs = [head(last_hidden) for head in self.output_heads]
+                # Apply contiguous to input for each head
+                head_outputs = [head(last_hidden_contiguous) for head in self.output_heads]
                 if hasattr(self, 'head_aggregator') and self.head_aggregator:
                     next_pred_features = self.head_aggregator(head_outputs)
                 elif head_outputs:
                     next_pred_features = head_outputs[0]
                 else: raise ValueError("Output heads list empty")
             else:
-                next_pred_features = self.output_heads(last_hidden)
+                # Apply contiguous to input for single head
+                next_pred_features = self.output_heads(last_hidden_contiguous)
+            # --- End Output Heads --- 
             
             predictions.append(next_pred_features)
 
-            # Prepare input for the next step (handle potential dim mismatch)
+            # Prepare input for the next step
             model_dim = getattr(self.config, 'hidden_size', getattr(self.config, 'd_model', None))
             if model_dim is None and hasattr(self, 'decoder') and self.decoder and hasattr(self.decoder, 'config'):
                   model_dim = getattr(self.decoder.config, 'hidden_size', getattr(self.decoder.config, 'd_model', None))
@@ -174,7 +163,9 @@ class AutoregressiveMixin:
             if output_feature_size == model_dim:
                 next_decoder_input_step = next_pred_features
             elif hasattr(self.decoder, 'value_embedding'):
-                 try: next_decoder_input_step = self.decoder.value_embedding(next_pred_features)
+                 try: 
+                     # Ensure input to value_embedding is also contiguous
+                     next_decoder_input_step = self.decoder.value_embedding(next_pred_features.contiguous())
                  except RuntimeError as e: raise RuntimeError(f"Output feature/embedding mismatch? Error: {e}")
             else:
                  raise NotImplementedError(f"Output/model dim mismatch ({output_feature_size} vs {model_dim}), no value_embedding found.")
@@ -190,11 +181,9 @@ class AutoregressiveMixin:
 
             if use_cache: past_key_values = decoder_outputs.past_key_values
 
-            # Check for early stopping using the scalar eos value
             if early_stopping and eos_value_scalar is not None:
                 try:
-                    if torch.isclose(next_pred_features[:, :, 0], torch.tensor(eos_value_scalar, device=device)).all():
-                        break
+                    if torch.isclose(next_pred_features[:, :, 0], torch.tensor(eos_value_scalar, device=device)).all(): break
                 except IndexError: print("Warning: EOS check failed (IndexError)")
 
         if not predictions:
