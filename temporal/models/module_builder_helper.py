@@ -5,37 +5,51 @@ from temporal.registry.core import resolve
 
 def _prepare_args(cls: type[nn.Module],
                   base: Dict[str, Any],
-                  extra: Dict[str, Any]) -> Dict[str, Any]:
+                  extra: Dict[str, Any],
+                  builder_instance=None) -> Dict[str, Any]: # Added builder_instance
     """
-    Merge `base` + `extra`, keep only ctor-accepted keys, add hidden-size aliases.
+    Merge `base` + `extra`, keep only ctor-accepted keys, add hidden-size aliases,
+    and optionally add the builder instance if accepted.
     """
     sig = inspect.signature(cls.__init__)
     params = sig.parameters
     args = {**base, **extra}
 
     # handle common hidden-size aliases
-    hidden = args.get("hidden_size") # Keep this for other modules
-    embed_dim_val = args.get("embed_dim") # Check if embed_dim was passed directly
-
-    # Prioritize explicit embed_dim if passed, otherwise use hidden_size if needed
+    hidden = args.get("hidden_size")
+    embed_dim_val = args.get("embed_dim")
     target_dim = embed_dim_val if embed_dim_val is not None else hidden
 
     if target_dim is not None:
-        # Ensure embed_dim is set if the constructor accepts it
         if 'embed_dim' in params and 'embed_dim' not in args:
              args['embed_dim'] = target_dim
-        # Map to other aliases if they exist and aren't already set
         for alias in ("d_model", "dim", "embedding_dim", "normalized_shape"):
             if alias in params and alias not in args:
                 args[alias] = target_dim
 
-    # drop unsupported keys
+    # Check if constructor accepts 'builder' argument
+    accepts_builder = 'builder' in params
+
+    # Drop unsupported keys, but keep track if 'builder' was originally passed
     allowed = {p for p in params if p not in ("self", "args", "kwargs")}
-    return {k: v for k, v in args.items() if k in allowed}
+    final_args = {k: v for k, v in args.items() if k in allowed and k != 'builder'}
+
+    # Add the builder instance if the constructor accepts it and an instance was provided
+    if accepts_builder and builder_instance is not None:
+        final_args['builder'] = builder_instance
+        
+    # Handle original 'builder' argument if passed and constructor accepts it
+    # This prevents accidentally overwriting a specifically passed builder arg 
+    # if the calling code somehow passed one in base or extra kwargs.
+    if 'builder' in args and 'builder' not in final_args and accepts_builder: 
+        final_args['builder'] = args['builder']
+        
+    # print(f"_prepare_args for {cls.__name__}: final_args = {final_args.keys()}") # Debug print
+    return final_args
 
 
 class ModuleBuilder:
-    def __init__(self, config):   # unchanged
+    def __init__(self, config):
         self.config = config
 
     # ------------------------------------------------------------------
@@ -49,25 +63,24 @@ class ModuleBuilder:
         base_kwargs  = base_kwargs  or {}
         user_kwargs  = user_kwargs  or {}
         cls = resolve(kind, name)
-        kwargs = _prepare_args(cls, base_kwargs, user_kwargs)
-        # Debugging print: See what args are passed to the constructor
-        # print(f"Building {kind}/{name} ({cls.__name__}) with args: {kwargs}")
-        return cls(**kwargs)
+        # === Pass self (the builder instance) to _prepare_args ===
+        kwargs = _prepare_args(cls, base_kwargs, user_kwargs, builder_instance=self)
+        # print(f"Building {kind}/{name} ({cls.__name__}) with args: {kwargs.keys()}") # Debug print keys
+        try:
+            return cls(**kwargs)
+        except TypeError as e:
+             raise TypeError(f"Error instantiating {kind}/{name} ({cls.__name__}) with args {list(kwargs.keys())}: {e}") from e
 
     # ------------------------------------------------------------------
-    # Specific helpers become one-liners
+    # Specific helpers remain unchanged, _build now handles builder injection
     # ------------------------------------------------------------------
     def build_attention(self, cfg):
-        # cfg is an AttentionConfig instance
-        # Pass hidden_size AS embed_dim directly into base_kwargs.
-        # _prepare_args will then ensure it's used if the constructor needs 'embed_dim'.
         return self._build(
             "attention", cfg.attention_type,
             base_kwargs=dict(
-                embed_dim=self.config.hidden_size, # Key change: pass as embed_dim
+                embed_dim=self.config.hidden_size,
                 num_heads=cfg.num_heads,
                 dropout=cfg.dropout,
-                # Get bias from cfg if present, else default (True is common)
                 bias=getattr(cfg, 'bias', True)
             ),
             user_kwargs=cfg.kwargs,
@@ -77,7 +90,7 @@ class ModuleBuilder:
         cfg = cfg or self.config.feedforward_config
         return self._build(
             "feedforward", cfg.type,
-            base_kwargs=dict(hidden_size=self.config.hidden_size, # Keep as hidden_size here
+            base_kwargs=dict(hidden_size=self.config.hidden_size,
                              intermediate_size=cfg.intermediate_size,
                              activation=cfg.activation,
                              dropout=cfg.dropout),
@@ -88,7 +101,7 @@ class ModuleBuilder:
         cfg = self.config.value_embedding_config
         return self._build(
             "embedding", cfg.type,
-            base_kwargs=dict(hidden_size=self.config.hidden_size, # Keep as hidden_size here
+            base_kwargs=dict(hidden_size=self.config.hidden_size,
                              feature_size=self.config.feature_size),
             user_kwargs=cfg.kwargs,
         )
@@ -96,17 +109,14 @@ class ModuleBuilder:
     def build_positional_embedding(self):
         cfg = self.config.positional_embedding_config
         return self._build("embedding", cfg.type,
-                           base_kwargs=dict(hidden_size=self.config.hidden_size), # Keep as hidden_size here
+                           base_kwargs=dict(hidden_size=self.config.hidden_size),
                            user_kwargs=cfg.kwargs)
 
     def build_normalization(self):
         cfg = self.config.norm_config
-        # Pass hidden_size directly to base_kwargs, which will be handled by _prepare_args
-        # for classes like LayerNorm expecting 'normalized_shape'
-        # Pass cfg.kwargs now that NormalizationConfig has it.
         return self._build(
             "normalization", cfg.norm_type,
-            base_kwargs=dict(hidden_size=self.config.hidden_size, eps=cfg.eps), # Keep as hidden_size here
+            base_kwargs=dict(hidden_size=self.config.hidden_size, eps=cfg.eps),
             user_kwargs=cfg.kwargs
         )
 
