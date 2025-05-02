@@ -58,9 +58,10 @@ class TimeSeriesTransformerEncoder(nn.Module):
             pos_embed = self.positional_embedding(
                 batch_size=batch_size,
                 seq_len=seq_len,
-                past_key_values_length=0 
-            ) 
-            if pos_embed.shape[0] != 1: raise ValueError(f"Pos emb batch dim: {pos_embed.shape[0]}. Expected 1.")
+                past_key_values_length=0
+            )
+            # REMOVED: The check for batch_dim == 1 was too restrictive
+            # if pos_embed.shape[0] != 1: raise ValueError(f"Pos emb batch dim: {pos_embed.shape[0]}. Expected 1.")
             if pos_embed.shape[1] != seq_len: raise ValueError(f"Pos emb seq len dim: {pos_embed.shape[1]}. Expected {seq_len}.")
         except Exception as e:
             print(f"Error during positional embedding call in Encoder: {e}")
