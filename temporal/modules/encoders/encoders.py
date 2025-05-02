@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers.modeling_outputs import BaseModelOutput
-from typing import Optional, List
+from typing import Optional, List, Tuple # Added Tuple
 
 # Import ModuleBuilder from the new helper file
 from temporal.models.module_builder_helper import ModuleBuilder
@@ -19,7 +19,6 @@ class TimeSeriesTransformerEncoder(nn.Module):
 
         self.layernorm_embedding = builder.build_normalization()
         self.value_embedding = builder.build_value_embedding()
-        # Ensure positional embedding supports explicit (batch, seq_len) call
         self.positional_embedding = builder.build_positional_embedding()
         block_builder = BlockBuilder(config, builder)
         self.layers = nn.ModuleList([
@@ -36,6 +35,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
                  else:
                      print(f"Warning (Encoder): Dimension {dim} size is a tensor with {dim_size.numel()} elements. Using first.")
                      return int(dim_size[0].item())
+            # Handle non-tensor (e.g., int, torch.Size element which is int)
             return int(dim_size)
         except (IndexError, TypeError) as e:
             print(f"Warning (Encoder): Failed to get dimension {dim} size as int: {e}. Returning 0.")
@@ -48,49 +48,27 @@ class TimeSeriesTransformerEncoder(nn.Module):
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = True,
-    ) -> BaseModelOutput:
+    ) -> Union[BaseModelOutput, Tuple]: # Update return type hint
 
         # === Embedding ===
         value_embeds = self.value_embedding(input_values)  # [B, L, D]
-
-        # Explicitly get batch size and sequence length as integers
         batch_size = self._get_tensor_dim_as_int(input_values, 0)
         seq_len = self._get_tensor_dim_as_int(input_values, 1)
-
-        # Generate positional encoding using the explicit signature
-        # Encoder processes the whole sequence at once (past_key_values_length=0)
         try:
             pos_embed = self.positional_embedding(
                 batch_size=batch_size,
                 seq_len=seq_len,
                 past_key_values_length=0 
-            ) # Expected shape: [1, L, D]
-
-            # Ensure pos_embed shape is broadcastable: [1, L, D]
-            # The positional embedding should return [1, L, D] for broadcasting
-            if pos_embed.shape[0] != 1:
-                 raise ValueError(f"Positional embedding returned unexpected batch dim: {pos_embed.shape[0]}. Expected 1.")
-            if pos_embed.shape[1] != seq_len:
-                 raise ValueError(f"Positional embedding returned unexpected seq len dim: {pos_embed.shape[1]}. Expected {seq_len}.")
-
-        except TypeError as e:
-             if "positional_embedding()" in str(e) or "forward()" in str(e):
-                 raise TypeError(
-                     f"The positional embedding layer ({type(self.positional_embedding).__name__}) in Encoder "
-                     f"does not support the signature `forward(self, batch_size, seq_len, past_key_values_length)`. "
-                     f"Check its implementation or the builder logic." 
-                 ) from e
-             else:
-                 raise e # Re-raise other TypeErrors
+            ) 
+            if pos_embed.shape[0] != 1: raise ValueError(f"Pos emb batch dim: {pos_embed.shape[0]}. Expected 1.")
+            if pos_embed.shape[1] != seq_len: raise ValueError(f"Pos emb seq len dim: {pos_embed.shape[1]}. Expected {seq_len}.")
         except Exception as e:
             print(f"Error during positional embedding call in Encoder: {e}")
             raise e
-
-        # Sum + norm + dropout
-        # Broadcasting handles cases where pos_embed is [1, L, D]
         hidden_states = value_embeds + pos_embed
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = self.dropout(hidden_states)
+        # === End Embedding ===
 
         # --- Transformer Layers --- 
         all_hidden_states = () if output_hidden_states else None
@@ -103,25 +81,32 @@ class TimeSeriesTransformerEncoder(nn.Module):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-            # Encoder blocks typically only need hidden_states and attention_mask
-            layer_outputs = layer(
+            # Call the layer
+            # Layer is expected to return Tuple[torch.Tensor, Optional[torch.Tensor]]
+            # where the first element is hidden_states and second is attn_probs (or None)
+            layer_outputs: Tuple[torch.Tensor, Optional[torch.Tensor]] = layer(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
                 output_attentions=output_attentions,
             )
 
-            hidden_states = layer_outputs[0]
-
+            # --- Correct Unpacking --- 
+            hidden_states = layer_outputs[0] # First element is always the hidden state
             if output_attentions:
-                if len(layer_outputs) > 1 and layer_outputs[1] is not None:
-                     all_attentions += (layer_outputs[1],)
+                attn_probs = layer_outputs[1] # Second element is attn_probs (or None)
+                if attn_probs is not None:
+                    all_attentions += (attn_probs,)
+            # --- End Correct Unpacking --- 
 
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
         if not return_dict:
-             outputs = (hidden_states,) + (all_hidden_states,) + (all_attentions,)
-             return tuple(output for output in outputs if output is not None)
+             outputs = (hidden_states,) 
+             if output_hidden_states: outputs = outputs + (all_hidden_states,)
+             if output_attentions: outputs = outputs + (all_attentions,)
+             # Filter None in case hidden states or attentions were not collected
+             return tuple(output for output in outputs if output is not None) 
              
         return BaseModelOutput(
             last_hidden_state=hidden_states,
