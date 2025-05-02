@@ -6,7 +6,7 @@ from typing import Optional
 class MultiStepMixin:
     """Mixin for models supporting multi-step generation (predicting the entire horizon at once)."""
 
-    def generate(
+    def generate_multistep(
         self,
         input_ids: torch.Tensor,
         prediction_length: int,
@@ -73,8 +73,15 @@ class MultiStepMixin:
             if attention_mask is not None:
                  # Expand mask for cross-attention: [B, 1, 1, Seq_Enc]
                  # The decoder implementation will typically handle the broadcasting
-                 encoder_attention_mask = attention_mask[:, None, None, :].float()
-                 encoder_attention_mask = (1.0 - encoder_attention_mask) * -1e9 # Invert and scale for attention scores
+                 # Assuming attention_mask is [B, Seq_Enc]
+                 if attention_mask.dim() == 2:
+                     cross_attn_mask = attention_mask[:, None, None, :].float()
+                 # Add handling for other potential mask shapes if necessary
+                 # elif attention_mask.dim() == 4:
+                 #     cross_attn_mask = attention_mask.float()
+                 else:
+                      raise ValueError(f"Unsupported attention_mask dimension: {attention_mask.dim()}")
+                 encoder_attention_mask = (1.0 - cross_attn_mask) * -1e9 # Invert and scale for attention scores
             else:
                  encoder_attention_mask = None # No masking
 
@@ -112,26 +119,40 @@ class MultiStepMixin:
                 # Masked history parts should not be attended to by anyone.
                 # Future parts should not attend to other future parts ahead of them.
                 if attention_mask is not None:
-                    # attention_mask is [B, Hist_Len]. Expand to match causal_mask [B, 1, Combined_Len, Combined_Len]
-                    # We want rows corresponding to history to be masked based on attention_mask
-                    # We want columns corresponding to history to be masked based on attention_mask for all rows
-                    expanded_hist_mask = attention_mask[:, None, :, None].expand(batch_size, 1, history_len, combined_sequence_len).float()
-                    # Also mask attending *to* masked history positions
-                    expanded_hist_mask_T = attention_mask[:, None, None, :].expand(batch_size, 1, combined_sequence_len, history_len).float()
+                     # attention_mask is [B, Hist_Len]. Expand to match causal_mask [B, 1, Combined_Len, Combined_Len]
+                     # We want rows corresponding to history to be masked based on attention_mask
+                     # We want columns corresponding to history to be masked based on attention_mask for all rows
+                     if attention_mask.dim() != 2 or attention_mask.shape[1] != history_len:
+                          raise ValueError(f"attention_mask must have shape [B, Hist_Len], but got {attention_mask.shape}")
 
-                    # Combine: Start with full causal mask
-                    full_mask = causal_mask[None, None, :, :].expand(batch_size, -1, -1, -1) # [B, 1, Combined, Combined]
+                     # Ensure mask is boolean or float [0, 1]
+                     if attention_mask.dtype != torch.bool:
+                         hist_mask_bool = attention_mask.bool() # Convert to boolean
+                     else:
+                         hist_mask_bool = attention_mask
 
-                    # Apply history mask (where history attends to others, and others attend to history)
-                    # Mask attending TO history:
-                    full_mask[:, :, :, :history_len] = full_mask[:, :, :, :history_len] * expanded_hist_mask_T
-                    # Mask attending FROM history (redundant with causal mask, but explicit):
-                    # full_mask[:, :, :history_len, :] = full_mask[:, :, :history_len, :] * expanded_hist_mask
+                     # Create combined mask: starts causal
+                     full_mask_bool = causal_mask[None, :, :].expand(batch_size, -1, -1) # [B, Combined, Combined]
 
-                    # Convert to additive mask
-                    decoder_attention_mask = (1.0 - full_mask) * -1e9
+                     # Apply history mask: If history token `j` is masked (hist_mask_bool[b, j] is False),
+                     # then nothing should attend TO it (column `j` should be False), and
+                     # it should not attend TO anything (row `j` should be False).
+                     # Causal mask already handles row masking for future tokens attending to history.
+
+                     # Mask attending TO masked history positions
+                     # Make column `j` False if hist_mask_bool[b, j] is False
+                     full_mask_bool[:, :, :history_len] = full_mask_bool[:, :, :history_len] & hist_mask_bool[:, None, :history_len]
+
+                     # Mask attending FROM masked history positions
+                     # Make row `j` False if hist_mask_bool[b, j] is False
+                     full_mask_bool[:, :history_len, :] = full_mask_bool[:, :history_len, :] & hist_mask_bool[:, :history_len, None]
+
+                     # Convert boolean mask to additive float mask expected by attention
+                     # Add extra dimensions for multi-head attention [B, Num_Heads=1, Seq, Seq]
+                     decoder_attention_mask = (~full_mask_bool[:, None, :, :]).float() * -1e9
                 else:
                      # Simple causal mask if no history mask provided
+                     # Add extra dimensions for multi-head attention [B, Num_Heads=1, Seq, Seq]
                      decoder_attention_mask = (1.0 - causal_mask)[None, None, :, :] * -1e9
 
 
@@ -139,6 +160,8 @@ class MultiStepMixin:
             encoder_hidden_states = None
             encoder_attention_mask = None
 
+        if not hasattr(self, 'decoder') or self.decoder is None:
+             raise AttributeError("Model must have a 'decoder' attribute for multi-step generation.")
 
         # 2) Decode the full sequence
         # Decoder attention mask is for self-attention.
@@ -167,6 +190,8 @@ class MultiStepMixin:
             # Encoder-Decoder: The output corresponds directly to prediction_length
             hidden_states_for_heads = hidden_states # [B, Pred_Len, H]
 
+        if not hasattr(self, 'output_heads'):
+            raise AttributeError("Model must have 'output_heads' for generation.")
 
         if isinstance(self.output_heads, nn.ModuleList):
             head_outputs = [head(hidden_states_for_heads) for head in self.output_heads] # List of [B, Pred_Len, Q]
@@ -176,8 +201,8 @@ class MultiStepMixin:
                 predictions = head_outputs[0] # fallback to first head
             else:
                  # This should not happen if a model is meant to generate predictions
-                 raise ValueError("No output heads found to generate predictions.")
-        elif hasattr(self, 'output_heads') and self.output_heads is not None:
+                 raise ValueError("Output head list is empty.")
+        elif self.output_heads is not None:
             predictions = self.output_heads(hidden_states_for_heads) # [B, Pred_Len, Q]
         else:
              raise ValueError("Model does not have 'output_heads' attribute required for generation.")
@@ -202,6 +227,6 @@ class MultiStepMixin:
 #
 # model = MyMultiStepModel(config)
 # history_data = torch.randn(4, 50, 8) # Batch=4, History=50, Features=8
-# predictions = model.generate(history_data, prediction_length=10)
+# predictions = model.generate_multistep(history_data, prediction_length=10)
 # assert predictions.shape == (4, 10, config.output_feature_size) # Check output shape
 
