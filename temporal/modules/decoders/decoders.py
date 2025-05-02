@@ -13,11 +13,6 @@ from temporal.configs.transformer_config import TransformerBlockConfig
 class TimeSeriesTransformerDecoder(nn.Module):
     """
     Flexible Transformer decoder using block configs.
-
-    Supports:
-    - Self + Cross attention
-    - Caching for autoregressive decoding
-    - Optional return of attention weights
     """
 
     def __init__(
@@ -33,7 +28,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
 
         self.layernorm_embedding = builder.build_normalization()
         self.value_embedding = builder.build_value_embedding()
-        # Ensure the positional embedding layer used supports the required signature
+        # Positional embedding layer should now accept (batch_size, seq_len, past_len)
         self.positional_embedding = builder.build_positional_embedding()
 
         block_builder = BlockBuilder(config, builder)
@@ -45,27 +40,45 @@ class TimeSeriesTransformerDecoder(nn.Module):
         """ Helper to get sequence length from KV cache. """
         if past_key_values is None or not past_key_values:
             return 0
-        # Cache format: List[layer_idx] -> Tuple[self_attn_kv, cross_attn_kv]
-        # self_attn_kv: Tuple[key, value], shapes like [B, Heads, SeqLen, HeadDim]
-        # We need the SeqLen dimension from the key or value tensor of the first layer's self-attention cache
         try:
-            # Check self-attention key tensor shape (index 0, 0)
-            # Shape is typically [batch_size, num_heads, sequence_length, head_dim]
-            # Or sometimes [batch_size, sequence_length, num_heads * head_dim] if heads are merged
-            # Assuming the standard [B, Heads, SeqLen, HeadDim] or similar where SeqLen is dim 2
+            # Assuming KV cache format [Layer][Self/Cross][Key/Value] -> Tensor
+            # Shape: [B, Heads, SeqLen, HeadDim] or [B, SeqLen, HiddenDim]
             first_layer_self_k = past_key_values[0][0][0]
-            if first_layer_self_k.dim() == 4: # Standard case
-                 return first_layer_self_k.shape[2]
-            elif first_layer_self_k.dim() == 3: # Might be [B, SeqLen, HiddenDim]
-                 return first_layer_self_k.shape[1]
-            else: # Fallback if shape is unexpected
-                 print(f"Warning: Unexpected KV cache tensor dimension: {first_layer_self_k.dim()}. Assuming seq_len is 0.")
-                 return 0
+            if first_layer_self_k.dim() == 4:
+                 past_len = first_layer_self_k.shape[2]
+            elif first_layer_self_k.dim() == 3:
+                 past_len = first_layer_self_k.shape[1]
+            else:
+                 print(f"Warning: Unexpected KV cache tensor dimension: {first_layer_self_k.dim()}.")
+                 past_len = 0
+            # Handle potential tensor output from cache shape inspection
+            if torch.is_tensor(past_len):
+                 if past_len.numel() == 1:
+                     return int(past_len.item())
+                 else:
+                     print(f"Warning: past_len derived from cache shape has {past_len.numel()} elements. Using first.")
+                     return int(past_len[0].item())
+            return int(past_len)
 
-        except (IndexError, AttributeError) as e:
-            print(f"Warning: Could not determine past_key_values_length from cache structure: {e}. Returning 0.")
+        except (IndexError, AttributeError, TypeError) as e:
+            print(f"Warning: Could not determine past_key_values_length from cache: {e}. Returning 0.")
             return 0
 
+    def _get_tensor_dim_as_int(self, tensor: torch.Tensor, dim: int) -> int:
+        """ Safely extracts a dimension size, handling potential tensor dim values. """
+        try:
+            dim_size = tensor.shape[dim]
+            if torch.is_tensor(dim_size):
+                 if dim_size.numel() == 1:
+                     return int(dim_size.item())
+                 else:
+                     # This indicates a more serious issue with shape representation
+                     print(f"Warning: Dimension {dim} size is a tensor with {dim_size.numel()} elements. Using first.")
+                     return int(dim_size[0].item())
+            return int(dim_size)
+        except (IndexError, TypeError) as e:
+            print(f"Warning: Failed to get dimension {dim} size as int: {e}. Returning 0.")
+            return 0
 
     def forward(
         self,
@@ -83,49 +96,55 @@ class TimeSeriesTransformerDecoder(nn.Module):
         # Determine past sequence length for positional embeddings if using cache
         past_key_values_length = self._get_past_key_values_length(past_key_values)
 
+        # Explicitly get batch size and sequence length as integers
+        batch_size = self._get_tensor_dim_as_int(input_ids, 0)
+        current_seq_len = self._get_tensor_dim_as_int(input_ids, 1)
+
         # === Embedding ===
-        # Embed raw float input features
         value_embeds = self.value_embedding(input_ids)  # [B, T, D]
 
-        # Generate sinusoidal position encoding based on input shape and past length
-        # This requires self.positional_embedding to have the signature:
-        # forward(self, input_shape: torch.Size, past_key_values_length: int = 0)
+        # Generate positional encoding using the new signature
         try:
             pos_embed = self.positional_embedding(
-                input_ids.shape, # Pass the shape [B, T, F]
+                batch_size=batch_size,
+                seq_len=current_seq_len,
                 past_key_values_length=past_key_values_length
-            ) # [B, T, D]
+            ) # Expected shape: [1, T, D] or [B, T, D]
+
+            # Ensure pos_embed shape is broadcastable: [1, T, D] or [B, T, D]
+            if pos_embed.shape[0] != batch_size and pos_embed.shape[0] != 1:
+                 raise ValueError(f"Positional embedding returned unexpected batch dim: {pos_embed.shape[0]}. Expected 1 or {batch_size}")
+            if pos_embed.shape[1] != current_seq_len:
+                 raise ValueError(f"Positional embedding returned unexpected seq len dim: {pos_embed.shape[1]}. Expected {current_seq_len}")
+
         except TypeError as e:
-             # Add more informative error if the embedding layer doesn't support the call signature
-             if "positional_embedding() takes" in str(e) or "forward() takes" in str(e):
+             if "positional_embedding()" in str(e) or "forward()" in str(e):
                  raise TypeError(
-                     f"The configured positional embedding layer ({type(self.positional_embedding).__name__}) "
-                     f"does not seem to support the required signature "
-                     f"`forward(self, input_shape, past_key_values_length)`. Check its implementation."
+                     f"The positional embedding layer ({type(self.positional_embedding).__name__}) "
+                     f"does not support the signature `forward(self, batch_size, seq_len, past_key_values_length)`. "
+                     f"Check its implementation or the builder logic." 
                  ) from e
              else:
                  raise e # Re-raise other TypeErrors
+        except Exception as e:
+            print(f"Error during positional embedding call: {e}")
+            raise e
 
         # Sum + norm + dropout
+        # Broadcasting handles cases where pos_embed is [1, T, D]
         hidden_states = value_embeds + pos_embed
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = self.dropout(hidden_states)
 
-
+        # --- Rest of the decoder logic remains largely the same ---
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         all_cross_attns = () if output_attentions else None
-        next_decoder_cache = [] if use_cache else None # Renamed for clarity
-
-        # Adjust attention mask for caching if needed
-        # `attention_mask` passed in is for the *current* input_ids relative to the full sequence.
-        # It might need adjustment or combination with cached length info depending on the specific block implementation.
-        # For now, assume blocks handle slicing or absolute positions correctly based on past_kv.
+        next_decoder_cache = [] if use_cache else None
 
         for idx, layer in enumerate(self.layers):
             if self.training and torch.rand([]).item() < self.layerdrop:
-                if use_cache: # Need to append None to keep cache structure consistent
-                    next_decoder_cache.append(None)
+                if use_cache: next_decoder_cache.append(None)
                 continue
 
             layer_past_key_value = past_key_values[idx] if past_key_values is not None else None
@@ -133,61 +152,42 @@ class TimeSeriesTransformerDecoder(nn.Module):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-            # Pass necessary inputs to the decoder layer
-            # Ensure the layer signature matches what's being passed
             layer_outputs = layer(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
-                attention_mask=attention_mask, # Pass the potentially adjusted mask for self-attention
-                encoder_attention_mask=encoder_attention_mask, # Pass the mask for cross-attention
-                past_key_value=layer_past_key_value, # Pass the cache for this layer
+                attention_mask=attention_mask,
+                encoder_attention_mask=encoder_attention_mask,
+                past_key_value=layer_past_key_value,
                 output_attentions=output_attentions,
-                use_cache=use_cache, # Inform layer if cache is needed
+                use_cache=use_cache,
             )
 
             hidden_states = layer_outputs[0]
 
             if use_cache:
-                 # layer_outputs should ideally return the new cache state if use_cache=True
-                 # Assuming layer_outputs structure is (hidden_state, self_attn_weights, cross_attn_weights, present_key_value)
-                 # Check if the layer actually returned a cache tuple
                  present_key_value = layer_outputs[-1] if len(layer_outputs) > 1 else None
                  if not isinstance(present_key_value, tuple) and present_key_value is not None:
-                      # Attempt to find cache in a potential dict output if layer uses return_dict=True internally
                       if hasattr(present_key_value, 'past_key_value'):
                            present_key_value = present_key_value.past_key_value
                       else:
-                           print(f"Warning: Layer {idx} output structure unexpected or did not return cache when use_cache=True.")
-                           present_key_value = None # Assign None if cache is not found/returned correctly
+                           print(f"Warning: Layer {idx} output structure unexpected when use_cache=True.")
+                           present_key_value = None
                  next_decoder_cache.append(present_key_value)
 
-
             if output_attentions:
-                 # Assuming structure (hidden, self_attn(optional), cross_attn(optional), cache(optional))
-                 # Adjust indices based on actual layer output structure
                  self_attn_weights = layer_outputs[1] if len(layer_outputs) > 1 and layer_outputs[1] is not None else None
                  cross_attn_weights = layer_outputs[2] if len(layer_outputs) > 2 and layer_outputs[2] is not None else None
-                 if self_attn_weights is not None:
-                     all_self_attns += (self_attn_weights,)
-                 # Check if cross attention exists and was output
-                 if cross_attn_weights is not None and encoder_hidden_states is not None:
-                     all_cross_attns += (cross_attn_weights,)
+                 if self_attn_weights is not None: all_self_attns += (self_attn_weights,)
+                 if cross_attn_weights is not None and encoder_hidden_states is not None: all_cross_attns += (cross_attn_weights,)
 
-
-        # Add last hidden state
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        # Convert list of tuples to tuple of tuples if using cache
         next_cache = tuple(next_decoder_cache) if use_cache else None
 
         if not return_dict:
             return tuple(v for v in [
-                hidden_states,
-                all_hidden_states,
-                all_self_attns,
-                all_cross_attns,
-                next_cache, # Use the potentially converted cache
+                hidden_states, all_hidden_states, all_self_attns, all_cross_attns, next_cache
             ] if v is not None)
 
         return BaseModelOutputWithPastAndCrossAttentions(
@@ -195,6 +195,5 @@ class TimeSeriesTransformerDecoder(nn.Module):
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
             cross_attentions=all_cross_attns,
-            past_key_values=next_cache, # Use the potentially converted cache
+            past_key_values=next_cache,
         )
-
