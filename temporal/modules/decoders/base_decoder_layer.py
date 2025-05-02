@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 from temporal.configs.transformer_config import TransformerBlockConfig, AttentionConfig, FeedForwardConfig, TransformerTimeSeriesConfig # Added main config
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.registry.core import register_module
+import copy # Import copy for deepcopy
 
 @register_module("block", "default_decoder")
 class TimeSeriesTransformerDecoderLayer(nn.Module):
@@ -13,33 +14,42 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         super().__init__()
         self.config = config # Stores the block config
         main_config: TransformerTimeSeriesConfig = builder.config # Get main config from builder
+        self.is_encoder_decoder = main_config.architecture.layout == "encoder-decoder"
 
         # --- Resolve Self-Attention Config ---
         resolved_self_attn_config = config.attention_config
         if resolved_self_attn_config is None:
-             # DEPRECATED: Fallback to global config is less flexible than per-block config
-             # Consider removing global attention_blocks from TransformerTimeSeriesConfig later
+             # DEPRECATED fallback logic
              if hasattr(main_config, 'attention_blocks') and main_config.attention_blocks:
                  resolved_self_attn_config = main_config.attention_blocks.decoder_attention
              else:
                  raise ValueError("No self-attention configuration found for decoder layer.")
         if not isinstance(resolved_self_attn_config, AttentionConfig):
              raise TypeError(f"Resolved self-attention config is not AttentionConfig: {type(resolved_self_attn_config)}")
-        self.self_attn = builder.build_attention(resolved_self_attn_config, is_decoder=True, is_cross_attention=False)
+        
+        self_attn_build_config = copy.deepcopy(resolved_self_attn_config)
+        self_attn_build_config.kwargs['is_decoder'] = True
+        self_attn_build_config.kwargs['is_cross_attention'] = False
+        self.self_attn = builder.build_attention(self_attn_build_config)
         # --- End Resolve Self-Attention Config ---
 
-        # --- Resolve Cross-Attention Config ---
-        # Use the same resolved config as self-attention by default if block-specific
-        # Or fallback to specific global cross-attention config
-        resolved_cross_attn_config = config.attention_config # Assume block config applies to both if provided
-        if resolved_cross_attn_config is None:
-             if hasattr(main_config, 'attention_blocks') and main_config.attention_blocks:
-                 resolved_cross_attn_config = main_config.attention_blocks.decoder_cross_attention
-             else:
-                 raise ValueError("No cross-attention configuration found for decoder layer.")
-        if not isinstance(resolved_cross_attn_config, AttentionConfig):
-             raise TypeError(f"Resolved cross-attention config is not AttentionConfig: {type(resolved_cross_attn_config)}")
-        self.cross_attn = builder.build_attention(resolved_cross_attn_config, is_decoder=True, is_cross_attention=True)
+        # --- Conditionally Resolve Cross-Attention Config ---
+        self.cross_attn = None
+        if self.is_encoder_decoder:
+            resolved_cross_attn_config = config.attention_config # Assume block config applies to both if provided
+            if resolved_cross_attn_config is None:
+                 # DEPRECATED fallback logic
+                 if hasattr(main_config, 'attention_blocks') and main_config.attention_blocks:
+                     resolved_cross_attn_config = main_config.attention_blocks.decoder_cross_attention
+                 else:
+                     raise ValueError("No cross-attention configuration found for encoder-decoder layer.")
+            if not isinstance(resolved_cross_attn_config, AttentionConfig):
+                 raise TypeError(f"Resolved cross-attention config is not AttentionConfig: {type(resolved_cross_attn_config)}")
+            
+            cross_attn_build_config = copy.deepcopy(resolved_cross_attn_config)
+            cross_attn_build_config.kwargs['is_decoder'] = True
+            cross_attn_build_config.kwargs['is_cross_attention'] = True
+            self.cross_attn = builder.build_attention(cross_attn_build_config)
         # --- End Resolve Cross-Attention Config ---
 
         # --- Resolve FFN Config ---
@@ -55,7 +65,8 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         # --- End Resolve FFN Config ---
 
         self.norm1 = builder.build_normalization()
-        self.norm2 = builder.build_normalization()
+        # Norm2 is only needed if cross-attention exists
+        self.norm2 = builder.build_normalization() if self.is_encoder_decoder else None 
         self.norm3 = builder.build_normalization()
         dropout_prob = getattr(main_config, 'hidden_dropout_prob', 0.1)
         self.dropout = nn.Dropout(dropout_prob)
@@ -79,47 +90,42 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
 
         # --- Self Attention ---
         self_attn_past_key_value = past_key_value[0] if past_key_value is not None else None
-
-        # Correct call using BaseMultiHeadAttention signature
         self_attn_outputs = self.self_attn(
             hidden_states=hidden_states,
-            key_value_states=None, # Self-attention uses hidden_states for K/V
+            key_value_states=None,
             past_key_value=self_attn_past_key_value,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
             use_cache=use_cache 
         )
         self_attn_out = self_attn_outputs[0]
-        if output_attentions:
-            self_attn_probs = self_attn_outputs[1]
-        if use_cache:
-             present_self_kv = self_attn_outputs[2] # Expects (output, probs, present_kv)
-
+        if output_attentions: self_attn_probs = self_attn_outputs[1]
+        if use_cache: present_self_kv = self_attn_outputs[2] if len(self_attn_outputs) > 2 else None 
         hidden_states = self.norm1(residual + self.dropout(self_attn_out))
         # --- End Self Attention ---
 
         # --- Cross Attention ---
-        # Optional: Only perform cross-attention if encoder context exists
-        if encoder_hidden_states is not None:
+        # Perform cross-attention ONLY if encoder_hidden_states are provided AND cross_attn module exists
+        if self.is_encoder_decoder and self.cross_attn is not None and encoder_hidden_states is not None:
             residual = hidden_states
             cross_attn_past_key_value = past_key_value[1] if past_key_value is not None else None
-
-            # Correct call using BaseMultiHeadAttention signature
             cross_attn_outputs = self.cross_attn(
-                hidden_states=hidden_states,           # Query is the current decoder state
-                key_value_states=encoder_hidden_states, # K/V are from the encoder
+                hidden_states=hidden_states,
+                key_value_states=encoder_hidden_states,
                 past_key_value=cross_attn_past_key_value,
-                attention_mask=encoder_attention_mask, # Use encoder mask here
+                attention_mask=encoder_attention_mask, 
                 output_attentions=output_attentions,
                 use_cache=use_cache 
             )
             cross_attn_out = cross_attn_outputs[0]
-            if output_attentions:
-                cross_attn_probs = cross_attn_outputs[1]
-            if use_cache:
-                 present_cross_kv = cross_attn_outputs[2]
-
-            hidden_states = self.norm2(residual + self.dropout(cross_attn_out))
+            if output_attentions: cross_attn_probs = cross_attn_outputs[1]
+            if use_cache: present_cross_kv = cross_attn_outputs[2] if len(cross_attn_outputs) > 2 else None
+            
+            # Apply norm2 only if cross-attention was performed
+            if self.norm2 is not None:
+                hidden_states = self.norm2(residual + self.dropout(cross_attn_out))
+            else: # Should not happen if self.is_encoder_decoder is True, but defense
+                hidden_states = residual + self.dropout(cross_attn_out)
         # --- End Cross Attention ---
 
         # --- Feedforward ---
@@ -130,5 +136,4 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
 
         present_key_value = (present_self_kv, present_cross_kv) if use_cache else None
 
-        # Return order: hidden_states, self_attn_probs, cross_attn_probs, present_key_value
         return hidden_states, self_attn_probs, cross_attn_probs, present_key_value
