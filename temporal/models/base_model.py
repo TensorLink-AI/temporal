@@ -66,50 +66,60 @@ class BaseTemporalModel(nn.Module):
         """
         raise NotImplementedError("Subclasses must implement generate()")
 
-    def save_pretrained(self, save_path: str):
-        """Save model weights and configuration to a directory.
+    def save_pretrained(self, save_path: str, safe: bool = False):
+            """
+            Save model weights and config. If `safe=True` and safetensors installed,
+            writes `model.safetensors`, otherwise writes `pytorch_model.bin`.
+            """
+            os.makedirs(save_path, exist_ok=True)
 
-        Creates the directory if it does not exist, saves the model's state dict
-        as 'pytorch_model.bin', and writes the config JSON to 'config.json'.
+            # 1) Save config.json
+            config_path = os.path.join(save_path, "config.json")
+            with open(config_path, "w") as f:
+                json.dump(self.config.to_dict(), f, indent=2)
 
-        Args:
-            save_path (str): Path to the directory where files will be saved.
-        """
-        os.makedirs(save_path, exist_ok=True)
-        # Save model weights
-        torch.save(self.state_dict(), os.path.join(save_path, "pytorch_model.bin"))
-        # Save configuration
-        config_path = os.path.join(save_path, "config.json")
-        with open(config_path, "w") as f:
-            json.dump(self.config.to_dict(), f, indent=2)
+            # 2) Save weights
+            if safe:
+                if not _has_safetensors:
+                    raise RuntimeError("`safe=True` requires the `safetensors` library.")
+                path = os.path.join(save_path, "model.safetensors")
+                # state_dict must be all CPU tensors
+                sd = {k: v.cpu() for k, v in self.state_dict().items()}
+                _safetensors_save(sd, path)
+            else:
+                path = os.path.join(save_path, "pytorch_model.bin")
+                torch.save(self.state_dict(), path)
 
     @classmethod
-    def from_pretrained(cls, path: str, config_cls=None):
-        """Load a pretrained model from a directory.
-
-        Reads 'config.json' to reconstruct the configuration (using `config_cls`
-        if provided), instantiates the model via `cls(config)`, then loads
-        the weights from 'pytorch_model.bin'.
-
-        Args:
-            path (str): Path to the directory containing saved artifacts.
-            config_cls (type, optional): Class with a `.from_dict()` method to
-                convert the config dict to an object. If None, the raw dict is used.
-
-        Returns:
-            BaseTemporalModel: An instance of the model with loaded weights.
+    def from_pretrained(cls, path: str, config_cls=None, safe: bool = False, **kwargs):
         """
-        # Load configuration
-        with open(os.path.join(path, "config.json"), "r") as f:
-            config_dict = json.load(f)
+        Load config & weights. If `safe=True`, tries to read `model.safetensors`,
+        otherwise `pytorch_model.bin`.
+        """
+        # 1) Load config
+        cfg_path = os.path.join(path, "config.json")
+        with open(cfg_path, "r") as f:
+            cfg_dict = json.load(f)
         config = (
-            config_cls.from_dict(config_dict)
+            config_cls.from_dict(cfg_dict)
             if (config_cls and hasattr(config_cls, "from_dict"))
-            else config_dict
+            else cfg_dict
         )
 
-        # Initialize and load weights
-        model = cls(config)
-        state_dict = torch.load(os.path.join(path, "pytorch_model.bin"))
-        model.load_state_dict(state_dict)
+        # 2) Initialize model
+        model = cls(config, **kwargs)
+
+        # 3) Load weights
+        if safe:
+            if not _has_safetensors:
+                raise RuntimeError("`safe=True` requires the `safetensors` library.")
+            weights_path = os.path.join(path, "model.safetensors")
+            sd = _safetensors_load(weights_path)
+            # safetensors returns cpu tensors
+            model.load_state_dict(sd)
+        else:
+            weights_path = os.path.join(path, "pytorch_model.bin")
+            sd = torch.load(weights_path, map_location="cpu")
+            model.load_state_dict(sd)
+
         return model
