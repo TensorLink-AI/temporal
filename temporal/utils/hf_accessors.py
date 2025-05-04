@@ -14,7 +14,7 @@ except ImportError:
 
 # Added for Hub interaction
 try:
-    from huggingface_hub import upload_folder
+    from huggingface_hub import upload_folder, snapshot_download # Added snapshot_download
     _HAS_HUGGINGFACE_HUB = True
 except ImportError:
     _HAS_HUGGINGFACE_HUB = False
@@ -28,7 +28,7 @@ def save_hf(
     # --- New parameters for Hugging Face Hub ---
     repo_id: Optional[str] = None,
     commit_message: Optional[str] = "Save model using custom save_hf",
-    private: bool = False,
+    # private: bool = False, # Removed as it's deprecated/not supported in upload_folder
     token: Optional[str] = None, # Use HF_TOKEN env var or login if None
     push_to_hub: bool = False # Set to True to enable pushing
     # --- End new parameters ---
@@ -45,7 +45,7 @@ def save_hf(
         repo_id (Optional[str]): Repository ID on Hugging Face Hub (e.g., 'your-username/your-model-name').
                                  Required if push_to_hub is True.
         commit_message (Optional[str]): Commit message for the Hub upload.
-        private (bool): Whether the Hub repository should be private.
+        # private (bool): DEPRECATED. Repository visibility must be set on Hugging Face Hub directly.
         token (Optional[str]): Hugging Face API token. Uses logged-in user or HF_TOKEN env var if None.
         push_to_hub (bool): If True, uploads the `save_directory` to the specified `repo_id` after saving locally.
     """
@@ -88,12 +88,13 @@ def save_hf(
             raise ValueError("`repo_id` must be specified when `push_to_hub=True`.")
 
         print(f"Pushing contents of {save_directory} to repository: {repo_id}...")
+        print("Note: Repository visibility (public/private) must be set on Hugging Face Hub.")
         try:
             api_url = upload_folder(
                 folder_path=save_directory,
                 repo_id=repo_id,
                 commit_message=commit_message,
-                private=private,
+                # private=private, # Removed argument
                 token=token,
                 repo_type="model" # Assuming it's a model
             )
