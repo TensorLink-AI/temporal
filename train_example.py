@@ -17,7 +17,7 @@ from temporal.configs.transformer_config import (
     TransformerBlockConfig,
     AttentionConfig,
     FeedForwardConfig,
-    OutputHeadConfig,
+    OutputHeadConfig, # Keep this import
 )
 from temporal.models.builder import build_time_series_transformer
 from temporal.utils.hf_accessors import save_hf
@@ -30,8 +30,12 @@ NUM_HEADS = 2
 MAX_SEQ_LEN = 4096
 CONTEXT_LENGTH = 16
 PREDICTION_LENGTH = 4
-QUANTILES = [0.1, 0.5, 0.9]
-FEATURE_SIZE = 1
+FEATURE_SIZE = 1 # Univariate
+
+# Define Quantiles (Ensemble Size K for DistPred)
+NUM_QUANTILES = 100 # K = 100
+QUANTILES = np.linspace(0.5 / NUM_QUANTILES, 1 - 0.5 / NUM_QUANTILES, NUM_QUANTILES).tolist()
+print(f"Using {len(QUANTILES)} quantiles/ensemble members for DistPred.")
 
 encoder_blocks = [
     TransformerBlockConfig(
@@ -57,32 +61,64 @@ stacked_pos_embed_config = EmbeddingConfig(
         ], "max_seq_len": MAX_SEQ_LEN
     }
 )
+
+# Assemble the top-level config
 config = TransformerTimeSeriesConfig(
-    model_type='transformer', input_dim=FEATURE_SIZE, output_dim=FEATURE_SIZE,
-    context_length=CONTEXT_LENGTH, prediction_length=PREDICTION_LENGTH,
-    num_quantiles=len(QUANTILES), loss_config={"type": "quantile_loss"},
-    d_model=HIDDEN_SIZE, quantiles=QUANTILES,
+    model_type='transformer',
+    input_dim=FEATURE_SIZE, # input_dim usually same as feature_size for value embedding
+    output_dim=FEATURE_SIZE, # Base output dimension before head projection
+    context_length=CONTEXT_LENGTH,
+    prediction_length=PREDICTION_LENGTH,
+    num_quantiles=len(QUANTILES), # K = 100
+    quantiles=QUANTILES, # Pass the list of 100 quantiles (might be optional depending on head/loss)
+
+    loss_config={"type": "crps"}, # Use CRPS loss
+
+    d_model=HIDDEN_SIZE, # Renamed from hidden_size for consistency with HF
+
     architecture=TransformerArchitectureConfig(
-        layout="encoder-decoder", num_encoder_layers=len(encoder_blocks),
-        num_decoder_layers=len(decoder_blocks), hidden_dropout_prob=0.1,
+        layout="encoder-decoder",
+        num_encoder_layers=len(encoder_blocks),
+        num_decoder_layers=len(decoder_blocks),
+        hidden_dropout_prob=0.1,
     ),
+
+    # --- Use the new DistPredHead --- Specify type and required args
     output_head_config=OutputHeadConfig(
-        type="quantile_regression", output_dims=[FEATURE_SIZE] * len(QUANTILES)
+        type="distpred", # Use the registered DistPredHead
+        # Provide args needed by DistPredHead.__init__:
+        num_outputs=len(QUANTILES), # K = 100
+        feature_size=FEATURE_SIZE   # 1 for univariate
     ),
-    encoder_blocks=encoder_blocks, decoder_blocks=decoder_blocks,
+    # --- End Output Head Config ---
+
+    encoder_blocks=encoder_blocks,
+    decoder_blocks=decoder_blocks,
+
+    # Positional embedding config (ensure max_seq_len is sufficient)
     positional_embedding_config=stacked_pos_embed_config,
+
+    # Value embedding config
     value_embedding_config=EmbeddingConfig(
          type="linear", embedding_dim=HIDDEN_SIZE, input_dim=FEATURE_SIZE
     ),
-    decoder_start_token_value=3.0, use_teacher_forcing=True,
+
+    # Other transformer settings
+    decoder_start_token_value=0.0, # Often 0 or mean/median of data
+    use_teacher_forcing=True, # Common during training
 )
-print("Configuration defined.")
+
+print(f"Configuration defined with loss type: {config.loss_config['type']} and output head: {config.output_head_config.type}")
 
 # --- 2. Model ---
 print("Building model...")
+# The build function should now use CRPSLoss based on the config and DistPredHead
 model = build_time_series_transformer(config)
 print(f"Model built: {type(model).__name__}")
+print(f"Output Head: {type(model.output_head).__name__}")
+print(f"Loss Function: {type(model.loss_fn).__name__}") # Check if loss_fn attribute exists and is CRPSLoss
 print(f"Total parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+
 
 # --- 3. Synthetic Data Generation ---
 print("Generating synthetic data for TimeSeriesIterableDataset...")
@@ -90,7 +126,6 @@ def generate_synthetic_data_list(num_series=100, min_len=60, max_len=120, noise_
     data_list = []
     base_date = datetime(2023, 1, 1)
     for i in range(num_series):
-        # Use variable length again now that mask handling should work
         seq_length = np.random.randint(min_len, max_len + 1)
         t = np.linspace(0, 4 * np.pi, seq_length)
         amp, freq, phase = np.random.rand()*2+0.5, np.random.rand()*0.5+0.5, np.random.rand()*2*np.pi
@@ -115,12 +150,12 @@ train_dataset = TimeSeriesIterableDataset(dataset=train_data_list, config=config
 train_dataloader = DataLoader(train_dataset, batch_size=32, collate_fn=timeseries_collate_fn)
 print(f"DataLoader created.")
 
-# --- 5. Training Loop (Reverted to passing attention_mask) ---
+# --- 5. Training Loop ---
 print("Starting training...")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
-num_epochs = 5
+num_epochs = 5 # Reduced for quick testing
 batches_per_epoch = 50
 
 for epoch in range(num_epochs):
@@ -128,56 +163,61 @@ for epoch in range(num_epochs):
     epoch_loss = 0.0
     batch_count = 0
     for i, batch in enumerate(train_dataloader):
-        if not batch: continue
+        if not batch: continue # Skip empty batches
         optimizer.zero_grad()
-        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
-        # --- Model Forward Pass (Passing 2D Masks) ---
+        # Move relevant tensors to device
+        batch_on_device = {}
+        relevant_keys = ['input_ids', 'attention_mask', 'decoder_input_ids', 'labels_mask', 'labels', 'loss_mask']
+        for k, v in batch.items():
+            if k in relevant_keys and isinstance(v, torch.Tensor):
+                batch_on_device[k] = v.to(device)
+            # Note: Time features might also be needed if using time embeddings
+
+        # Ensure required inputs are present
+        if 'input_ids' not in batch_on_device or 'labels' not in batch_on_device:
+             print(f"Skipping batch {i}, missing required keys.")
+             continue
+
+        # --- Model Forward Pass ---
         try:
              outputs = model(
-                 encoder_inputs=batch['input_ids'],
-                 # *** Pass the 2D attention mask from the batch ***
-                 attention_mask=batch.get('attention_mask'),
-                 decoder_inputs=batch.get('decoder_input_ids'),
-                 # Pass the 2D mask for decoder inputs if available (collate_fn might use 'labels_mask')
-                 decoder_attention_mask=batch.get('labels_mask'), # Assuming collate_fn uses 'labels_mask' for decoder padding
-                 targets=batch.get('labels'),
-                 # Other flags if needed for debugging/generation
-                 # output_attentions=False,
-                 # output_hidden_states=False,
-                 # use_cache=False,
+                 encoder_inputs=batch_on_device['input_ids'],
+                 attention_mask=batch_on_device.get('attention_mask'), # Encoder mask
+                 decoder_inputs=batch_on_device.get('decoder_input_ids'), # May be optional depending on model
+                 decoder_attention_mask=batch_on_device.get('labels_mask'), # Decoder mask (for padding)
+                 targets=batch_on_device.get('labels'),
+                 loss_mask=batch_on_device.get('loss_mask') # Pass the loss mask if available
              )
              loss = outputs.loss
-        except KeyError as e:
-            print(f"KeyError during model forward pass: {e}. Batch keys: {list(batch.keys())}")
-            print("Ensure model's forward signature arguments map to batch keys from collate_fn ('input_ids', 'attention_mask', 'decoder_input_ids', 'labels_mask', 'labels').")
-            raise e
-        except TypeError as e:
-             print(f"TypeError during model forward pass: {e}. Review model forward signature and passed arguments.")
-             print(f"Provided keys: {list(batch.keys())}")
-             raise e
-        except ValueError as e:
-             print(f"ValueError during model forward pass: {e}. Often related to mask processing or shape mismatches.")
-             raise e
         except Exception as e:
-             print(f"Error during model forward pass: {e}")
-             raise e
+             print(f"Error during model forward pass in epoch {epoch+1}, batch {i}: {e}")
+             # Optionally print shapes for debugging
+             print("--- Batch Shapes ---")
+             for k, v in batch_on_device.items():
+                 if isinstance(v, torch.Tensor):
+                     print(f"  {k}: {v.shape}")
+             print("--------------------");
+             raise e # Re-raise after printing info
         # --- End Model Forward Pass ---
 
         # Check for non-finite loss
         if loss is None:
-            print("Warning: Loss is None. Check targets and loss function configuration.")
-            continue # Skip backpropagation if loss is None
+            print(f"Warning: Loss is None in epoch {epoch+1}, batch {i}. Check model output and loss calculation.")
+            # Example: Check if outputs.logits exists
+            # print("Model output keys:", outputs.keys() if hasattr(outputs, 'keys') else "N/A")
+            continue
         if not torch.isfinite(loss):
-             print(f"Warning: Non-finite loss detected: {loss.item()}. Skipping backward pass.")
-             continue # Skip backpropagation if loss is NaN or Inf
+             print(f"Warning: Non-finite loss detected in epoch {epoch+1}, batch {i}: {loss.item()}. Skipping backward pass.")
+             continue
 
         loss.backward()
         optimizer.step()
         epoch_loss += loss.item()
         batch_count += 1
 
-        print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_count}/{batches_per_epoch}], Loss: {loss.item():.4f}")
+        if batch_count % 10 == 0: # Print loss every 10 batches
+            print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_count}/{batches_per_epoch}], Loss: {loss.item():.4f}")
         if batch_count >= batches_per_epoch: break
 
     if batch_count == 0:
@@ -190,15 +230,15 @@ print("Training finished.")
 
 # --- 6. Save Model ---
 print("Saving model...")
-local_save_dir = "./trained_transformer_new_config_robust"
-hub_repo_id = "your_username/temporal_advanced_config_test_robust" # <<< CHANGE THIS
+local_save_dir = "./trained_transformer_distpred_crps"
+hub_repo_id = "your_username/temporal_distpred_crps_k100" # <<< CHANGE THIS
 save_to_hub = False # Set to True to upload
 
 try:
     save_hf(
         model=model, config=config, save_directory=local_save_dir, safe=True,
         push_to_hub=save_to_hub, repo_id=hub_repo_id, private=False,
-        commit_message="Upload trained model with robust mask handling"
+        commit_message=f"Upload trained model with DistPredHead and CRPS loss (K={len(QUANTILES)})"
     )
     print(f"Model saved locally to {local_save_dir}")
     if save_to_hub: print(f"Model potentially pushed to Hugging Face Hub: {hub_repo_id}")

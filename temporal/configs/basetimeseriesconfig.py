@@ -2,7 +2,8 @@ from transformers import PretrainedConfig
 from typing import List, Optional
 
 #: List of loss types treated as probabilistic. Each requires valid quantile values in (0, 1).
-PROBABILISTIC_LOSSES = ["quantile", "mq"]
+# Added "crps" to the list
+PROBABILISTIC_LOSSES = ["quantile", "mq", "crps"]
 
 
 class BaseTimeSeriesConfig(PretrainedConfig):
@@ -36,7 +37,7 @@ class BaseTimeSeriesConfig(PretrainedConfig):
         prediction_length: int = 12,
         quantiles: List[float] = [0.1, 0.5, 0.9],
         output_token_lengths: int = 1,
-        loss_type: str = "quantile",
+        loss_type: str = "quantile", # Default might change based on typical use
         use_dynamic_features: bool = False,
         use_static_features: bool = False,
         autoregressive: bool = True,
@@ -70,6 +71,11 @@ class BaseTimeSeriesConfig(PretrainedConfig):
         assert self.context_length > 0,        "context_length must be > 0"
         assert self.prediction_length > 0,     "prediction_length must be > 0"
         if self.loss_type in PROBABILISTIC_LOSSES:
+            # CRPS doesn't strictly *require* quantiles, but the model output head likely does.
+            # Keep the check for quantiles if the output head relies on them.
+            assert self.quantiles is not None and len(self.quantiles) > 0, (
+                f"Probabilistic loss '{self.loss_type}' requires a list of quantiles."
+            )
             assert all(0 < q < 1 for q in self.quantiles), (
                 "All quantile values must be in the open interval (0, 1)"
             )
