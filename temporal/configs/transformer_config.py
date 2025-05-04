@@ -543,6 +543,23 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.validate_config()
 
 
+    def to_flat_dict(self) -> dict:
+        """
+        Returns a dictionary representation of the configuration.
+        This method is added for compatibility with the HF wrapper which expects it.
+
+        Currently, it delegates to `to_dict()`. If downstream Hugging Face
+        compatibility requires a truly flat dictionary (e.g., keys like
+        'architecture.layout' instead of nested dicts), this method
+        will need to be updated to perform the flattening.
+
+        Returns:
+            dict: A dictionary of the configuration parameters.
+        """
+        # TODO: Implement dictionary flattening (e.g., joining nested keys with '.')
+        #       if the current nested structure returned by to_dict() causes issues
+        #       with HF saving/loading or other compatibility layers.
+        return self.to_dict()
 
 
     def to_dict(self) -> dict:
