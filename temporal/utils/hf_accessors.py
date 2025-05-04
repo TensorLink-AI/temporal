@@ -1,4 +1,4 @@
-# temporal/utils/hf_io.py
+# temporal/utils/hf_accessors.py
 
 import os
 import json
@@ -15,7 +15,7 @@ except ImportError:
 
 def save_hf(
     model: torch.nn.Module,
-    config,
+    config, # Expecting an instance like TransformerTimeSeriesConfig here
     save_directory: str,
     safe: bool = False
 ):
@@ -25,28 +25,40 @@ def save_hf(
     Args:
         model:      Your nn.Module (state_dict will be saved).
         config:     An instance of PretrainedConfig (e.g. TransformerTimeSeriesConfig).
+                    Its model_type might be overridden.
         save_directory: Path to write files into.
         safe:       If True, uses safetensors (requires the safetensors library).
                     Otherwise uses torch.save.
     """
     os.makedirs(save_directory, exist_ok=True)
 
-    # 1) Save config.json
+    # --- MODIFICATION START ---
+    # 1) Get config dict and OVERRIDE model_type
+    config_dict = config.to_dict()
+    # Explicitly set the model type the builder/registry expects for this model
+    # This should match the key used in @register_generate in transformer_model.py
+    # Assuming the key is 'transformer'
+    config_dict["model_type"] = "transformer"
+    # --- MODIFICATION END ---
+
+    # 2) Save config.json using the MODIFIED dict
     config_path = os.path.join(save_directory, "config.json")
     with open(config_path, "w") as f:
-        json.dump(config.to_dict(), f, indent=2)
+        # Dump the modified dictionary
+        json.dump(config_dict, f, indent=2)
 
-    # 2) Save weights
+    # 3) Save weights
+    weights_path = os.path.join(save_directory, "model.safetensors" if safe else "pytorch_model.bin")
     if safe:
         if not _HAS_SAFETENSORS:
-            raise RuntimeError("safetensors not installed; cannot save safe tensors.")
-        path = os.path.join(save_directory, "model.safetensors")
+            raise ImportError("safetensors library is required to save in safe format")
         # ensure CPU tensors
         sd = {k: v.cpu() for k, v in model.state_dict().items()}
-        _safetensors_save(sd, path)
+        _safetensors_save(sd, weights_path)
     else:
-        path = os.path.join(save_directory, "pytorch_model.bin")
-        torch.save(model.state_dict(), path)
+        torch.save(model.state_dict(), weights_path)
+
+    print(f"Model saved to {save_directory}")
 
 
 def load_hf(
