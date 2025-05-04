@@ -2,7 +2,7 @@
 import os
 import json
 import torch
-from typing import Optional # Added for typing
+from typing import Optional
 
 # Optional safetensors support
 try:
@@ -14,7 +14,13 @@ except ImportError:
 
 # Added for Hub interaction
 try:
-    from huggingface_hub import upload_folder, snapshot_download # Added snapshot_download
+    from huggingface_hub import (
+        upload_folder,
+        snapshot_download,
+        create_repo,
+        HfApi
+    )
+    from huggingface_hub.utils import RepositoryNotFoundError
     _HAS_HUGGINGFACE_HUB = True
 except ImportError:
     _HAS_HUGGINGFACE_HUB = False
@@ -28,13 +34,14 @@ def save_hf(
     # --- New parameters for Hugging Face Hub ---
     repo_id: Optional[str] = None,
     commit_message: Optional[str] = "Save model using custom save_hf",
-    # private: bool = False, # Removed as it's deprecated/not supported in upload_folder
+    private: bool = False, # Used ONLY when creating the repo if it doesn't exist
     token: Optional[str] = None, # Use HF_TOKEN env var or login if None
     push_to_hub: bool = False # Set to True to enable pushing
     # --- End new parameters ---
 ):
     """
-    Save a PyTorch model + HF-compatible config to a directory, optionally pushing to HF Hub.
+    Save a PyTorch model + HF-compatible config to a directory,
+    optionally creating and/or pushing to HF Hub.
 
     Args:
         model: Your nn.Module (state_dict will be saved).
@@ -45,9 +52,11 @@ def save_hf(
         repo_id (Optional[str]): Repository ID on Hugging Face Hub (e.g., 'your-username/your-model-name').
                                  Required if push_to_hub is True.
         commit_message (Optional[str]): Commit message for the Hub upload.
-        # private (bool): DEPRECATED. Repository visibility must be set on Hugging Face Hub directly.
+        private (bool): If True, creates the repository as private if it doesn't exist.
+                        This argument is IGNORED if the repository already exists.
         token (Optional[str]): Hugging Face API token. Uses logged-in user or HF_TOKEN env var if None.
-        push_to_hub (bool): If True, uploads the `save_directory` to the specified `repo_id` after saving locally.
+        push_to_hub (bool): If True, attempts to create the repo (if needed) and uploads
+                          the `save_directory` to the specified `repo_id` after saving locally.
     """
     os.makedirs(save_directory, exist_ok=True)
 
@@ -87,26 +96,50 @@ def save_hf(
         if not repo_id:
             raise ValueError("`repo_id` must be specified when `push_to_hub=True`.")
 
+        api = HfApi(token=token)
+
+        # Check if repo exists, create if it doesn't
+        try:
+            api.repo_info(repo_id=repo_id, repo_type="model")
+            print(f"Repository '{repo_id}' already exists on the Hub.")
+        except RepositoryNotFoundError:
+            print(f"Repository '{repo_id}' not found. Attempting to create it...")
+            try:
+                create_repo(
+                    repo_id=repo_id,
+                    token=token,
+                    private=private,
+                    repo_type="model",
+                    exist_ok=False # Don't error if it was created between check and now
+                )
+                print(f"Successfully created repository '{repo_id}'.")
+            except Exception as create_e:
+                print(f"Error creating repository '{repo_id}': {create_e}")
+                raise create_e # Re-raise creation error
+        except Exception as e: # Catch other potential errors during repo_info check
+            print(f"Error checking repository status: {e}")
+            raise e
+
+        # Proceed with upload
         print(f"Pushing contents of {save_directory} to repository: {repo_id}...")
-        print("Note: Repository visibility (public/private) must be set on Hugging Face Hub.")
         try:
             api_url = upload_folder(
                 folder_path=save_directory,
                 repo_id=repo_id,
                 commit_message=commit_message,
-                # private=private, # Removed argument
+                # private=private, # Removed argument - visibility set at creation or on Hub
                 token=token,
                 repo_type="model" # Assuming it's a model
             )
             print(f"Push successful. Model uploaded to: {api_url}")
         except Exception as e:
-            print(f"Error pushing to Hub: {e}")
-            # Optionally re-raise or handle more gracefully
-            raise
+            # Provide more context in case of upload error after creation attempt
+            print(f"Error pushing to Hub repository '{repo_id}': {e}")
+            print("Please ensure you have write permissions and the token is valid.")
+            raise e
     # --- End Push to Hub ---
 
 # ... (keep load_hf function below)
-
 
 def load_hf(
     model_name_or_path: str, # Changed from save_directory
@@ -175,7 +208,8 @@ def load_hf(
     try:
         # Try HF's loading first if available and config_cls supports it
         # Note: This might fail if config_cls isn't a true HF PretrainedConfig subclass
-        cfg = config_cls.from_pretrained(load_path)
+        # Use token if loading potentially private config from hub
+        cfg = config_cls.from_pretrained(load_path, token=token if resolved_from_hub else None)
         print("Config loaded using from_pretrained.")
     except (AttributeError, TypeError, Exception): # Catch broad exceptions as from_pretrained might fail variously
          print("from_pretrained failed or not available for config, falling back to manual load.")
@@ -212,16 +246,17 @@ def load_hf(
              weights_path = alt_weights_path
              safe = not safe # Update safe flag based on found file
          else:
-            raise FileNotFoundError(f"Could not find weight file '{weights_name}' or '{alt_weights_name}' in {load_path}.")
+            # If loading from hub, give a specific message about potential missing files in repo
+            location_msg = f"in downloaded repository '{model_name_or_path}'" if resolved_from_hub else f"in local directory {load_path}"
+            raise FileNotFoundError(f"Could not find weight file '{weights_name}' or '{alt_weights_name}' {location_msg}.")
 
 
     print(f"Loading weights from: {weights_path}")
     if safe:
         if not _HAS_SAFETENSORS:
             raise RuntimeError("safetensors not installed; cannot load safe tensors.")
-        # Note: safetensors loads directly to the specified device (implicitly CPU here)
-        # If you need specific device loading, handle it after load_state_dict
-        sd = _safetensors_load(weights_path)
+        # Load using safetensors
+        sd = _safetensors_load(weights_path, device=map_location) # Pass map_location to device
     else:
         # torch.load allows specifying map_location
         sd = torch.load(weights_path, map_location=map_location)
