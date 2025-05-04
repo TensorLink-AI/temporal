@@ -87,7 +87,6 @@ def _make_causal_mask(
     # Expand to 4D: [B, 1, T, Total_T]
     return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
 
-
 def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None) -> torch.Tensor:
     """
     Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`
@@ -165,7 +164,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         use_cache: Optional[bool] = None, # Added for generation/caching
         output_attentions: Optional[bool] = None, # Added for introspection
         output_hidden_states: Optional[bool] = None, # Added for introspection
-        **kwargs, # Allow flexible passing, but prefer explicit arguments
+        # **kwargs removed to promote explicit argument passing **
     ) -> Dict[str, Optional[torch.Tensor]]:
         """Perform a forward pass through the transformer model.
 
@@ -182,18 +181,19 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
             use_cache (bool, optional): Whether to return key/values for caching.
             output_attentions (bool, optional): Whether to return attention weights.
             output_hidden_states (bool, optional): Whether to return hidden states for all layers.
-            **kwargs: Additional arguments (use with caution, prefer explicit definition).
 
         Returns:
             Dict[str, Optional[torch.Tensor]]: A dictionary containing outputs like 'logits', 'loss', 'past_key_values', etc.
         """
-        # --- Prepare arguments for internal modules ---
-        encoder_kwargs = {
+        # --- Prepare specific arguments for internal modules ---
+        # Filter arguments relevant ONLY for the encoder
+        encoder_call_kwargs = {
             "output_attentions": output_attentions,
             "output_hidden_states": output_hidden_states,
-            "return_dict": True, # Assume internal modules use return_dict=True
+            "return_dict": True,
         }
-        decoder_kwargs = {
+        # Filter arguments relevant ONLY for the decoder
+        decoder_call_kwargs = {
             "use_cache": use_cache,
             "past_key_values": past_key_values,
             "output_attentions": output_attentions,
@@ -218,11 +218,11 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         if self.encoder:
             if encoder_inputs is None:
                  raise ValueError("Encoder exists but encoder_inputs are None.")
-            # Pass the processed 4D mask to the encoder
+            # *** Corrected: Pass ONLY relevant arguments to encoder ***
             encoder_output = self.encoder(
                 input_values=encoder_inputs, # Assuming internal encoder uses 'input_values'
                 attention_mask=processed_encoder_mask,
-                **encoder_kwargs # Pass relevant kwargs
+                **encoder_call_kwargs # Pass filtered kwargs
             )
 
         # 3. Prepare Decoder Masks and Inputs
@@ -233,9 +233,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         if self.decoder:
             # Extract encoder hidden states if encoder ran
             if encoder_output is not None:
-                 # Check if output is dict-like (BaseModelOutput) or tensor
                  encoder_hidden_states = encoder_output.get('last_hidden_state') if isinstance(encoder_output, dict) else encoder_output
-
 
             # Decoder requires decoder_inputs
             if decoder_inputs is None:
@@ -243,17 +241,14 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
 
             # --- Process Decoder Masks ---
             decoder_input_shape = decoder_inputs.shape[:-1] # Get [B, L_dec]
-            # Determine past key values length if applicable
             past_kv_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
 
             # Create 4D causal mask combined with padding mask for decoder self-attention
-            # We use decoder_attention_mask (mask for decoder_inputs) here
             processed_decoder_mask = _prepare_decoder_attention_mask(
                  decoder_attention_mask, decoder_input_shape, decoder_inputs, past_kv_length
             )
 
             # Create 4D mask for cross-attention (using encoder's padding mask)
-            # Shape: [B, 1, L_dec, L_enc]
             if encoder_hidden_states is not None and attention_mask is not None:
                 processed_cross_mask = _expand_mask(
                     attention_mask, dtype=self._decoder_dtype, tgt_len=decoder_input_shape[-1]
@@ -261,33 +256,27 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
             # --- End Mask Processing ---
 
             # 4. Run Decoder
+            # *** Corrected: Pass ONLY relevant arguments to decoder ***
             decoder_output = self.decoder(
                 input_ids=decoder_inputs, # Assuming internal decoder uses 'input_ids'
-                attention_mask=processed_decoder_mask, # Self-attention mask (causal + padding)
+                attention_mask=processed_decoder_mask, # Self-attention mask
                 encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=processed_cross_mask, # Cross-attention mask (encoder padding)
-                **decoder_kwargs # Pass relevant kwargs like use_cache, past_key_values
+                encoder_attention_mask=processed_cross_mask, # Cross-attention mask
+                **decoder_call_kwargs # Pass filtered kwargs
             )
-            # Extract the hidden states to pass to the heads
             input_to_heads = decoder_output.get('last_hidden_state') if isinstance(decoder_output, dict) else decoder_output
 
         else: # No Decoder case
-            # If no decoder, the encoder's output goes to the heads
             if encoder_output is not None:
                  input_to_heads = encoder_output.get('last_hidden_state') if isinstance(encoder_output, dict) else encoder_output
-            # If neither encoder nor decoder exist, input_to_heads remains None
 
         # 5. Ensure there's some output to feed to the heads
         if input_to_heads is None:
-             # If decoder_inputs were provided but there's no decoder, maybe user wants simple projection?
-             # Or maybe it's just an encoder-only model setup error.
-             # Let's assume it's an error for now.
              raise ValueError("Model configuration seems incomplete or invalid. No output generated for heads.")
 
-
         # 6. Pass through Output Heads
-        # Heads generally don't need masks, just the final hidden states
-        logits = self.output_heads(input_to_heads) # Removed **kwargs here, heads usually don't need them
+        # Heads generally only need the final hidden states
+        logits = self.output_heads(input_to_heads)
 
         # 7. Use Head Aggregator if it exists
         if self.head_aggregator is not None:
@@ -298,17 +287,14 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         if targets is not None:
             if self.loss_fn is None:
                 raise ValueError("Loss calculation requires a loss_fn, but it's None.")
-            # Loss function needs alignment between logits and targets.
-            # Assuming loss_fn handles potential padding if necessary based on its implementation.
             loss = self.loss_fn(logits, targets)
 
         # 9. Prepare final output dictionary
         final_output = {
             "logits": logits,
             "loss": loss,
-            # Include outputs based on request flags and availability
         }
-        # Add optional outputs if requested and available
+        # Add optional outputs
         if output_hidden_states:
             if encoder_output and isinstance(encoder_output, dict):
                 final_output["encoder_hidden_states"] = encoder_output.get("hidden_states")
@@ -318,14 +304,11 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
              if encoder_output and isinstance(encoder_output, dict):
                  final_output["encoder_attentions"] = encoder_output.get("attentions")
              if decoder_output and isinstance(decoder_output, dict):
-                 final_output["decoder_attentions"] = decoder_output.get("attentions")
+                 final_output["decoder_attentions"] = decoder_output.get("attentions") # Assuming self-attentions
+                 final_output["decoder_cross_attentions"] = decoder_output.get("cross_attentions") # If decoder output includes these
         if use_cache:
              if decoder_output and isinstance(decoder_output, dict):
                  final_output["past_key_values"] = decoder_output.get("past_key_values")
-
-        # Include raw outputs for debugging maybe? Or rely on hidden_states/attentions
-        # final_output["encoder_raw_output"] = encoder_output
-        # final_output["decoder_raw_output"] = decoder_output
 
         return final_output
 
