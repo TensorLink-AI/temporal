@@ -25,7 +25,7 @@ from temporal.data.transformations import TimeSeriesIterableDataset, timeseries_
 
 # --- 1. New Configuration Definition ---
 print("Defining model configuration...")
-HIDDEN_SIZE = 32
+HIDDEN_SIZE = 32 # Corresponds to d_model
 NUM_HEADS = 2
 MAX_SEQ_LEN = 4096
 CONTEXT_LENGTH = 16
@@ -62,6 +62,10 @@ stacked_pos_embed_config = EmbeddingConfig(
     }
 )
 
+# Calculate the required output_size for the head
+# output_size = num_quantiles * feature_size
+head_output_size = len(QUANTILES) * FEATURE_SIZE
+
 # Assemble the top-level config
 config = TransformerTimeSeriesConfig(
     model_type='transformer',
@@ -75,20 +79,25 @@ config = TransformerTimeSeriesConfig(
     loss_config={"type": "crps"}, # Use CRPS loss
 
     d_model=HIDDEN_SIZE, # Renamed from hidden_size for consistency with HF
+    feature_size=FEATURE_SIZE, # Make sure feature_size is available in main config
+    hidden_dropout_prob=0.1, # Moved dropout prob here
 
     architecture=TransformerArchitectureConfig(
         layout="encoder-decoder",
         num_encoder_layers=len(encoder_blocks),
         num_decoder_layers=len(decoder_blocks),
-        hidden_dropout_prob=0.1,
+        # Removed hidden_dropout_prob from here
     ),
 
-    # --- Use the new DistPredHead --- Specify type and required args
+    # --- UPDATED DistPredHead Config ---
     output_head_config=OutputHeadConfig(
         type="distpred", # Use the registered DistPredHead
-        # Provide args needed by DistPredHead.__init__:
-        num_outputs=len(QUANTILES), # K = 100
-        feature_size=FEATURE_SIZE   # 1 for univariate
+        output_size=head_output_size, # Explicitly set total output size
+        # Pass required args for DistPredHead inside nested kwargs
+        kwargs={
+            "num_outputs": len(QUANTILES), # K = 100
+            "feature_size": FEATURE_SIZE   # 1 for univariate
+        }
     ),
     # --- End Output Head Config ---
 
@@ -98,10 +107,15 @@ config = TransformerTimeSeriesConfig(
     # Positional embedding config (ensure max_seq_len is sufficient)
     positional_embedding_config=stacked_pos_embed_config,
 
-    # Value embedding config
+    # --- REVERTED & CORRECTED Value embedding config --- Use type "value" and kwargs
     value_embedding_config=EmbeddingConfig(
-         type="linear", embedding_dim=HIDDEN_SIZE, input_dim=FEATURE_SIZE
+         type="value", # Use the registered name "value"
+         kwargs={ # Arguments for TimeSeriesValueEmbedding go here
+             "feature_size": FEATURE_SIZE,
+             "d_model": HIDDEN_SIZE
+         }
     ),
+    # --- End Value embedding config ---
 
     # Other transformer settings
     decoder_start_token_value=0.0, # Often 0 or mean/median of data
@@ -112,11 +126,17 @@ print(f"Configuration defined with loss type: {config.loss_config['type']} and o
 
 # --- 2. Model ---
 print("Building model...")
-# The build function should now use CRPSLoss based on the config and DistPredHead
+# The build function should now correctly build DistPredHead and use CRPSLoss
 model = build_time_series_transformer(config)
 print(f"Model built: {type(model).__name__}")
 print(f"Output Head: {type(model.output_head).__name__}")
-print(f"Loss Function: {type(model.loss_fn).__name__}") # Check if loss_fn attribute exists and is CRPSLoss
+# Check the actual loss function attached to the model (might need access to model internals)
+if hasattr(model, 'loss_fn'):
+    print(f"Loss Function: {type(model.loss_fn).__name__}")
+elif hasattr(model, 'loss'): # Some HF models store loss internally
+     print(f"Loss Function (internal): {type(model.loss).__name__}")
+else:
+     print("Loss function attribute not found (check model implementation).")
 print(f"Total parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
 

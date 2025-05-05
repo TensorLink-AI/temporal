@@ -76,8 +76,17 @@ def build_time_series_transformer(
             block_configs=config.decoder_blocks,
         )
 
-    # Build output head and loss function
-    output_head, loss_fn = output_head_builder.build()
+    # --- Build Output Head (Only) --- Changed
+    output_head = output_head_builder.build()
+
+    # --- Build Loss Function based on main config --- Added
+    if not hasattr(config, 'loss_config') or not config.loss_config.get('type'):
+        raise ValueError("Config must have a loss_config dictionary with a 'type' key.")
+    
+    loss_fn = builder.build_loss()
+    # Check if loss function build was successful (build_loss might return None or raise error)
+    if loss_fn is None:
+        raise RuntimeError(f"Failed to build loss function based on config: {config.loss_config}")
 
     # Build head aggregator if output_token_lengths > 1
     head_aggregator = None
@@ -92,8 +101,8 @@ def build_time_series_transformer(
         config=config,
         encoder=encoder,
         decoder=decoder,
-        output_heads=output_head,
-        loss_fn=loss_fn,
+        output_heads=output_head, # Pass the built head
+        loss_fn=loss_fn, # Pass the loss built from main config
         head_aggregator=head_aggregator,
     )
 

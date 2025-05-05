@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import Optional # Added for type hinting
 
 from temporal.registry.core import register_module
 from temporal.modules.heads.base_output_head import BaseOutputHead
@@ -13,19 +14,16 @@ from temporal.modules.losses.loss_functions import QuantileLoss # Or MQLoss if t
 
 @register_module("output_head", "linear")
 class LinearOutputHead(BaseOutputHead):
-    def __init__(self, hidden_size: int, output_size: int = 1, loss_type: str = "mse", **kwargs):
+    def __init__(self, hidden_size: int, output_size: int = 1, **kwargs): # Removed loss_type default
         super().__init__()
         self.proj = nn.Linear(hidden_size, output_size)
-        self.loss_type = loss_type # This might be ignored if builder uses main config loss
+        # Removed self.loss_type - Loss should be handled by main config
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.proj(x)
 
-    # It's better practice if the model builder selects the loss based on the main config,
-    # rather than the head dictating it. This method could be removed or made optional.
+    # Removed get_loss_fn - Loss should be handled by main model builder
     # def get_loss_fn(self):
-    #     # Let the model builder decide the loss based on config.loss_type
-    #     # return TimeSeriesLoss(loss_type=self.loss_type)
     #     pass
 
 
@@ -35,69 +33,51 @@ class LinearOutputHead(BaseOutputHead):
 
 @register_module("output_head", "gaussian")
 class GaussianHead(BaseOutputHead):
-    def __init__(self, hidden_size: int, output_size: int = 1, **kwargs): # Added output_size for consistency
+    def __init__(self, hidden_size: int, output_size: int = 1, **kwargs):
         super().__init__()
-        # Output mean and log_std for each output dimension
-        self.proj = nn.Linear(hidden_size, output_size * 2)
-        self.output_size = output_size
+        # output_size here means feature_size
+        self.feature_size = output_size
+        # Output mean and log_std for each feature dimension
+        self.proj = nn.Linear(hidden_size, self.feature_size * 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Returns [..., output_size * 2] -> reshape or split later
+        # Returns [..., feature_size * 2] -> reshape or split later
         return self.proj(x)
 
-    # Let the model builder decide the loss (e.g., GaussianNLLLoss)
-    # def get_loss_fn(self):
-    #     # Should map to GaussianNLLLoss, handled by builder
-    #     pass
+    # Removed get_loss_fn
 
 
 # ------------------------------------------------------ -
-# ✅ 3. TDistributionHead - Assuming this exists
+# ✅ 3. TDistributionHead - Still commented out
 # ------------------------------------------------------ -
-
-# @register_module("output_head", "t_distribution")
-# class TDistributionHead(BaseOutputHead):
-#     def __init__(self, hidden_size: int, output_size: int = 1, **kwargs): # Added output_size
-#         super().__init__()
-#         # Output mu, log_sigma, log_nu for each output dimension
-#         self.proj = nn.Linear(hidden_size, output_size * 3)
-#         self.output_size = output_size
-#
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-#         return self.proj(x)
-#
-#     # Let the model builder handle loss (e.g., NegativeLogLikelihood for TDist)
-#     # def get_loss_fn(self):
-#     #     pass
 
 
 # ------------------------------------------------------ -
-# ✅ 4. MultiQuantileHead (or QuantileRegressionOutputHead)
+# ✅ 4. QuantileRegressionOutputHead
 # ------------------------------------------------------ -
-# Renaming for clarity if it's the standard one
 @register_module("output_head", "quantile_regression")
 class QuantileRegressionOutputHead(BaseOutputHead):
-    def __init__(self, hidden_size: int, output_dims: list = [1], quantiles: list = [0.5], **kwargs):
+    # Changed output_dims to output_size (total dimension) and added num_quantiles
+    def __init__(self, hidden_size: int, output_size: int, num_quantiles: int, feature_size: int = 1, **kwargs):
         """
         Args:
             hidden_size (int): Input hidden dimension.
-            output_dims (list): List of output dimensions for each quantile.
-                                Usually [feature_size] * num_quantiles for univariate.
-            quantiles (list): List of target quantiles.
+            output_size (int): Total output dimension (num_quantiles * feature_size).
+            num_quantiles (int): Number of quantiles to predict.
+            feature_size (int): Number of features per time step.
+            **kwargs: Catches unused args like 'quantiles' list from config.
         """
         super().__init__()
-        self.quantiles = quantiles
-        self.num_quantiles = len(quantiles)
-        # Total output dimensions = sum(output_dims), should be feature_size * num_quantiles
-        total_output_dim = sum(output_dims)
-        # Assuming feature_size is the first element of output_dims
-        feature_size = output_dims[0] if output_dims else 1
-        if total_output_dim != self.num_quantiles * feature_size:
-             print(f"Warning: output_dims {output_dims} might not align with num_quantiles {self.num_quantiles} and feature_size {feature_size}")
+        # Validate consistency
+        if output_size != num_quantiles * feature_size:
+            raise ValueError(
+                f"Output size mismatch: output_size ({output_size}) != "
+                f"num_quantiles ({num_quantiles}) * feature_size ({feature_size})"
+            )
 
-        self.proj = nn.Linear(hidden_size, total_output_dim)
-        # Store feature_size and num_quantiles for reshaping
+        self.num_quantiles = num_quantiles
         self.feature_size = feature_size
+        self.proj = nn.Linear(hidden_size, output_size)
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -112,19 +92,25 @@ class QuantileRegressionOutputHead(BaseOutputHead):
         # Project to [B, T, TotalOutputDim]
         proj_out = self.proj(x)
         # Reshape to [B, T, FeatureSize, NumQuantiles] if FeatureSize > 1
-        if self.feature_size > 1 and proj_out.shape[-1] == self.feature_size * self.num_quantiles:
-             return proj_out.view(*proj_out.shape[:-1], self.feature_size, self.num_quantiles)
+        if self.feature_size > 1:
+             # Ensure the last dimension matches total output dim before reshape
+             if proj_out.shape[-1] == self.feature_size * self.num_quantiles:
+                 return proj_out.view(*proj_out.shape[:-1], self.feature_size, self.num_quantiles)
+             else:
+                  raise ValueError(f"Output projection shape mismatch: {proj_out.shape[-1]} != {self.feature_size} * {self.num_quantiles}")
         else:
-             # Assume univariate or already correct shape [B, T, NumQuantiles]
-             return proj_out # Shape: [B, T, NumQuantiles]
+             # Assume univariate, shape is [B, T, NumQuantiles]
+             # Ensure last dim matches num_quantiles
+             if proj_out.shape[-1] == self.num_quantiles:
+                 return proj_out
+             else:
+                  raise ValueError(f"Output projection shape mismatch: {proj_out.shape[-1]} != {self.num_quantiles}")
 
-    # Let the builder handle loss selection (e.g. MQLoss)
-    # def get_loss_fn(self):
-    #     pass
+    # Removed get_loss_fn
 
 
 # ------------------------------------------------------ -
-# ✨ 5. NEW DistPredHead ✨
+# ✨ 5. UPDATED DistPredHead ✨
 # ------------------------------------------------------ -
 
 @register_module("output_head", "distpred")
@@ -132,22 +118,39 @@ class DistPredHead(BaseOutputHead):
     """
     Output head specifically for DistPred approach using CRPS loss.
     Outputs K predictions (treated as an ensemble/quantiles) per feature dimension.
+    Accepts 'output_size' for builder compatibility but uses 'num_outputs' and 'feature_size' internally.
     """
-    def __init__(self, hidden_size: int, num_outputs: int, feature_size: int = 1, **kwargs):
+    # Accept output_size for builder compatibility, but get essential info from kwargs
+    def __init__(self, hidden_size: int, output_size: int, **kwargs):
         """
         Args:
             hidden_size (int): Input hidden dimension from the backbone.
-            num_outputs (int): The number of ensemble predictions (K) required by CRPS.
-                               This should match config.num_quantiles.
-            feature_size (int): The number of features being predicted (e.g., 1 for univariate).
-            **kwargs: Catches unused arguments like 'quantiles' from the config.
+            output_size (int): Total output dimension (must equal num_outputs * feature_size).
+            **kwargs: Must contain 'num_outputs' (K) and 'feature_size'.
         """
         super().__init__()
-        self.num_outputs = num_outputs # K
-        self.feature_size = feature_size
-        # Total output dimension = K * feature_size
-        total_output_dim = num_outputs * feature_size
-        self.proj = nn.Linear(hidden_size, total_output_dim)
+
+        # Extract required args from kwargs
+        if 'num_outputs' not in kwargs:
+            raise ValueError("DistPredHead requires 'num_outputs' in kwargs")
+        if 'feature_size' not in kwargs:
+            # Default to 1 if not provided, but better to be explicit in config
+            kwargs['feature_size'] = 1
+            print("Warning: 'feature_size' not found in DistPredHead kwargs, defaulting to 1.")
+
+        self.num_outputs = kwargs['num_outputs'] # K
+        self.feature_size = kwargs['feature_size']
+
+        # Validate consistency between output_size and num_outputs * feature_size
+        expected_output_size = self.num_outputs * self.feature_size
+        if output_size != expected_output_size:
+            raise ValueError(
+                f"DistPredHead output size mismatch: output_size provided ({output_size}) != "
+                f"num_outputs ({self.num_outputs}) * feature_size ({self.feature_size})"
+            )
+
+        # Use the validated output_size for the projection layer
+        self.proj = nn.Linear(hidden_size, output_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -158,17 +161,24 @@ class DistPredHead(BaseOutputHead):
             torch.Tensor: Output tensor of shape [B, T, FeatureSize, NumOutputs]
                           or [B, T, NumOutputs] if FeatureSize is 1.
         """
-        proj_out = self.proj(x) # Shape [B, T, TotalOutputDim]
+        proj_out = self.proj(x) # Shape [B, T, TotalOutputDim = FeatureSize * NumOutputs]
 
         # Reshape if multivariate
         if self.feature_size > 1:
-            return proj_out.view(*proj_out.shape[:-1], self.feature_size, self.num_outputs)
+            # Ensure last dimension matches before reshape
+            if proj_out.shape[-1] == self.feature_size * self.num_outputs:
+                return proj_out.view(*proj_out.shape[:-1], self.feature_size, self.num_outputs)
+            else:
+                # This shouldn't happen if __init__ validation passed
+                raise RuntimeError(f"Internal shape mismatch in DistPredHead forward: {proj_out.shape[-1]} vs {self.feature_size * self.num_outputs}")
         else:
-            # Univariate case, shape is [B, T, NumOutputs]
-            return proj_out
+            # Univariate case, shape should be [B, T, NumOutputs]
+             if proj_out.shape[-1] == self.num_outputs:
+                 return proj_out
+             else:
+                 # This shouldn't happen if __init__ validation passed
+                 raise RuntimeError(f"Internal shape mismatch in DistPredHead forward: {proj_out.shape[-1]} vs {self.num_outputs}")
 
-    # This head is specifically for CRPS, but let the builder confirm/instantiate the loss
-    # based on the main config's loss_type='crps'.
-    # def get_loss_fn(self):
-    #     # return CRPSLoss() # Builder should handle this
-    #     pass
+    def get_loss_fn(self) -> Optional[nn.Module]:
+        """Returns None to indicate the head does not determine the loss."""
+        return None # Signal to builder to use main config loss
