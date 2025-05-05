@@ -18,11 +18,15 @@ def _prepare_args(cls: type[nn.Module],
     # handle common hidden-size aliases
     hidden = args.get("hidden_size")
     embed_dim_val = args.get("embed_dim")
-    target_dim = embed_dim_val if embed_dim_val is not None else hidden
+    # Use d_model if available, fallback to hidden_size
+    d_model_val = args.get("d_model") 
+    target_dim = d_model_val if d_model_val is not None else (embed_dim_val if embed_dim_val is not None else hidden)
+
 
     if target_dim is not None:
         if 'embed_dim' in params and 'embed_dim' not in args:
              args['embed_dim'] = target_dim
+        # Added d_model to aliases
         for alias in ("d_model", "dim", "embedding_dim", "normalized_shape"):
             if alias in params and alias not in args:
                 args[alias] = target_dim
@@ -64,21 +68,29 @@ class ModuleBuilder:
         user_kwargs  = user_kwargs  or {}
         cls = resolve(kind, name)
         # === Pass self (the builder instance) to _prepare_args ===
+        # Add d_model to base_kwargs if available in config, for alias handling
+        if hasattr(self.config, 'd_model'):
+             base_kwargs['d_model'] = self.config.d_model
+        elif hasattr(self.config, 'hidden_size'): # Fallback for compatibility
+             base_kwargs['hidden_size'] = self.config.hidden_size
+             
         kwargs = _prepare_args(cls, base_kwargs, user_kwargs, builder_instance=self)
         # print(f"Building {kind}/{name} ({cls.__name__}) with args: {kwargs.keys()}") # Debug print keys
         try:
             return cls(**kwargs)
         except TypeError as e:
-             raise TypeError(f"Error instantiating {kind}/{name} ({cls.__name__}) with args {list(kwargs.keys())}: {e}") from e
+             # Improve error message to show which arguments were actually passed
+             passed_args_str = ", ".join(kwargs.keys())
+             raise TypeError(f"Error instantiating {kind}/{name} ({cls.__name__}) with args [{passed_args_str}]: {e}") from e
 
     # ------------------------------------------------------------------
-    # Specific helpers remain unchanged, _build now handles builder injection
+    # Specific helpers
     # ------------------------------------------------------------------
     def build_attention(self, cfg):
         return self._build(
             "attention", cfg.attention_type,
             base_kwargs=dict(
-                embed_dim=self.config.hidden_size,
+                # d_model passed via _build base_kwargs
                 num_heads=cfg.num_heads,
                 dropout=cfg.dropout,
                 bias=getattr(cfg, 'bias', True)
@@ -90,7 +102,7 @@ class ModuleBuilder:
         cfg = cfg or self.config.feedforward_config
         return self._build(
             "feedforward", cfg.type,
-            base_kwargs=dict(hidden_size=self.config.hidden_size,
+            base_kwargs=dict( # d_model passed via _build base_kwargs
                              intermediate_size=cfg.intermediate_size,
                              activation=cfg.activation,
                              dropout=cfg.dropout),
@@ -99,24 +111,29 @@ class ModuleBuilder:
 
     def build_value_embedding(self):
         cfg = self.config.value_embedding_config
+        # Base kwargs like d_model and feature_size should be handled by _prepare_args
+        # if they are present in the config and needed by the specific embedding __init__
         return self._build(
             "embedding", cfg.type,
-            base_kwargs=dict(hidden_size=self.config.hidden_size,
-                             feature_size=self.config.feature_size),
+            base_kwargs={ # Explicitly pass feature_size if needed
+                "feature_size": getattr(self.config, 'feature_size', getattr(self.config, 'input_dim', 1))
+                }, 
             user_kwargs=cfg.kwargs,
         )
 
     def build_positional_embedding(self):
         cfg = self.config.positional_embedding_config
+        # d_model handled by _build base_kwargs
         return self._build("embedding", cfg.type,
-                           base_kwargs=dict(hidden_size=self.config.hidden_size),
+                           base_kwargs={},
                            user_kwargs=cfg.kwargs)
 
     def build_normalization(self):
         cfg = self.config.norm_config
         return self._build(
             "normalization", cfg.norm_type,
-            base_kwargs=dict(hidden_size=self.config.hidden_size, eps=cfg.eps),
+             # d_model/normalized_shape handled by alias in _prepare_args
+            base_kwargs=dict(eps=cfg.eps),
             user_kwargs=cfg.kwargs
         )
 
@@ -133,3 +150,32 @@ class ModuleBuilder:
                              num_heads=self.config.output_token_lengths),
             user_kwargs=cfg.kwargs,
         )
+
+    # --- ADDED build_loss method ---
+    def build_loss(self):
+        """Builds the loss function based on config.loss_config."""
+        if not hasattr(self.config, 'loss_config'):
+            raise ValueError("Config is missing 'loss_config' attribute.")
+        
+        cfg = self.config.loss_config
+        loss_type = cfg.get("type")
+        if not loss_type:
+            raise ValueError("loss_config must contain a 'type' key.")
+            
+        # Prepare base kwargs (usually empty for losses, but might pass quantiles)
+        base_kwargs = {}
+        if hasattr(self.config, 'quantiles'):
+             base_kwargs['quantiles'] = self.config.quantiles # Pass quantiles if loss needs them
+             
+        # User kwargs from the loss_config itself
+        user_kwargs = cfg.get("kwargs", {})
+
+        # Build the loss module
+        return self._build(
+            kind="loss",
+            name=loss_type,
+            base_kwargs=base_kwargs,
+            user_kwargs=user_kwargs
+        )
+    # --- End build_loss method ---
+
