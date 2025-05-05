@@ -3,43 +3,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
+import math # Import math for BinaryAttentionBias
 
 from temporal.registry.core import register_module
-from temporal.modules.attentions.base_attention import BaseMultiHeadAttention, expand_mask
+from temporal.modules.attentions.base_attention import BaseMultiHeadAttention # Removed expand_mask import, assuming it's unused or handled elsewhere
 
-# --- Helper functions for RoPE ---
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
+# --- Import RoPE helper from its new location ---
+from temporal.modules.embedders.embedding import apply_rotary_pos_emb
+# --- End Import ---
 
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None):
-    """Applies Rotary Positional Embedding to query and key tensors."""
-    # cos, sin: [seq_len, dim] or [bsz, 1, seq_len, dim]
-    # q, k: [bsz, num_heads, seq_len, head_dim]
-    
-    # Ensure cos/sin are broadcastable over heads dimension if needed
-    # Simple case assumes cos/sin are [seq_len, head_dim] or similar that can be indexed by position_ids
-    # and then applied element-wise after reshaping/repeating.
-
-    if cos.dim() == 2: # [seq_len, dim] -> need to gather based on position_ids if provided
-        if position_ids is None:
-            # Assuming standard range if position_ids not given
-             cos = cos[None, None, :, :] # -> [1, 1, seq_len, dim]
-             sin = sin[None, None, :, :] # -> [1, 1, seq_len, dim]
-        else:
-            # Gather based on position IDs: [bsz, seq_len] -> [bsz, seq_len, dim]
-             cos = cos[position_ids].unsqueeze(1) # -> [bsz, 1, seq_len, dim]
-             sin = sin[position_ids].unsqueeze(1) # -> [bsz, 1, seq_len, dim]
-    # else: assume cos/sin already have correct shape e.g. [bsz, 1, seq_len, dim]
-
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
-
-# --- End RoPE Helpers ---
-
+# --- REMOVED RoPE Helper function definitions: rotate_half, apply_rotary_pos_emb ---
 
 class RotaryProjection(nn.Module):
     """
@@ -57,7 +30,7 @@ class RotaryProjection(nn.Module):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        
+
         # Calculate inverse frequencies
         # Shape: [dim / 2]
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, dtype=torch.float32, device=device) / self.dim))
@@ -71,7 +44,7 @@ class RotaryProjection(nn.Module):
         t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype) # Use inv_freq dtype
 
         # freqs shape: [max_seq_len, dim / 2]
-        freqs = torch.outer(t, self.inv_freq) 
+        freqs = torch.outer(t, self.inv_freq)
         # Different from paper, but following HF implementation:
         # freqs = torch.cat((freqs, freqs), dim=-1) # Shape: [max_seq_len, dim]
         emb = torch.cat((freqs, freqs), dim=-1) # Shape: [max_seq_len, dim]
@@ -81,35 +54,35 @@ class RotaryProjection(nn.Module):
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, seq_len: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    # --- Modified forward to return cos/sin, not apply directly --- 
+    def forward(self, x: torch.Tensor, seq_len: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Apply RoPE to query and key tensors.
+        Generates the cosine and sine frequencies for RoPE.
 
         Args:
-            q (torch.Tensor): Query tensor, shape [B, H, T, D_head].
-            k (torch.Tensor): Key tensor, shape [B, H, T, D_head].
-            seq_len (int, optional): Sequence length. If None, inferred from q.shape[2].
+            x (torch.Tensor): A dummy tensor to determine the device and dtype.
+            seq_len (int, optional): Sequence length. If None, uses max_position_embeddings.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Rotated query and key tensors.
+            Tuple[torch.Tensor, torch.Tensor]: cos and sin caches sliced to seq_len.
+                                               Shape: [seq_len, dim]
         """
-        if seq_len is None:
-            seq_len = q.shape[2] # T (target sequence length)
+        _seq_len = seq_len if seq_len is not None else self.max_position_embeddings
 
         # Ensure cache is large enough and on correct device/dtype
-        if seq_len > self.max_seq_len_cached or self.cos_cached.device != q.device or self.cos_cached.dtype != q.dtype:
-             self._set_cos_sin_cache(seq_len=seq_len, device=q.device, dtype=q.dtype)
+        # Use x.device and x.dtype
+        if _seq_len > self.max_seq_len_cached or self.cos_cached.device != x.device or self.cos_cached.dtype != x.dtype:
+             self._set_cos_sin_cache(seq_len=_seq_len, device=x.device, dtype=x.dtype)
 
-        # Get precomputed cos/sin values for the sequence length
-        # Slice the cache: Shape [seq_len, dim]
-        cos = self.cos_cached[:seq_len, ...]
-        sin = self.sin_cached[:seq_len, ...]
-        
-        # Apply rotation
-        # Position IDs are implicitly 0 to seq_len-1 here
-        q_rotated, k_rotated = apply_rotary_pos_emb(q, k, cos, sin)
+        # Return precomputed cos/sin values sliced to the required sequence length
+        return self.cos_cached[:_seq_len, ...], self.sin_cached[:_seq_len, ...]
 
-        return q_rotated, k_rotated
+    # --- REMOVED direct application logic from forward --- 
+    # Original logic that applied RoPE:
+    # # Apply rotation
+    # # Position IDs are implicitly 0 to seq_len-1 here
+    # q_rotated, k_rotated = apply_rotary_pos_emb(q, k, cos, sin)
+    # return q_rotated, k_rotated
 
 
 class BinaryAttentionBias(nn.Module):
@@ -130,7 +103,7 @@ class BinaryAttentionBias(nn.Module):
         self.num_buckets = num_buckets
         self.max_distance = max_distance
         self.is_decoder = is_decoder
-        
+
         # Learnable bias table: maps bucket index to a bias value for each head
         # Shape: [num_buckets, num_heads]
         self.relative_attention_bias = nn.Embedding(self.num_buckets, self.num_heads)
@@ -138,45 +111,56 @@ class BinaryAttentionBias(nn.Module):
     def _relative_position_bucket(self, relative_position):
         """Translates relative position to a bucket number."""
         ret = 0
-        n = -relative_position
-        
+        n = -relative_position # More positive values denote farther past positions
+
+        num_buckets = self.num_buckets # Use instance variable
+
         # Handle causal vs non-causal
         if not self.is_decoder: # Bidirectional attention
-            num_buckets //= 2
-            ret += (n < 0).long() * num_buckets # Offset for negative positions
+            # Check if num_buckets is even for bidirectional splitting
+            if num_buckets % 2 != 0:
+                raise ValueError("num_buckets must be even for bidirectional relative position bias.")
+            half_buckets = num_buckets // 2
+            ret += (n < 0).long() * half_buckets # Offset for future positions (n < 0)
             n = torch.abs(n)
         else: # Causal attention (decoder)
              n = torch.max(n, torch.zeros_like(n)) # Consider only past positions (n>=0)
+             half_buckets = num_buckets # All buckets for past positions
 
-        # Half of the buckets are for exact distances near 0
-        max_exact = num_buckets // 2
+        # Half of the buckets (or all if causal) are for exact distances near 0
+        # Use half_buckets here
+        max_exact = half_buckets // 2
         is_small = n < max_exact
 
         # The other half of the buckets are for logarithmically spaced larger distances
+        # Avoid division by zero or log(0) if max_exact is 0 or n is max_exact
         val_if_large = max_exact + (
-            torch.log(n.float() / max_exact)
-            / math.log(self.max_distance / max_exact)
-            * (num_buckets - max_exact)
+            torch.log(n.float().clamp(min=1e-6) / max_exact.clamp(min=1))
+            / math.log(self.max_distance / max_exact.clamp(min=1))
+            * (half_buckets - max_exact)
         ).long()
-        
-        # Clamp values to be within valid bucket indices [0, num_buckets-1]
-        val_if_large = torch.min(val_if_large, torch.full_like(n, num_buckets - 1))
 
+        # Clamp values to be within valid bucket indices [0, num_buckets-1]
+        # Max index is num_buckets - 1
+        val_if_large = torch.min(val_if_large, torch.full_like(n, half_buckets - 1))
+
+        # Combine results and ensure final index is within [0, num_buckets - 1]
         ret += torch.where(is_small, n, val_if_large)
+        ret = torch.min(ret, torch.tensor(num_buckets - 1, device=ret.device)) # Final clamp
         return ret
 
     def compute_bias(self, query_length: int, key_length: int, device=None) -> torch.Tensor:
         """ Computes the bias tensor based on query and key lengths. """
         # [T_query, T_key] tensor of relative positions
         relative_position = torch.arange(key_length, device=device)[None, :] - torch.arange(query_length, device=device)[:, None]
-        
+
         # Calculate bucket indices for each relative position
         rp_bucket = self._relative_position_bucket(relative_position)
-        
+
         # Look up bias values from the learnable table
         # [T_query, T_key, num_heads]
         values = self.relative_attention_bias(rp_bucket)
-        
+
         # Reshape to [1, num_heads, T_query, T_key] for adding to attention scores
         values = values.permute(2, 0, 1).unsqueeze(0)
         return values
@@ -193,10 +177,10 @@ class BinaryAttentionBias(nn.Module):
         """
         # Get query and key lengths from attention scores shape
         batch_size, num_heads, query_length, key_length = attn_scores.shape
-        
+
         # Compute the bias tensor [1, H, T_query, T_key]
         bias = self.compute_bias(query_length, key_length, device=attn_scores.device)
-        
+
         # Add bias to attention scores (broadcasting handles batch dim)
         return attn_scores + bias
 
@@ -205,6 +189,8 @@ class BinaryAttentionBias(nn.Module):
 class TimeAttention(BaseMultiHeadAttention):
     """
     Example time-aware attention using RoPE and relative position bias.
+    Uses RotaryProjection to generate cos/sin and BinaryAttentionBias for bias.
+    Applies RoPE using the helper function from embedding module.
     """
     def __init__(
         self,
@@ -230,13 +216,13 @@ class TimeAttention(BaseMultiHeadAttention):
             **kwargs # Pass any extra args
         )
 
-        # Initialize RoPE projection
+        # Initialize RoPE projection (generates cos/sin)
         self.rotary_proj = RotaryProjection(
-            dim=self.head_dim, 
+            dim=self.head_dim,
             max_position_embeddings=max_position_embeddings,
             base=rope_base
         )
-        
+
         # Initialize Relative Position Bias
         self.rel_pos_bias = BinaryAttentionBias(
             num_heads=self.num_heads,
@@ -255,6 +241,7 @@ class TimeAttention(BaseMultiHeadAttention):
         head_mask: Optional[torch.Tensor] = None, # shape [H,] or [B, H] (multiplicative mask) - Not typically used here
         output_attentions: bool = False,
         use_cache: bool = False,
+        position_ids: Optional[torch.LongTensor] = None, # Position IDs for RoPE
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
 
         bsz, tgt_len, _ = hidden_states.size()
@@ -265,7 +252,7 @@ class TimeAttention(BaseMultiHeadAttention):
         src_len = kv_source.size(1) # Key/Value sequence length before caching
 
         # === Q, K, V projection ===
-        q = self.q_proj(hidden_states) # Apply scaling later or handle in RoPE if needed
+        q = self.q_proj(hidden_states)
         k = self.k_proj(kv_source)
         v = self.v_proj(kv_source)
 
@@ -275,63 +262,47 @@ class TimeAttention(BaseMultiHeadAttention):
         v = v.view(bsz, src_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         # === Handle past key/values (for decoding) ===
-        # Important: Caching happens BEFORE RoPE application if RoPE depends on absolute positions
         present_key_value = None
-        current_kv_seq_len = src_len # Length of K/V for the current step
-        if past_key_value is not None:
-             # Prepend past k/v: [B, H, S_prev + S_curr, D_head]
-             past_k, past_v = past_key_value
-             k = torch.cat([past_k, k], dim=2)
-             v = torch.cat([past_v, v], dim=2)
-        
-        # Total key/value sequence length after caching
-        total_kv_seq_len = k.size(2) 
-        
         if use_cache:
+            if past_key_value is not None:
+                 past_k, past_v = past_key_value
+                 k = torch.cat([past_k, k], dim=2)
+                 v = torch.cat([past_v, v], dim=2)
             present_key_value = (k, v)
 
+        # Total key/value sequence length after caching
+        total_kv_seq_len = k.size(2)
+
         # === Apply Rotary Positional Embedding (RoPE) ===
-        # seq_len for RoPE should be the length of Q and K *after* potential caching
-        # Assuming RoPE uses absolute positions up to total_kv_seq_len
-        # Note: RoPE might need adjustment if only applied to current query/key tokens in cached scenario
-        q_rotated, k_rotated = self.rotary_proj(q, k, seq_len=total_kv_seq_len) 
+        # Get cos/sin cache from RotaryProjection module
+        # Pass dummy tensor v for device/dtype, use total_kv_seq_len
+        cos, sin = self.rotary_proj(v, seq_len=total_kv_seq_len)
+        # Apply RoPE using the imported helper function
+        q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids=position_ids)
 
         # === Compute attention scores [B, H, T, S_total] ===
-        # Use rotated Q and K, apply scaling here
-        attn_scores = torch.matmul(q_rotated * self.scaling, k_rotated.transpose(-1, -2))
+        attn_scores = torch.matmul(q * self.scaling, k.transpose(-1, -2))
 
         # === Apply Relative Position Bias ===
         # Bias depends on query length (tgt_len) and total key length (total_kv_seq_len)
-        rel_pos_bias = self.rel_pos_bias(attn_scores) # Bias calculated based on score shape
-        attn_scores = attn_scores + rel_pos_bias
+        # Call the forward method of the bias module
+        attn_scores = self.rel_pos_bias(attn_scores)
 
         # === Apply Attention Mask ===
         if attention_mask is not None:
-            # Mask shape should align with attn_scores [B, H, T, S_total]
-            # Base class mask expansion logic might need verification for cached scenarios
-            # Assuming additive mask (-inf for masked)
-            # Ensure mask matches the final key length if caching is used
-            if attention_mask.shape[-1] != total_kv_seq_len:
-                  # This might happen if the input mask only covers the initial sequence. Needs careful handling.
-                  # Example: If mask is [B, 1, T, T] (causal) it needs to allow attention to past keys.
-                  # For simplicity here, assume the mask provided already accounts for past_key_values if needed.
-                  # A robust implementation might need to construct the mask dynamically.
-                  # print(f"Warning: Attention mask shape {attention_mask.shape} doesn't match total KV length {total_kv_seq_len}. Masking might be incorrect with caching.")
-                  pass # Allow potentially mismatched mask for now, user must provide correct one
-
-            attn_scores = attn_scores + attention_mask 
+            # Adjust mask shape checks or expansion as needed for caching
+            # Assuming mask is already additive and correctly shaped for total_kv_seq_len
+            attn_scores = attn_scores + attention_mask
 
         # === Compute attention probabilities ===
-        attn_probs = F.softmax(attn_scores, dim=-1) 
+        attn_probs = F.softmax(attn_scores, dim=-1)
         attn_probs = F.dropout(attn_probs, p=self.dropout, training=self.training)
 
         # Optional head mask application
         if head_mask is not None:
-             # ... (head mask logic as in base class) ...
              if head_mask.dim() == 1: head_mask = head_mask[None, :, None, None]
              elif head_mask.dim() == 2: head_mask = head_mask[:, :, None, None]
              attn_probs = attn_probs * head_mask
-
 
         # === Compute final output ===
         attn_output = torch.matmul(attn_probs, v) # Use original (non-rotated) V
@@ -341,7 +312,7 @@ class TimeAttention(BaseMultiHeadAttention):
         attn_output = self.out_proj(attn_output)
 
         if not output_attentions:
-            attn_probs = None 
+            attn_probs = None
 
         # Return tuple: (final_output, attention_probs, present_key_value_state)
         return attn_output, attn_probs, present_key_value

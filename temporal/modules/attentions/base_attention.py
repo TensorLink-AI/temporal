@@ -3,17 +3,18 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, List # Added List
+from typing import Optional, Tuple, List
 
 from temporal.registry.core import register_module
-# --- NEW: Import RoPE and ALiBi related components ---
-# Assuming they are located in the embedders module as indicated
-from temporal.modules.embedders.embedding import (
-    RotaryProjection,
-    ALiBiPositionalBias,
-    apply_rotary_pos_emb, # Assuming this helper function is also there
+# --- CORRECTED IMPORTS for RoPE/ALiBi Components ---
+from temporal.modules.attentions.time_attention import (
+    RotaryProjection, # Module for generating cos/sin cache
 )
-# --- End NEW ---
+from temporal.modules.embedders.embedding import (
+    ALiBiPositionalBias,  # Module for generating ALiBi bias
+    apply_rotary_pos_emb, # Helper function to apply RoPE using cos/sin
+)
+# --- End CORRECTED IMPORTS ---
 
 # --- Attempt to import flash attention ---
 try:
@@ -126,16 +127,19 @@ class BaseMultiHeadAttention(nn.Module):
 
         # --- 1) Apply Rotary Positional Embeddings (RoPE) if enabled ---
         if rotary_proj is not None:
-            # RoPE is typically not applied in cross-attention to keys/values from encoder
             if is_cross_attn:
-                 print("Warning: RoPE is typically not applied to cross-attention keys/values.")
+                 # Only apply RoPE to query in cross-attention, not keys from encoder
+                 # (Standard practice) Get cos/sin based on query length T
+                 cos, sin = rotary_proj(q, seq_len=tgt_len)
+                 q, _ = apply_rotary_pos_emb(q, k, cos, sin, position_ids=position_ids) # Only rotate q
+                 # k remains unrotated as it comes from a different context (encoder)
             else:
-                kv_seq_len = k.shape[-2] # Use the actual (potentially cached) length of K
-                # Assuming rotary_proj can return cos/sin cache based on length
-                cos, sin = rotary_proj(v, seq_len=kv_seq_len) # Pass dummy tensor v, use seq_len
-                # Apply RoPE. Ensure apply_rotary_pos_emb function exists and handles position_ids.
-                # Pass position_ids if provided (important for caching with offset)
-                q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids=position_ids)
+                 # Self-attention: Apply RoPE to both Q and K
+                 kv_seq_len = k.shape[-2] # Use the actual (potentially cached) length of K
+                 cos, sin = rotary_proj(v, seq_len=kv_seq_len) # Use dummy v for device/dtype
+                 # Apply RoPE using the helper function from embedding module
+                 q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids=position_ids)
+
 
         # === Compute attention scores [B, H, T, S] ===
         # Subclasses might override compute_attention_scores, or use this default
@@ -143,33 +147,45 @@ class BaseMultiHeadAttention(nn.Module):
 
         # --- 2) Add ALiBi relative-bias if enabled ---
         if alibi_bias_generator is not None:
-            # ALiBi implies causality typically, check if applicable
-            if not (self.is_decoder and not self.is_cross_attention):
-                 print("Warning: ALiBi is usually applied in causal decoder self-attention.")
             # Calculate the bias dynamically based on current query/key lengths
-            alibi_bias = alibi_bias_generator(batch_size=bsz, seq_len_q=tgt_len, seq_len_k=src_len)
-            # Ensure bias shape matches scores [B, H, T, S] or broadcastable [1, H, T, S]
-            # Slice if necessary (e.g., if max_len > current len)
-            alibi_bias = alibi_bias[..., :tgt_len, :src_len]
+            # Assume alibi_bias_generator.forward(batch_size, seq_len) -> [B, H, T, S] or broadcastable
+            alibi_bias = alibi_bias_generator(batch_size=bsz, seq_len=src_len)
+            # Adjust slicing based on actual ALiBi output shape and needs
+            # Example: If alibi_bias is [1, H, S, S] representing causal mask bias:
+            if alibi_bias.shape[-2] == src_len and alibi_bias.shape[-1] == src_len:
+                 # Select the relevant part for the current query length T
+                 # This assumes causal mask structure in ALiBi output
+                 alibi_bias = alibi_bias[:, :, -tgt_len:, :src_len]
+            elif alibi_bias.shape[-2] == tgt_len and alibi_bias.shape[-1] == src_len:
+                 # Shape already matches [*, *, T, S]
+                 pass
+            else:
+                 # Attempt broadcast or raise error
+                 try:
+                     # Check if broadcastable
+                     _ = attn_scores + alibi_bias
+                 except RuntimeError as e:
+                      raise ValueError(f"ALiBi bias shape {alibi_bias.shape} is not compatible or broadcastable with attention scores shape {attn_scores.shape}. Error: {e}")
+
             attn_scores = attn_scores + alibi_bias
 
         # === Apply Attention Mask ===
         # Standard masking logic (additive mask)
         if attention_mask is not None:
-            if attention_mask.dim() == 2:
-                # Expand padding mask [B, S] -> [B, 1, 1, S]
-                attention_mask = attention_mask[:, None, None, :]
-            elif attention_mask.dim() == 3:
-                # Expand [B, T, S] -> [B, 1, T, S]
-                attention_mask = attention_mask[:, None, :, :]
-            # Ensure mask shape matches attn_scores [B, H, T, S]
-            if attention_mask.size() != (bsz, 1, tgt_len, src_len) and \
-               attention_mask.size() != (bsz, self.num_heads, tgt_len, src_len):
-                 raise ValueError(
-                    f"Attention mask shape {attention_mask.size()} is incompatible with attention scores shape {attn_scores.shape}"
-                 )
-            # Additive mask (scores are large negative where mask is 1 or True)
+            # Allow for different mask types, ensure final shape is broadcastable to attn_scores
+            if attention_mask.dim() == 2: # [B, S] -> [B, 1, 1, S]
+                 attention_mask = attention_mask[:, None, None, :]
+            elif attention_mask.dim() == 3: # [B, T, S] -> [B, 1, T, S]
+                 attention_mask = attention_mask[:, None, :, :]
+            # Check broadcast compatibility
+            if attention_mask.shape[-2] != 1 and attention_mask.shape[-2] != tgt_len:
+                 raise ValueError(f"Mask T dim {attention_mask.shape[-2]} not compatible with tgt_len {tgt_len}")
+            if attention_mask.shape[-1] != 1 and attention_mask.shape[-1] != src_len:
+                 raise ValueError(f"Mask S dim {attention_mask.shape[-1]} not compatible with src_len {src_len}")
+
+            # Additive mask assumes 0 for keep, large negative for mask
             attn_scores = attn_scores + attention_mask
+
 
         # === Compute attention probabilities ===
         attn_probs = F.softmax(attn_scores, dim=-1)
@@ -179,6 +195,11 @@ class BaseMultiHeadAttention(nn.Module):
 
         # === (Optional) Apply head mask ===
         if head_mask is not None:
+             # Ensure head_mask is broadcastable to [B, H, T, S]
+             if head_mask.dim() == 1: # [H] -> [1, H, 1, 1]
+                 head_mask = head_mask[None, :, None, None]
+             elif head_mask.dim() == 2: # [B, H] -> [B, H, 1, 1]
+                 head_mask = head_mask[:, :, None, None]
              attn_probs = attn_probs * head_mask
 
         # === Compute final output ===
@@ -234,7 +255,7 @@ class FullAttention(BaseMultiHeadAttention):
         # --- Conditionally Initialize RoPE ---
         self.rotary_proj = None
         if self.use_rope:
-            # Ensure head_dim is available from base class init
+            # Use RotaryProjection from time_attention
             self.rotary_proj = RotaryProjection(
                 dim=self.head_dim,
                 max_position_embeddings=max_position_embeddings,
@@ -244,13 +265,11 @@ class FullAttention(BaseMultiHeadAttention):
         # --- Conditionally Initialize ALiBi ---
         self.alibi_bias_generator = None
         if self.use_alibi:
+            # Use ALiBiPositionalBias from embedding
             self.alibi_bias_generator = ALiBiPositionalBias(
                 num_heads=self.num_heads,
-                # ALiBi often implies causality, pass is_decoder flag if needed by ALiBiPositionalBias
-                # is_causal=self.is_decoder and not self.is_cross_attention, # Example if ALiBi class needs it
-                max_seq_len=max_position_embeddings # Or adjust if ALiBi needs different length concept
+                max_seq_len=max_position_embeddings
             )
-            # The bias matrix itself is typically calculated dynamically in forward
 
     # Override the forward method to pass RoPE/ALiBi modules if they exist
     def forward(
@@ -389,4 +408,3 @@ class FlashAttention(BaseMultiHeadAttention):
 
         # === Return results (no attn_probs, no past_key_value) ===
         return attn_output, None, None
-

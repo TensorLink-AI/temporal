@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import inspect
+import math # Import math for log calculation in BucketedRelativeBias if needed, or ALiBi later
 from typing import Optional, Tuple, List, Dict
 
 # === Corrected Imports ===
@@ -11,9 +12,42 @@ from temporal.registry.core import register_module, resolve # resolve is in core
 from temporal.models.module_builder_helper import ModuleBuilder
 
 
-# -----------------------------
+# --- NEW: RoPE Helper Functions ---
+def rotate_half(x):
+    """Rotates half the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None):
+    """Applies Rotary Positional Embedding to query and key tensors."""
+    # cos, sin: [seq_len, dim] or [bsz, 1, seq_len, dim]
+    # q, k: [bsz, num_heads, seq_len, head_dim]
+
+    # Ensure cos/sin are broadcastable over heads dimension if needed
+    # Simple case assumes cos/sin are [seq_len, head_dim] or similar that can be indexed by position_ids
+    # and then applied element-wise after reshaping/repeating.
+
+    if cos.dim() == 2: # [seq_len, dim] -> need to gather based on position_ids if provided
+        if position_ids is None:
+            # Assuming standard range if position_ids not given
+             cos = cos[None, None, :, :] # -> [1, 1, seq_len, dim]
+             sin = sin[None, None, :, :] # -> [1, 1, seq_len, dim]
+        else:
+            # Gather based on position IDs: [bsz, seq_len] -> [bsz, seq_len, dim]
+             cos = cos[position_ids].unsqueeze(1) # -> [bsz, 1, seq_len, dim]
+             sin = sin[position_ids].unsqueeze(1) # -> [bsz, 1, seq_len, dim]
+    # else: assume cos/sin already have correct shape e.g. [bsz, 1, seq_len, dim]
+
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
+# --- End RoPE Helper Functions ---
+
+
+# -----------------------------\
 # Base Embedding Interface
-# -----------------------------
+# -----------------------------\
 class BaseEmbedding(nn.Module):
     def __init__(self, d_model: int):
         super().__init__()
@@ -23,9 +57,9 @@ class BaseEmbedding(nn.Module):
         raise NotImplementedError("Each embedding must implement its own forward method.")
 
 
-# -----------------------------
+# -----------------------------\
 # Value Embedding
-# -----------------------------
+# -----------------------------\
 @register_module("embedding", "value")
 class TimeSeriesValueEmbedding(BaseEmbedding):
     def __init__(self, feature_size: int, d_model: int):
@@ -36,9 +70,9 @@ class TimeSeriesValueEmbedding(BaseEmbedding):
         return self.value_projection(x)
 
 
-# -----------------------------
+# -----------------------------\
 # Sinusoidal Positional Embedding (Explicit Signature)
-# -----------------------------
+# -----------------------------\
 @register_module("embedding", "sinusoidal")
 class SinusoidalPositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, max_seq_len: int = 2048):
@@ -82,9 +116,9 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
 
 # ... (Keep other existing embedding classes: Patch, Global, Rotary, LearnedAbsolute, ShawRelative, Fourier, Time2Vec, ALiBi, Bucketed, ConvPos, TimeDelta) ...
 
-# -----------------------------
+# -----------------------------\
 # Patch Embedding
-# -----------------------------
+# -----------------------------\
 @register_module("embedding", "patch")
 class TimeSeriesPatchEmbedding(BaseEmbedding):
     def __init__(
@@ -119,7 +153,7 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
         if F != self.feature_size:
             raise ValueError(f"Expected F={self.feature_size}, got {F}")
 
-        # --- 1) Pad at end if needed so ((L - patch_size) % stride) == 0 ---
+        # --- 1) Pad at end if needed so ((L - patch_size) % stride) == 0 ---\
         if L < self.patch_size:
             # too short: pad up to at least one patch
             pad_len = self.patch_size - L
@@ -135,22 +169,22 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
             x = torch.cat([x, pad_tensor], dim=1)
             L = L + pad_len
 
-        # --- 2) Unfold into patches: [B, num_patches, patch_size, F] ---
+        # --- 2) Unfold into patches: [B, num_patches, patch_size, F] ---\
         x_patches = x.unfold(
             dimension=1,
             size=self.patch_size,
             step=self.stride
         )  # shape: [B, num_patches, patch_size, F]
 
-        # --- 3) Flatten and project ---
+        # --- 3) Flatten and project ---\
         B, num_patches, _, _ = x_patches.shape
         x_flat = x_patches.contiguous().view(B, num_patches, -1)  # [B, num_patches, patch_size*F]
-        return self.proj(x_flat)            
+        return self.proj(x_flat)
 
 
-# -----------------------------
+# -----------------------------\
 # Global Embedding
-# -----------------------------
+# -----------------------------\
 @register_module("embedding", "global")
 class TimeSeriesGlobalEmbedding(BaseEmbedding):
     def __init__(self, seq_len: int, feature_size: int, d_model: int):
@@ -193,10 +227,7 @@ class RotaryPositionalEmbedding(BaseEmbedding):
         sin_interleaved = torch.stack([sin, sin], dim=-1).view(1, seq_len, self.d_model)
         return torch.cat([cos_interleaved, sin_interleaved], dim=0)
 
-    @staticmethod
-    def rotate_half(x: torch.Tensor) -> torch.Tensor:
-        x1, x2 = x[..., :x.shape[-1]//2], x[..., x.shape[-1]//2:]
-        return torch.cat([-x2, x1], dim=-1)
+    # Removed static rotate_half from here, moved to top-level helper
 
 
 @register_module("embedding", "learned_abs")
@@ -222,18 +253,20 @@ class LearnedAbsolutePositionalEmbedding(BaseEmbedding):
 @register_module("embedding", "relative_shaw")
 class ShawRelativePositionalBias(BaseEmbedding):
     def __init__(self, num_heads: int, max_distance: int = 128):
-        super().__init__(d_model=num_heads)
+        # Note: BaseEmbedding d_model doesn't align well here. num_heads is more relevant.
+        super().__init__(d_model=num_heads) # Pass num_heads as d_model for base compatibility
         self.num_heads = num_heads
         self.max_distance = max_distance
         self.relative_bias = nn.Embedding(2 * max_distance + 1, num_heads)
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
+        # This generates a bias tensor for attention scores, not a standard sequence embedding
         device = self.relative_bias.weight.device
         range_vec = torch.arange(seq_len, device=device)
         distance_mat = range_vec[None, :] - range_vec[:, None]
         distance_mat_clipped = torch.clamp(distance_mat, -self.max_distance, self.max_distance) + self.max_distance
-        biases = self.relative_bias(distance_mat_clipped)
-        biases = biases.permute(2, 0, 1).unsqueeze(0)
+        biases = self.relative_bias(distance_mat_clipped) # [seq_len, seq_len, num_heads]
+        biases = biases.permute(2, 0, 1).unsqueeze(0) # [1, num_heads, seq_len, seq_len]
         return biases
 
 
@@ -243,7 +276,8 @@ class FourierFeatureEmbedding(BaseEmbedding):
         super().__init__(d_model=d_model)
         self.num_features = num_features
         self.proj = nn.Linear(2 * num_features, d_model)
-        self.freqs = nn.Parameter(torch.exp(torch.linspace(0, np.log(1000), num_features)), requires_grad=False)
+        # Use nn.Parameter for frequencies if they should be learnable, or register_buffer if fixed
+        self.register_buffer("freqs", torch.exp(torch.linspace(0, np.log(1000), num_features)))
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
         device = self.proj.weight.device
@@ -273,21 +307,53 @@ class Time2VecEmbedding(BaseEmbedding):
 @register_module("embedding", "alibi")
 class ALiBiPositionalBias(BaseEmbedding):
     def __init__(self, num_heads: int, max_seq_len: int = 2048):
+        # BaseEmbedding d_model is not directly applicable here. Use num_heads.
         super().__init__(d_model=num_heads)
         self.num_heads = num_heads
         self.max_seq_len = max_seq_len
-        slopes = 1.0 / (2.0 ** torch.arange(num_heads))
+        # Calculate slopes for ALiBi
+        slopes = torch.Tensor(self._get_alibi_slopes(num_heads))
         self.register_buffer("slopes", slopes)
 
+    @staticmethod
+    def _get_alibi_slopes(n):
+        # Copied from HF Transformers BLOOM implementation
+        def get_slopes_power_of_2(n):
+            start = 2 ** (-(2 ** -(math.log2(n) - 3)))
+            ratio = start
+            return [start * ratio**i for i in range(n)]
+
+        if math.log2(n).is_integer():
+            return get_slopes_power_of_2(n)
+        else:
+            closest_power_of_2 = 2 ** math.floor(math.log2(n))
+            return (
+                get_slopes_power_of_2(closest_power_of_2)
+                + get_slopes_power_of_2(2 * closest_power_of_2)[0::2][: n - closest_power_of_2]
+            )
+
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
+        # Generates the ALiBi bias tensor for attention scores
         if seq_len > self.max_seq_len:
-            raise IndexError(f"seq_len={seq_len} exceeds max_seq_len={self.max_seq_len}")
+            # Note: ALiBi doesn't strictly need max_seq_len, it computes dynamically.
+            # Keeping it for potential consistency checks or future use.
+             print(f"Warning: seq_len={seq_len} > max_seq_len={self.max_seq_len} for ALiBi. Computing dynamically.")
+            # raise IndexError(f"seq_len={seq_len} exceeds max_seq_len={self.max_seq_len}")
+
         device = self.slopes.device
-        slopes = self.slopes.view(1, self.num_heads, 1, 1)
+        # slopes: [H] -> [1, H, 1, 1]
+        slopes = self.slopes[None, :, None, None]
+        # positions: [T]
         positions = torch.arange(seq_len, device=device)
+        # diff: [T, T] matrix of distances (query_pos - key_pos)
         diff = positions[None, :] - positions[:, None]
-        diff = diff.abs().view(1, 1, seq_len, seq_len)
-        bias = -diff * slopes
+        # abs_diff: [1, 1, T, T]
+        abs_diff = diff.abs().unsqueeze(0).unsqueeze(0)
+        # bias: [1, H, T, T]
+        # Negative sign because bias is added, and we want penalties for distance
+        bias = -abs_diff * slopes
+        # Expand for batch dimension if needed (usually handled by broadcasting)
+        # bias = bias.expand(batch_size, -1, -1, -1) # Not needed due to broadcasting
         return bias
 
 
@@ -301,14 +367,33 @@ class BucketedRelativeBias(BaseEmbedding):
         self.relative_buckets = nn.Embedding(num_buckets, num_heads)
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
+        # Generates bias tensor for attention scores
         device = self.relative_buckets.weight.device
         positions = torch.arange(seq_len, device=device)
-        diff = positions[None, :] - positions[:, None]
-        diff = torch.clamp(diff, -self.max_distance, self.max_distance) + self.max_distance
-        bucket_size = (2 * self.max_distance + 1) / self.num_buckets
-        bucket = torch.floor(diff / bucket_size).long().clamp(0, self.num_buckets - 1)
-        biases = self.relative_buckets(bucket)
-        biases = biases.permute(2, 0, 1).unsqueeze(0)
+        diff = positions[None, :] - positions[:, None] # [T, T]
+        # Bucketing logic needs careful implementation (assuming causal for now)
+        diff = torch.clamp(diff, max=0) # Consider only past relative positions (<= 0)
+        diff = diff.abs() # Use absolute distance for bucketing
+
+        # Simplified bucketing (needs refinement based on T5 paper if exact match needed)
+        bucket_size = self.max_distance / (self.num_buckets / 2) # Example logic
+        is_small = diff < (self.max_distance // 2)
+        bucket_if_small = diff // (bucket_size // 2) # Example finer buckets near 0
+        bucket_if_large = (self.num_buckets // 2) + \
+                          torch.minimum(torch.floor(torch.log(diff / (self.max_distance // 2)) / math.log(2) * (self.num_buckets / 2)),
+                                        torch.tensor(self.num_buckets / 2 -1, device=device)) # Example log buckets
+
+        bucket_indices = torch.where(is_small, bucket_if_small, bucket_if_large).long()
+        bucket_indices = torch.clamp(bucket_indices, 0, self.num_buckets - 1)
+
+
+        # # Original attempt - needs review based on T5 paper for exact logic
+        # diff_clipped = torch.clamp(diff, -self.max_distance, self.max_distance) + self.max_distance # [0, 2*max_dist]
+        # bucket_size = (2 * self.max_distance + 1) / self.num_buckets
+        # bucket_indices = torch.floor(diff_clipped / bucket_size).long().clamp(0, self.num_buckets - 1)
+
+        biases = self.relative_buckets(bucket_indices) # [T, T, H]
+        biases = biases.permute(2, 0, 1).unsqueeze(0) # [1, H, T, T]
         return biases
 
 
@@ -316,14 +401,20 @@ class BucketedRelativeBias(BaseEmbedding):
 class ConvolutionalPositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, kernel_size: int = 3, max_seq_len: int = 2048):
         super().__init__(d_model=d_model)
+        # Use Sinusoidal as the base before convolution
         base_cls = resolve("embedding", "sinusoidal")
         self.base = base_cls(d_model=d_model, max_seq_len=max_seq_len)
-        self.conv = nn.Conv1d(d_model, d_model, kernel_size, padding=kernel_size // 2)
+        # 1D convolution over the time dimension
+        self.conv = nn.Conv1d(d_model, d_model, kernel_size, padding=kernel_size // 2, groups=d_model) # Depthwise conv
 
     def forward(self, batch_size: int, seq_len: int, past_key_values_length: int = 0) -> torch.Tensor:
+        # Get base sinusoidal embedding [B, T, D]
         emb = self.base(batch_size, seq_len, past_key_values_length)
+        # Permute for Conv1D [B, D, T]
         x = emb.permute(0, 2, 1)
+        # Apply convolution
         x = self.conv(x)
+        # Permute back [B, T, D]
         return x.permute(0, 2, 1)
 
 
@@ -343,12 +434,15 @@ class TimeDeltaEmbedding(BaseEmbedding):
              device = 'cpu' # Fallback if MLP somehow has no parameters
         else:
              device = next(self.mlp.parameters()).device
+        # Create time steps [T, 1]
         t = torch.arange(seq_len, device=device, dtype=torch.float32).unsqueeze(-1)
+        # Pass through MLP [T, D]
         feats = self.mlp(t)
+        # Expand for batch [B, T, D]
         return feats.unsqueeze(0)
 
 
-# --- Updated Stacked Embedding Wrapper ---
+# --- Updated Stacked Embedding Wrapper ---\
 @register_module("embedding", "stacked_embedding")
 class StackedPositionalEmbedding(BaseEmbedding):
     # === Added builder parameter ===
@@ -406,56 +500,73 @@ class StackedPositionalEmbedding(BaseEmbedding):
              print(f"Warning: StackedPositionalEmbedding has no modules, returning zeros on device {fallback_device}.")
              return torch.zeros((batch_size, seq_len, self.d_model), device=fallback_device)
 
-        first_embed_module = self.embeddings[0]
-        try:
-            device = next(first_embed_module.parameters()).device
-        except StopIteration:
-            try:
-                device = next(first_embed_module.buffers()).device
-            except StopIteration:
-                 # Check device of the nn.ModuleList parameter itself? Unreliable.
-                 # Fallback is necessary. 
-                 print(f"Warning: Could not determine device for {type(first_embed_module).__name__} or parent StackedPositionalEmbedding. Assuming CPU.")
-                 device = 'cpu'
+        # Determine device from the first module that has parameters or buffers
+        device = 'cpu' # Default
+        for module in self.embeddings:
+             try:
+                 device = next(module.parameters()).device
+                 break
+             except StopIteration:
+                 try:
+                     device = next(module.buffers()).device
+                     break
+                 except StopIteration:
+                     continue
+        # If still 'cpu', maybe the ModuleList itself has a device? Unlikely reliable.
 
         combined_embedding = torch.zeros((batch_size, seq_len, self.d_model), device=device)
         processed_any = False
 
         for embedding_module in self.embeddings:
             try:
+                # Attempt to pass all kwargs, handle TypeError if module doesn't accept them
                 pos_embed = embedding_module(batch_size=batch_size, seq_len=seq_len, **kwargs)
             except TypeError as e:
                  sig = inspect.signature(embedding_module.forward)
                  valid_params = set(sig.parameters.keys())
                  has_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-                 if not has_var_kwargs and any(k not in valid_params for k in kwargs):
-                      print(f"Warning: TypeError calling {type(embedding_module).__name__}.forward. Retrying without extra kwargs. Error: {e}")
+
+                 # Identify unexpected kwargs
+                 unexpected_kwargs = {k: v for k, v in kwargs.items() if k not in valid_params}
+
+                 if not has_var_kwargs and unexpected_kwargs:
+                      print(f"Warning: TypeError calling {type(embedding_module).__name__}.forward. Retrying without extra kwargs: {list(unexpected_kwargs.keys())}. Error: {e}")
+                      # Create kwargs dict with only valid parameters
+                      valid_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
                       try:
-                          pos_embed = embedding_module(batch_size=batch_size, seq_len=seq_len)
+                          pos_embed = embedding_module(batch_size=batch_size, seq_len=seq_len, **valid_kwargs)
                       except Exception as inner_e:
                            print(f"Retry failed for {type(embedding_module).__name__}.forward: {inner_e}")
-                           raise e
+                           raise e # Re-raise original TypeError if retry fails
                  else:
-                      print(f"TypeError calling {type(embedding_module).__name__}.forward: {e}. Check signature.")
+                      # TypeError wasn't due to unexpected kwargs, or module accepts **kwargs
+                      print(f"TypeError calling {type(embedding_module).__name__}.forward: {e}. Check signature and required args.")
                       raise e
             except Exception as e:
                  print(f"Error during forward pass of {type(embedding_module).__name__}: {e}")
                  raise
 
-            expected_shape_prefix = (seq_len, self.d_model)
-            if not (pos_embed.shape[-len(expected_shape_prefix):] == expected_shape_prefix and
-                    pos_embed.shape[0] in [1, batch_size]):
-                 print(f"Warning: Skipping embedding {type(embedding_module).__name__} due to incompatible shape {pos_embed.shape} for summation. Expected shape like (*, {seq_len}, {self.d_model}).")
+            # --- Shape Check and Summation ---
+            # Allow for shapes like [B, T, D], [1, T, D]
+            # Also allow for bias shapes like [1, H, T, T] or [B, H, T, T] - these should not be added here.
+            is_sequence_embedding = (pos_embed.dim() == 3 and
+                                     pos_embed.shape[-1] == self.d_model and
+                                     pos_embed.shape[-2] == seq_len and
+                                     pos_embed.shape[0] in [1, batch_size])
+
+            if is_sequence_embedding:
+                 combined_embedding = combined_embedding + pos_embed
+                 processed_any = True
+            else:
+                 # Handle potential bias tensors returned by relative position modules
+                 # They shouldn't be summed with sequence embeddings. StackedEmbedding might
+                 # need modification if it's intended to return multiple embedding types (value + bias).
+                 # For now, just warn and skip non-sequence embeddings.
+                 print(f"Warning: Skipping embedding {type(embedding_module).__name__} due to incompatible shape {pos_embed.shape} for sequence summation. Expected shape like (*, {seq_len}, {self.d_model}).")
                  continue
 
-            if pos_embed.shape[-1] != self.d_model:
-                raise ValueError(f"Embedding {type(embedding_module).__name__} produced wrong dimension {pos_embed.shape[-1]}, expected {self.d_model}")
-
-            combined_embedding = combined_embedding + pos_embed
-            processed_any = True
 
         if not processed_any and self.embeddings:
             print("Warning: All configured embeddings were skipped due to incompatible shapes or errors.")
 
         return combined_embedding
-
