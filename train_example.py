@@ -129,7 +129,8 @@ print("Building model...")
 # The build function should now correctly build DistPredHead and use CRPSLoss
 model = build_time_series_transformer(config)
 print(f"Model built: {type(model).__name__}")
-print(f"Output Head: {type(model.output_head).__name__}")
+# --- CORRECTED attribute access --- #
+print(f"Output Head: {type(model.output_heads).__name__}") # Use plural 'output_heads'
 # Check the actual loss function attached to the model (might need access to model internals)
 if hasattr(model, 'loss_fn'):
     print(f"Loss Function: {type(model.loss_fn).__name__}")
@@ -170,7 +171,7 @@ train_dataset = TimeSeriesIterableDataset(dataset=train_data_list, config=config
 train_dataloader = DataLoader(train_dataset, batch_size=32, collate_fn=timeseries_collate_fn)
 print(f"DataLoader created.")
 
-# --- 5. Training Loop ---
+# --- 5. Training Loop (Reverted to simpler, working version) ---
 print("Starting training...")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
@@ -184,49 +185,36 @@ for epoch in range(num_epochs):
     batch_count = 0
     for i, batch in enumerate(train_dataloader):
         if not batch: continue # Skip empty batches
+
         optimizer.zero_grad()
+        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
-        # Move relevant tensors to device
-        batch_on_device = {}
-        relevant_keys = ['input_ids', 'attention_mask', 'decoder_input_ids', 'labels_mask', 'labels', 'loss_mask']
-        for k, v in batch.items():
-            if k in relevant_keys and isinstance(v, torch.Tensor):
-                batch_on_device[k] = v.to(device)
-            # Note: Time features might also be needed if using time embeddings
-
-        # Ensure required inputs are present
-        if 'input_ids' not in batch_on_device or 'labels' not in batch_on_device:
-             print(f"Skipping batch {i}, missing required keys.")
-             continue
-
-        # --- Model Forward Pass ---
+        # --- Model Forward Pass --- 
         try:
              outputs = model(
-                 encoder_inputs=batch_on_device['input_ids'],
-                 attention_mask=batch_on_device.get('attention_mask'), # Encoder mask
-                 decoder_inputs=batch_on_device.get('decoder_input_ids'), # May be optional depending on model
-                 decoder_attention_mask=batch_on_device.get('labels_mask'), # Decoder mask (for padding)
-                 targets=batch_on_device.get('labels'),
-                 loss_mask=batch_on_device.get('loss_mask') # Pass the loss mask if available
+                 encoder_inputs=batch['input_ids'],
+                 # Pass the 2D attention mask from the batch
+                 attention_mask=batch.get('attention_mask'),
+                 decoder_inputs=batch.get('decoder_input_ids'),
+                 # Pass the 2D mask for decoder inputs if available
+                 decoder_attention_mask=batch.get('labels_mask'),
+                 targets=batch.get('labels'),
+                 # loss_mask=batch.get('loss_mask') # Add this back if your model/loss handles it
              )
              loss = outputs.loss
+        except KeyError as e:
+            print(f"KeyError during model forward pass: {e}. Batch keys: {list(batch.keys())}")
+            print("Ensure model's forward signature arguments (e.g., 'encoder_inputs') correctly map to batch keys (e.g., 'input_ids').")
+            raise e
         except Exception as e:
-             print(f"Error during model forward pass in epoch {epoch+1}, batch {i}: {e}")
-             # Optionally print shapes for debugging
-             print("--- Batch Shapes ---")
-             for k, v in batch_on_device.items():
-                 if isinstance(v, torch.Tensor):
-                     print(f"  {k}: {v.shape}")
-             print("--------------------");
-             raise e # Re-raise after printing info
+             print(f"Error during model forward pass: {e}")
+             raise e
         # --- End Model Forward Pass ---
 
-        # Check for non-finite loss
+        # Check for non-finite loss (moved after forward pass)
         if loss is None:
             print(f"Warning: Loss is None in epoch {epoch+1}, batch {i}. Check model output and loss calculation.")
-            # Example: Check if outputs.logits exists
-            # print("Model output keys:", outputs.keys() if hasattr(outputs, 'keys') else "N/A")
-            continue
+            continue 
         if not torch.isfinite(loss):
              print(f"Warning: Non-finite loss detected in epoch {epoch+1}, batch {i}: {loss.item()}. Skipping backward pass.")
              continue
@@ -236,17 +224,21 @@ for epoch in range(num_epochs):
         epoch_loss += loss.item()
         batch_count += 1
 
-        if batch_count % 10 == 0: # Print loss every 10 batches
+        # Print loss less frequently
+        if batch_count % 10 == 0:
             print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_count}/{batches_per_epoch}], Loss: {loss.item():.4f}")
         if batch_count >= batches_per_epoch: break
 
     if batch_count == 0:
         print(f"Epoch {epoch+1} finished, but no batches were processed.")
         continue
-    avg_epoch_loss = epoch_loss / batch_count
+    # Avoid division by zero if batch_count is 0
+    avg_epoch_loss = epoch_loss / batch_count if batch_count > 0 else 0 
     print(f"--- Epoch {epoch+1} Finished --- Avg Loss: {avg_epoch_loss:.4f} ---")
 
 print("Training finished.")
+# --- End Training Loop ---
+
 
 # --- 6. Save Model ---
 print("Saving model...")
