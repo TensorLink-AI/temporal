@@ -87,24 +87,65 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
 # -----------------------------
 @register_module("embedding", "patch")
 class TimeSeriesPatchEmbedding(BaseEmbedding):
-    def __init__(self, patch_size: int, feature_size: int, d_model: int):
+    def __init__(
+        self,
+        patch_size: int,
+        feature_size: int,
+        d_model: int,
+        stride: int = None,
+        pad_value: float = 0.0,
+    ):
+        """
+        Args:
+          patch_size:   length of each patch
+          feature_size: number of input channels F
+          d_model:      output embedding dim D
+          stride:       step between patch starts.  If None, uses patch_size (non-overlap).
+          pad_value:    what value to pad with if L % stride != 0
+        """
         super().__init__(d_model)
-        self.patch_size = patch_size
+        self.patch_size   = patch_size
         self.feature_size = feature_size
-        self.patch_projection = nn.Linear(patch_size * feature_size, d_model, bias=False)
+        self.stride       = stride or patch_size
+        self.pad_value    = pad_value
+        self.proj         = nn.Linear(patch_size * feature_size, d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, L, F]
+        returns: [B, num_patches, D]
+        """
         B, L, F = x.shape
         if F != self.feature_size:
-            raise ValueError(f"Input feature size ({F}) doesn't match model feature size ({self.feature_size}).")
-        if L % self.patch_size != 0:
-            raise ValueError(f"Sequence length ({L}) is not divisible by patch size ({self.patch_size}).")
+            raise ValueError(f"Expected F={self.feature_size}, got {F}")
 
-        num_patches = L // self.patch_size
-        x_patched = x.view(B, num_patches, self.patch_size, F)
-        x_flattened = x_patched.view(B, num_patches, -1)
-        embedded_patches = self.patch_projection(x_flattened)
-        return embedded_patches
+        # --- 1) Pad at end if needed so ((L - patch_size) % stride) == 0 ---
+        if L < self.patch_size:
+            # too short: pad up to at least one patch
+            pad_len = self.patch_size - L
+        else:
+            rem = (L - self.patch_size) % self.stride
+            pad_len = self.stride - rem if rem != 0 else 0
+
+        if pad_len > 0:
+            # pad last time‐steps with pad_value
+            pad_tensor = torch.full(
+                (B, pad_len, F), self.pad_value, device=x.device, dtype=x.dtype
+            )
+            x = torch.cat([x, pad_tensor], dim=1)
+            L = L + pad_len
+
+        # --- 2) Unfold into patches: [B, num_patches, patch_size, F] ---
+        x_patches = x.unfold(
+            dimension=1,
+            size=self.patch_size,
+            step=self.stride
+        )  # shape: [B, num_patches, patch_size, F]
+
+        # --- 3) Flatten and project ---
+        B, num_patches, _, _ = x_patches.shape
+        x_flat = x_patches.contiguous().view(B, num_patches, -1)  # [B, num_patches, patch_size*F]
+        return self.proj(x_flat)            
 
 
 # -----------------------------

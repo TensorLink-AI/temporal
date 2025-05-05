@@ -66,11 +66,18 @@ class HybridAttention(nn.Module): # Inherit from nn.Module
         # Group-specific attention kernels
         self.head_groups = nn.ModuleList()
         for split, attn_type in zip(head_splits, head_types):
+            # --- MODIFICATION START ---
+            # Calculate the embedding dimension for this specific group based on
+            # the global head_dim and the number of heads in this group (split).
+            group_embed_dim = self.head_dim * split
+            # --- MODIFICATION END ---
             try:
                 kernel_cls = resolve("attention", attn_type) # Resolve standard attention modules
                 # Pass standard MHA arguments. The kernel's __init__ should accept these.
                 kernel = kernel_cls(
-                    embed_dim=embed_dim, # Pass embed_dim
+                    # --- MODIFICATION START ---
+                    embed_dim=group_embed_dim, # Pass the calculated group embed_dim
+                    # --- MODIFICATION END ---
                     num_heads=split, # Pass the number of heads for THIS group
                     dropout=dropout,
                     is_decoder=is_decoder,
