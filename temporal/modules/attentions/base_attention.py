@@ -109,8 +109,8 @@ class BaseMultiHeadAttention(nn.Module):
              cos, sin = rotary_proj(v, seq_len=kv_seq_len) # Get cos/sin caches
 
              if is_cross_attn:
-                  # Only rotate query in cross-attention
-                  q, _ = apply_rotary_pos_emb(q, k, cos[:tgt_len,:], sin[:tgt_len,:], position_ids=position_ids)
+                  # Only rotate query in cross-attention. Pass q for k to match sliced cos/sin dimensions.
+                  q, _ = apply_rotary_pos_emb(q, q, cos[:tgt_len,:], sin[:tgt_len,:], position_ids=position_ids)
              else:
                   # Rotate both query and key in self-attention
                   q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids=position_ids)
