@@ -93,14 +93,18 @@ class ModuleBuilder:
     # ------------------------------------------------------------------
     # Specific helpers
     # ------------------------------------------------------------------
-    def build_attention(self, cfg):
+    def build_attention(self, cfg): # cfg is AttentionConfig
         # Base kwargs now mostly handled by _build and _prepare_args alias logic
         return self._build(
             "attention", cfg.attention_type,
             base_kwargs=dict(
                 num_heads=cfg.num_heads,
                 dropout=cfg.dropout,
-                bias=getattr(cfg, 'bias', True)
+                bias=getattr(cfg, 'bias', True),
+                use_rope=getattr(cfg, 'use_rope', False),
+                rope_base=getattr(cfg, 'rope_base', 10000),
+                use_alibi=getattr(cfg, 'use_alibi', False),
+                max_position_embeddings=getattr(self.config, 'max_position_embeddings', 4096) # from main model config
             ),
             user_kwargs=cfg.kwargs,
         )
