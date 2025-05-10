@@ -6,6 +6,9 @@ from typing import Optional, List, Dict, Any, Union, Tuple, Callable
 from typing import Iterable
 import math
 from datetime import datetime
+import os
+import time
+from datasets import load_dataset, DownloadConfig, load_dataset_builder
 
 # Placeholder
 def generate_time_features(timestamps, freq):
@@ -431,3 +434,87 @@ def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tens
         batch_dict['static_cat_features'] = batch_static_cat
 
     return batch_dict
+
+def create_streaming_loader(
+    dataset_name: str,
+    split: str,
+    config: Any,
+    transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+    transform_dynamic: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+    revin: bool = False,
+    stride: int = 1,
+    shuffle_buffer: int = 10_000,
+    batch_size: int = 32,
+    num_workers: int = 4,
+    prefetch_factor: int = 2,
+    # download/retry settings
+    num_proc: int = 2,
+    max_retries: int = 5,
+    backoff_base: float = 5.0,
+):
+    """
+    Fully‐streaming DataLoader for massive time-series corpora.
+
+    1) load_dataset(streaming=True) with controlled parallelism & token
+    2) exponential backoff on HTTP 429 (inspecting exception text)
+    3) .shuffle(buffer_size)
+    4) wrap in TimeSeriesIterableDataset
+    5) DataLoader tuned for infinite streams
+    """
+    # Prepare DownloadConfig
+    hf_token = os.getenv("HF_TOKEN", "")
+    dlc = DownloadConfig(
+        num_proc=num_proc,          # parallel shard‐downloads
+        max_retries=2,              # per‐shard HTTP retries
+        token=hf_token or False,    # HF token (string) or False
+    )
+
+    # 1 & 2) load with retries/backoff
+    for attempt in range(max_retries):
+        try:
+            print(f"▶️ Loading {dataset_name}:{split} (num_proc={num_proc}) attempt {attempt+1}/{max_retries}…")
+            raw_stream = load_dataset(
+                dataset_name,
+                split=split,
+                streaming=True,
+                download_config=dlc,
+            )
+            break
+        except Exception as e:
+            msg = str(e)
+            # look for HTTP 429 rate‐limit indicators
+            if "429" in msg or "Too Many Requests" in msg:
+                wait = backoff_base * (2 ** attempt)
+                print(f"⚠️ Rate‐limited (429). Backing off for {wait:.1f}s …")
+                time.sleep(wait)
+                continue
+            # otherwise, bubble up
+            raise
+    else:
+        raise RuntimeError(f"Failed to load {dataset_name}:{split} after {max_retries} attempts")
+
+    # 3) small in-memory shuffle
+    raw_stream = raw_stream.shuffle(buffer_size=shuffle_buffer)
+
+    # 4) wrap in your TimeSeriesIterableDataset
+    ts_stream = TimeSeriesIterableDataset(
+        dataset=raw_stream,
+        config=config,
+        transform=transform,
+        transform_dynamic=transform_dynamic,
+        revin=revin,
+        stride=stride,
+    )
+
+    # 5) DataLoader tuned for infinite streams
+    loader = DataLoader(
+        ts_stream,
+        batch_size=None,               # already windowed
+        collate_fn=timeseries_collate_fn,
+        num_workers=num_workers,
+        persistent_workers=True,
+        prefetch_factor=prefetch_factor,
+        pin_memory=True,
+    )
+
+    return loader
