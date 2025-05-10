@@ -11,16 +11,9 @@ def generate_time_features(timestamps, freq):
     return None
 
 class TimeSeriesIterableDataset(IterableDataset):
-    """
-    A streaming dataset that:
-      1. Converts each row into multiple AR examples by sliding windows.
-      2. Optionally applies user-provided transforms to target or dynamic features.
-      3. Optional Reversible Instance Normalization (ReVIN).
-      4. Produces BOTH `input_ids` (context window) and `labels` (future window).
-    """
     def __init__(
         self,
-        dataset: List[Dict[str, Any]],
+        dataset: Iterable[Dict[str, Any]],
         config: Any,
         transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         transform_dynamic: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
@@ -34,10 +27,12 @@ class TimeSeriesIterableDataset(IterableDataset):
         self.transform_dynamic = transform_dynamic
         self.revin = revin
         self.stride = stride
-        self.decoder_labels = None  # Placeholder for decoder labels
 
-        # Cache dataset length for convenience
-        self._length = len(dataset)
+        # --- TRY TO GET A LENGTH, BUT FALL BACK TO NONE FOR STREAMING ---
+        try:
+            self._length = len(dataset)
+        except (TypeError, AttributeError):
+            self._length = None
 
         if not hasattr(self.config, "context_length"):
             raise ValueError("config must have 'context_length' attribute.")
@@ -45,7 +40,14 @@ class TimeSeriesIterableDataset(IterableDataset):
             raise ValueError("config must have 'prediction_length' attribute.")
 
     def __len__(self):
+        """
+        Return dataset length if known; otherwise raise TypeError
+        so that nobody accidentally tries to do random access.
+        """
+        if self._length is None:
+            raise TypeError("Length is undefined for streaming datasets")
         return self._length
+
 
     def __iter__(self):
         for idx, item in enumerate(self.dataset):
