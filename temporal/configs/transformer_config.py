@@ -463,6 +463,37 @@ class TransformerBlockConfig:
             kwargs=d.get("kwargs", {})
         )
 
+class LossConfig:
+    """
+    Configuration for the loss function.
+
+    Args:
+        type (str): Type of loss function (e.g., 'mse', 'crps').
+        kwargs (Optional[Dict[str, Any]]): Additional keyword arguments for the loss function.
+    """
+    def __init__(self, type: str = "mse", kwargs: Optional[Dict[str, Any]] = None):
+        self.type = type
+        self.kwargs = kwargs or {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert loss configuration to a dictionary.
+        """
+        return {
+            "type": self.type,
+            "kwargs": self.kwargs
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> 'LossConfig':
+        """
+        Create a LossConfig from a dictionary.
+        """
+        return cls(
+            type=d.get("type", "mse"),
+            kwargs=d.get("kwargs", {})
+        )
+
 class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     """
     Configuration for a transformer-based time-series forecasting model.
@@ -487,7 +518,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         dynamic_embedding_dim: Optional[List[int]] = None,
         past_dynamic_embedding_dim: Optional[List[int]] = None,
         time_features: Optional[List[str]] = None,
-        loss_config: Dict[str, Any] = {"type": "mse"},
+        loss_config: Optional[LossConfig] = None, # MODIFIED
         scaling: bool = True,
         model_type: str = "transformer",
         d_model: int = 64,
@@ -541,6 +572,8 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.quantizer_config = quantizer_config
         self.vocab_size = vocab_size
         self.decoder_start_token_id = decoder_start_token_id
+        
+        self.loss_config = loss_config or LossConfig() # ADDED
 
         _target_dim = output_dim if output_dim is not None else input_dim
         _autoregressive = autoregressive if autoregressive is not None else (self.architecture.layout != "encoder-only")
@@ -570,7 +603,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             dynamic_embedding_dim=dynamic_embedding_dim,
             past_dynamic_embedding_dim=past_dynamic_embedding_dim,
             time_features=time_features,
-            loss_config=loss_config,
+            loss_config=self.loss_config.to_dict(), # MODIFIED
             scaling=scaling,
             quantiles=_quantiles,
             autoregressive=_autoregressive,
@@ -603,6 +636,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             "output_head_config":          self.output_head_config.to_dict(),
             "norm_config":                 self.norm_config.to_dict(),
             "head_agg_config":             self.head_agg_config.to_dict(),
+            "loss_config":                 self.loss_config.to_dict(), # ADDED
             "output_attentions":           self.output_attentions,
             "output_hidden_states":        self.output_hidden_states,
             "use_teacher_forcing":         self.use_teacher_forcing,
@@ -612,6 +646,10 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             "num_quantiles":               self.num_quantiles,
         }
         base_filtered = {k: v for k, v in base.items() if k not in own}
+        # Ensure loss_config from own takes precedence if it was originally a dict in base
+        if 'loss_config' in base_filtered and isinstance(base_filtered['loss_config'], dict) and isinstance(own['loss_config'], dict):
+             pass # own['loss_config'] will overwrite
+        
         final_dict = {**base_filtered, **own, **hf_base_fields}
         return final_dict
 
@@ -655,13 +693,21 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             "norm_config": NormalizationConfig,
             "head_agg_config": HeadAggregationConfig,
             "quantizer_config": QuantizerConfig,
+            "loss_config": LossConfig, # ADDED
         }
         for key, config_cls in config_map.items():
             config_dict = d.get(key)
             if isinstance(config_dict, dict):
-                d[key] = config_cls.from_dict(config_dict)
+                # If loss_config is already a LossConfig instance, don't re-wrap
+                if key == "loss_config" and isinstance(config_dict, LossConfig):
+                    d[key] = config_dict
+                else:
+                    d[key] = config_cls.from_dict(config_dict)
+            elif config_dict is None and key == "loss_config": # ADDED default for loss_config
+                 d[key] = LossConfig()
             elif config_dict is None:
-                 d[key] = None 
+                 d[key] = None
+
 
         for block_key in ["encoder_blocks", "decoder_blocks"]:
             block_list = d.get(block_key)
@@ -672,8 +718,15 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             d["d_model"] = d.pop("hidden_size")
         if "feature_size" in d and "input_dim" not in d:
              d["input_dim"] = d["feature_size"]
+        # Ensure loss_config is handled correctly if old 'loss_type' exists
         if "loss_type" in d and "loss_config" not in d:
-             d["loss_config"] = {"type": d.pop("loss_type")}
+             d["loss_config"] = LossConfig(type=d.pop("loss_type"))
+        elif "loss_type" in d and "loss_config" in d and isinstance(d["loss_config"], dict) and "type" not in d["loss_config"]:
+            # if loss_config dict exists but doesn't have type, and loss_type is present, use loss_type
+            d["loss_config"]["type"] = d.pop("loss_type")
+        elif "loss_type" in d: # if loss_type still exists, remove it as loss_config object will handle it
+            d.pop("loss_type")
+
 
         d.pop("attention_blocks", None) # Remove deprecated
         d.pop("feedforward_config", None) # Remove deprecated
@@ -684,4 +737,3 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
              raise ValueError("Missing required argument: input_dim (or feature_size for backward compatibility)")
 
         return cls(**d)
-
