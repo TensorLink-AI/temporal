@@ -1,4 +1,4 @@
-\
+
 import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, Tuple, List # Added List
@@ -211,6 +211,15 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
 
         # 3. Check for Head Input & Run Heads
         if input_to_heads is None: raise ValueError("No output generated for heads.")
+        if targets is not None and self.config.architecture.layout == "decoder":
+                num_target_steps = targets.size(1) # This should be PREDICTION_LENGTH
+                current_input_seq_len = input_to_heads.size(1)
+
+                if current_input_seq_len > num_target_steps:
+                    input_to_heads = input_to_heads[:, -num_target_steps:, :]
+                # If current_input_seq_len == num_target_steps, it's aligned.
+                # If current_input_seq_len < num_target_steps, this indicates a different mismatch.
+
         logits = self.output_heads(input_to_heads)
         if self.head_aggregator is not None: logits = self.head_aggregator(logits)
 

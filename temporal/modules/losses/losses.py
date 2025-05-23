@@ -177,20 +177,33 @@ class CRPSLoss(BaseLoss):
     """
     Computes the Continuous Ranked Probability Score (CRPS) using the ensemble/quantile approach.
     Uses the Probability Weighted Moments (PWM) estimator for efficiency.
+    Includes an option to scale the loss based on target sequence statistics.
     """
-    def __init__(self, reduction: str = "mean", estimator: str = "pwm", axis: int = -1, **kwargs): # Added **kwargs
+    def __init__(self, reduction: str = "mean", estimator: str = "pwm", axis: int = -1,
+                 scaling_type: str = "none", scaling_dim: int = 1, scaling_eps: float = 1e-8, **kwargs):
         """
         Args:
             reduction (str): Specifies the reduction to apply: 'none', 'mean', 'sum'.
             estimator (str): CRPS estimator ('pwm', 'nrg', 'fair'). Defaults to 'pwm'.
             axis (int): Dimension corresponding to the ensemble/quantiles in predictions. Defaults to -1.
+            scaling_type (str): Type of scaling to apply to the loss: 'none', 'std', 'minmax'. Defaults to 'none'.
+            scaling_dim (int): Dimension of the original target tensor along which to compute scaling statistics.
+                               Defaults to 1 (typically the time dimension for targets [B, T, ...]).
+            scaling_eps (float): Epsilon value added to the denominator for numerical stability during scaling.
+                                 Defaults to 1e-8.
             **kwargs: Catches unused arguments like 'quantiles' from the config.
         """
         super().__init__(reduction=reduction)
         if estimator not in ["pwm", "nrg", "fair"]:
             raise ValueError(f"Invalid estimator '{estimator}'. Choose 'pwm', 'nrg', or 'fair'.")
+        if scaling_type not in ["none", "std", "minmax"]:
+            raise ValueError(f"Invalid scaling_type '{scaling_type}'. Choose 'none', 'std', or 'minmax'.")
+
         self.estimator = estimator
         self.axis = axis # Store the ensemble axis
+        self.scaling_type = scaling_type
+        self.scaling_dim = scaling_dim
+        self.scaling_eps = scaling_eps
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
         """
@@ -198,27 +211,25 @@ class CRPSLoss(BaseLoss):
 
         Args:
             preds (torch.Tensor): Model predictions (ensemble/quantiles). Shape e.g., [B, T, K] or [B, K, T].
-                                   The dimension specified by `self.axis` is treated as the ensemble.
+                                   The dimension specified by \`self.axis\` is treated as the ensemble.
             targets (torch.Tensor): Ground truth values. Shape e.g., [B, T] or [B, T, 1]. Must be broadcastable
-                                    against `preds` after removing the ensemble dimension.
+                                    against \`preds\` after removing the ensemble dimension.
             loss_mask (torch.Tensor, optional): Boolean or float tensor for masking loss elements.
                                                 Shape e.g., [B, T]. Defaults to None.
 
         Returns:
             torch.Tensor: The calculated CRPS loss (scalar if reduction is 'mean' or 'sum').
         """
+        original_targets_for_scaling = targets # Store a reference for scaling calculations
+        crps_targets = targets # This variable will be used for crps_ensemble, might be modified
+
         # Ensure target shape is suitable for crps_ensemble (expects obs shape matching forecasts except for ensemble axis)
-        # Example: preds [B, T, K], targets [B, T] -> unsqueeze targets to [B, T, 1]
-        # Example: preds [B, K, T], targets [B, T] -> unsqueeze targets to [B, 1, T]
-        if targets.ndim == preds.ndim - 1:
-            # Find the ensemble dimension in preds
+        if crps_targets.ndim == preds.ndim - 1:
             ensemble_dim_index = self.axis if self.axis >= 0 else preds.ndim + self.axis
-            # Unsqueeze targets at that dimension
-            targets = targets.unsqueeze(ensemble_dim_index)
+            crps_targets = crps_targets.unsqueeze(ensemble_dim_index)
+
         # Check if target shape is now broadcastable (matches preds shape excluding the ensemble dim)
-        # Create the expected shape of targets by removing the ensemble dim from preds shape
         expected_target_shape_list = list(preds.shape)
-        # Need to handle negative axis index correctly
         actual_axis = self.axis if self.axis >= 0 else preds.ndim + self.axis
         if 0 <= actual_axis < preds.ndim:
              del expected_target_shape_list[actual_axis]
@@ -226,26 +237,68 @@ class CRPSLoss(BaseLoss):
              raise ValueError(f"Invalid axis {self.axis} for preds shape {preds.shape}")
         expected_target_shape = torch.Size(expected_target_shape_list)
 
-        # Check if target shape matches the expected shape or has an extra singleton dimension
-        if list(targets.shape) != expected_target_shape_list:
-             # Check if target has a singleton dimension where the ensemble dim was
+        if list(crps_targets.shape) != expected_target_shape_list:
              target_shape_with_singleton = list(expected_target_shape)
              target_shape_with_singleton.insert(actual_axis, 1)
-             if list(targets.shape) != target_shape_with_singleton:
+             if list(crps_targets.shape) != target_shape_with_singleton:
                    raise ValueError(
                        f"Shape mismatch for CRPS: preds {preds.shape} (axis={self.axis}), "
-                       f"targets {targets.shape}, expected targets shape {expected_target_shape} "
+                       f"targets {crps_targets.shape} (after potential unsqueeze), expected targets shape {expected_target_shape} "
                        f"or {target_shape_with_singleton}"
                    )
 
         # Calculate element-wise CRPS (returns shape without ensemble dim, e.g., [B, T])
         elementwise_crps = crps_ensemble(
-            observations=targets,
+            observations=crps_targets, # Use the potentially unsqueezed targets
             forecasts=preds,
             estimator=self.estimator,
             axis=self.axis,
             reduce=False # Get per-element loss before reduction
         )
 
+        # --- Apply Scaling ---
+        if self.scaling_type != "none":
+            # Use original_targets_for_scaling for calculating std, min, max.
+            # This tensor has the shape as it was passed into the forward method.
+            # elementwise_crps has shape of original_targets_for_scaling, or compatible (e.g. [B,T])
+
+            # Validate scaling_dim against original_targets_for_scaling
+            if not (0 <= self.scaling_dim < original_targets_for_scaling.ndim):
+                raise ValueError(
+                    f"Invalid scaling_dim {self.scaling_dim} for original_targets_for_scaling shape {original_targets_for_scaling.shape}."
+                )
+
+            # For 'std' and 'minmax', the dimension size must be > 1
+            can_scale = original_targets_for_scaling.size(self.scaling_dim) > 1
+            scaling_factor = None
+
+            if can_scale:
+                if self.scaling_type == "std":
+                    std_dev = torch.std(original_targets_for_scaling, dim=self.scaling_dim, keepdim=True, unbiased=False)
+                    scaling_factor = std_dev
+                elif self.scaling_type == "minmax":
+                    min_val = torch.min(original_targets_for_scaling, dim=self.scaling_dim, keepdim=True).values
+                    max_val = torch.max(original_targets_for_scaling, dim=self.scaling_dim, keepdim=True).values
+                    scaling_factor = max_val - min_val
+            elif self.scaling_type != "none":
+                 # If scaling was intended but cannot be performed (e.g., dim size 1 for std)
+                 # We simply don't scale, could also issue a warning.
+                 # print(f"Warning: Scaling type '{self.scaling_type}' skipped because dimension {self.scaling_dim} has size <= 1.")
+                 pass
+
+
+            if scaling_factor is not None:
+                scaling_factor = scaling_factor + self.scaling_eps
+                # Ensure scaling_factor is broadcastable with elementwise_crps.
+                # elementwise_crps shape is typically [B, T] or [B, other_dims...].
+                # original_targets_for_scaling could be [B, T, F...].
+                # torch.std/min/max with keepdim=True preserves rank, so broadcasting should align
+                # if scaling_dim correctly targets a shared dimension.
+                # E.g., elementwise_crps [B,T], original_targets_for_scaling [B,T,1].
+                # If scaling_dim=1 (T dim), std_dev is [B,1,1], which broadcasts to [B,T].
+                elementwise_crps = elementwise_crps / scaling_factor
+        # --- End Apply Scaling ---
+
         # Apply mask (if any) and reduction using the helper method
         return self._apply_reduction(elementwise_crps, loss_mask)
+
