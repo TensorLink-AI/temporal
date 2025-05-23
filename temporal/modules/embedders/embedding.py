@@ -4,7 +4,7 @@ import torch.nn as nn
 import numpy as np
 import inspect
 import math # Import math for log calculation in BucketedRelativeBias if needed, or ALiBi later
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List, Dict, Union, Sequence, Any, Callable
 
 # === Corrected Imports ===
 from temporal.registry.core import register_module, resolve # resolve is in core
@@ -65,6 +65,56 @@ class TimeSeriesValueEmbedding(BaseEmbedding):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.value_projection(x)
+
+
+@register_module("embedding", "flexible_value")
+class FlexibleValueEmbedding(BaseEmbedding):
+    def __init__(
+        self,
+        *,
+        d_model: int,
+        input_dims: Union[int, Sequence[int]],
+        proj_builder: Callable[[int,int,Dict[str,Any]], nn.Module] = None,
+        proj_kwargs: Dict[str,Any] = None
+    ):
+        """
+        d_model     – output embedding size
+        input_dims  – either one int, or a list/tuple of ints for multiple feature-blocks
+        proj_builder– factory fn (in_dim, out_dim, extra_kwargs) → nn.Module
+                       if None, defaults to a simple linear
+        proj_kwargs – extra kwargs passed to proj_builder
+        """
+        super().__init__(d_model)
+        proj_kwargs = proj_kwargs or {}
+
+        # default projection: a bias-free linear
+        if proj_builder is None:
+            proj_builder = lambda in_dim, out_dim, kw: nn.Linear(in_dim, out_dim, bias=False, **kw) # Pass kw to Linear
+
+        # if multiple feature blocks, make one module per block
+        if isinstance(input_dims, (list, tuple)):
+            self.projections = nn.ModuleList([
+                proj_builder(in_dim, d_model, proj_kwargs)
+                for in_dim in input_dims
+            ])
+            self.input_dims = input_dims # Store for splitting in forward
+        else:
+            self.projections = proj_builder(input_dims, d_model, proj_kwargs)
+            self.input_dims = [input_dims] # Store as list for consistency
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: Tensor of shape [B, T, sum(input_dims)] if multiple blocks,
+           or [B, T, input_dims] if single.
+        """
+        if isinstance(self.projections, nn.ModuleList):
+            # split the last dim to match each proj
+            # Ensure self.input_dims was stored correctly
+            blocks = torch.split(x, self.input_dims, dim=-1)
+            # embed each block and sum
+            return sum(proj(b) for proj, b in zip(self.projections, blocks))
+        else:
+            return self.projections(x)
 
 
 # -----------------------------\
@@ -486,8 +536,8 @@ class StackedPositionalEmbedding(BaseEmbedding):
                       print(f"Warning: Retrying {type(embedding_module).__name__}.forward without extra kwargs: {list(unexpected_kwargs.keys())}.")
                       valid_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
                       try: pos_embed = embedding_module(batch_size=batch_size, seq_len=seq_len, **valid_kwargs)
-                      except Exception as inner_e: raise e
-                 else: raise e
+                      except Exception as inner_e: raise e # Re-raise original error if retry fails for other reasons
+                 else: raise e # Re-raise if it has VAR_KEYWORD or no unexpected_kwargs
             except Exception as e:
                  print(f"Error during forward pass of {type(embedding_module).__name__}: {e}"); raise
 
