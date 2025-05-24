@@ -246,6 +246,7 @@ class CRPSLoss(BaseLoss):
                        f"targets {crps_targets.shape} (after potential unsqueeze), expected targets shape {expected_target_shape} "
                        f"or {target_shape_with_singleton}"
                    )
+        preds = torch.sort(preds, dim=self.axis)[0]
 
         # Calculate element-wise CRPS (returns shape without ensemble dim, e.g., [B, T])
         elementwise_crps = crps_ensemble(
