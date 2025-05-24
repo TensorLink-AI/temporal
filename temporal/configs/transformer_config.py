@@ -636,7 +636,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             "output_head_config":          self.output_head_config.to_dict(),
             "norm_config":                 self.norm_config.to_dict(),
             "head_agg_config":             self.head_agg_config.to_dict(),
-            "loss_config":                 self.loss_config.to_dict(), # ADDED
+            "loss_config":                 self.loss_config, # MODIFIED
             "output_attentions":           self.output_attentions,
             "output_hidden_states":        self.output_hidden_states,
             "use_teacher_forcing":         self.use_teacher_forcing,
