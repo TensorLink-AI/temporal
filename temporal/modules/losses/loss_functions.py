@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.fft
 from torch.distributions import StudentT, LogNormal, NegativeBinomial, Normal, Categorical # Added for MixtureLoss
-
+import math
 
 class MQLoss(nn.Module):
     """
@@ -303,10 +303,6 @@ class FastSoftDTWLoss(nn.Module):
         return loss
 
 
-import torch
-import torch.nn as nn
-import math
-
 class SpreadPenalty(nn.Module):
     """
     Computes a penalty on the predicted quantile spread to regularize uncertainty.
@@ -357,7 +353,8 @@ class SpreadPenalty(nn.Module):
             penalty = 1.0 / (spread + self.epsilon)
         elif self.penalty_type == 'symmetric_log':
             log_spread = torch.log(spread + self.epsilon)
-            log_target = math.log(self.target_spread)
+            # Add epsilon to target_spread before log to avoid math domain error if target_spread is 0
+            log_target = math.log(self.target_spread + self.epsilon if self.target_spread == 0 else self.target_spread)
             penalty = (log_spread - log_target) ** 2
         else:
             raise RuntimeError(f"Invalid penalty_type '{self.penalty_type}'.")
