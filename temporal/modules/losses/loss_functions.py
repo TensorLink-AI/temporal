@@ -303,80 +303,71 @@ class FastSoftDTWLoss(nn.Module):
         return loss
 
 
+import torch
+import torch.nn as nn
+import math
+
 class SpreadPenalty(nn.Module):
     """
-    Calculates a penalty based on the spread of predicted quantiles.
-    Aims to penalize overconfident predictions (spread too small) or
-    encourage uncertainty.
+    Computes a penalty on the predicted quantile spread to regularize uncertainty.
+    Supports asymmetric penalties (log or inverse), or symmetric log penalty around a target spread.
     """
-    def __init__(self, penalty_type: str = 'log', epsilon: float = 1e-3, reduction: str = 'mean'):
+    def __init__(
+        self,
+        penalty_type: str = 'log',
+        epsilon: float = 1e-3,
+        reduction: str = 'mean',
+        target_spread: float = 1.0,
+    ):
         """
         Args:
-            penalty_type (str): Type of penalty. 'log' for -log(spread) or 'inverse' for 1/spread.
-                                Defaults to 'log' for better stability.
-            epsilon (float): Small value to add to spread for numerical stability,
-                             preventing log(0) or division by zero. Defaults to 1e-3.
-            reduction (str): Specifies the reduction to apply to the output:
-                             'none' | 'mean' | 'sum'. 'mean': outputs the mean of the penalty.
-                             Defaults to 'mean'.
+            penalty_type (str): 'log', 'inverse', or 'symmetric_log'.
+            epsilon (float): Numerical stability constant.
+            reduction (str): 'mean', 'sum', or 'none'.
+            target_spread (float): Target spread used in 'symmetric_log' mode.
         """
         super().__init__()
-        if penalty_type not in ['log', 'inverse']:
-            raise ValueError("penalty_type must be 'log' or 'inverse'")
+        if penalty_type not in ['log', 'inverse', 'symmetric_log']:
+            raise ValueError("penalty_type must be 'log', 'inverse', or 'symmetric_log'")
         if reduction not in ['none', 'mean', 'sum']:
             raise ValueError("reduction must be 'none', 'mean', or 'sum'")
 
         self.penalty_type = penalty_type
         self.epsilon = epsilon
         self.reduction = reduction
+        self.target_spread = target_spread
 
     def forward(self, preds: torch.Tensor) -> torch.Tensor:
         """
-        Calculates the spread penalty.
-
         Args:
-            preds (torch.Tensor): Predictions tensor, expected shape (B, T, Q)
-                                  where Q is the number of quantiles.
-                                  It's assumed preds are sorted by quantile,
-                                  i.e., preds[..., 0] is the lowest quantile and
-                                  preds[..., -1] is the highest.
+            preds (torch.Tensor): Tensor of quantile predictions, shape [B, T, Q].
+                                  Assumes quantiles are sorted along Q.
         Returns:
-            torch.Tensor: The calculated spread penalty. Shape depends on reduction.
+            torch.Tensor: Scalar penalty (or tensor if reduction='none').
         """
         if preds.ndim < 3 or preds.shape[-1] < 2:
-            # Need at least 2 quantiles (e.g., q_low, q_high) along the last dimension
-            raise ValueError(
-                "Predictions tensor 'preds' must have at least 3 dimensions (e.g., B, T, Q) "
-                "and the last dimension (number of quantiles) must be at least 2. "
-                f"Got shape: {preds.shape}"
-            )
+            raise ValueError(f"Expected preds shape [B, T, Q≥2], got: {preds.shape}")
 
-        # spread = q_highest - q_lowest
         spread = preds[..., -1] - preds[..., 0]
-
-        # Ensure spread is non-negative, clip at 0 if necessary before adding epsilon.
-        # This can prevent issues if quantiles are somehow crossed, though ideally they shouldn't be.
         spread = torch.clamp(spread, min=0.0)
 
         if self.penalty_type == 'log':
-            # -log(spread + eps)
             penalty = -torch.log(spread + self.epsilon)
         elif self.penalty_type == 'inverse':
-            # 1 / (spread + eps)
             penalty = 1.0 / (spread + self.epsilon)
+        elif self.penalty_type == 'symmetric_log':
+            log_spread = torch.log(spread + self.epsilon)
+            log_target = math.log(self.target_spread)
+            penalty = (log_spread - log_target) ** 2
         else:
-            # This case should be caught by __init__, but as a safeguard:
-            raise RuntimeError(f"Invalid penalty_type '{self.penalty_type}' encountered in forward pass.")
+            raise RuntimeError(f"Invalid penalty_type '{self.penalty_type}'.")
 
         if self.reduction == 'mean':
             return penalty.mean()
         elif self.reduction == 'sum':
             return penalty.sum()
-        elif self.reduction == 'none':
-            return penalty
-        
-        # Should be covered by above, but to satisfy linters/type checkers if they complain
         return penalty
+
 
 
 class MixtureLoss(nn.Module):
