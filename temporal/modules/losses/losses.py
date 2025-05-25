@@ -184,8 +184,8 @@ class CRPSLoss(BaseLoss):
     """
     def __init__(self, reduction: str = "mean", estimator: str = "pwm", axis: int = -1,
                  scaling_type: str = "none", scaling_dim: int = 1, scaling_eps: float = 1e-8,
-                 spread_lambda: float = 0.0, spread_penalty_type: str = 'log',
-                 spread_penalty_epsilon: float = 1e-3,
+                 spread_lambda: float = 0.0, spread_penalty_type: str = 'symmetric_log',
+                 spread_penalty_epsilon: float = 1e-3, spread_target_spread: float = 0.0,
                  **kwargs):
         """
         Args:
@@ -199,9 +199,10 @@ class CRPSLoss(BaseLoss):
                                  Defaults to 1e-8.
             spread_lambda (float): Coefficient for the spread penalty. If 0, penalty is not applied.
                                    Defaults to 0.0.
-            spread_penalty_type (str): Type of spread penalty ('log' or 'inverse'). Defaults to 'log'.
+            spread_penalty_type (str): Type of spread penalty ('log', 'inverse', 'symmetric_log'). Defaults to 'symmetric_log'.
             spread_penalty_epsilon (float): Epsilon for numerical stability in spread penalty.
                                             Defaults to 1e-3.
+            spread_target_spread (float): Target spread for 'symmetric_log' penalty. Defaults to 0.0.
             **kwargs: Catches unused arguments like 'quantiles' from the config.
         """
         super().__init__(reduction=reduction)
@@ -209,8 +210,8 @@ class CRPSLoss(BaseLoss):
             raise ValueError(f"Invalid estimator '{estimator}'. Choose 'pwm', 'nrg', or 'fair'.")
         if scaling_type not in ["none", "std", "minmax"]:
             raise ValueError(f"Invalid scaling_type '{scaling_type}'. Choose 'none', 'std', or 'minmax'.")
-        if spread_penalty_type not in ['log', 'inverse']:
-            raise ValueError("spread_penalty_type must be 'log' or 'inverse'")
+        if spread_penalty_type not in ['log', 'inverse', 'symmetric_log']:
+            raise ValueError("spread_penalty_type must be 'log', 'inverse', or 'symmetric_log'")
 
         self.estimator = estimator
         self.axis = axis # Store the ensemble axis
@@ -224,6 +225,7 @@ class CRPSLoss(BaseLoss):
             self.spread_penalty_fn = SpreadPenalty(
                 penalty_type=spread_penalty_type,
                 epsilon=spread_penalty_epsilon,
+                target_spread=spread_target_spread,
                 reduction='mean' # Penalty is mean over spread elements, then scaled by lambda
             )
 
