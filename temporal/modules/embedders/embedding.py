@@ -53,18 +53,24 @@ class BaseEmbedding(nn.Module):
     def forward(self, *args, **kwargs):
         raise NotImplementedError("Each embedding must implement its own forward method.")
 
-
-# -----------------------------\
+# -----------------------------
 # Value Embedding
-# -----------------------------\
+# -----------------------------
 @register_module("embedding", "value")
 class TimeSeriesValueEmbedding(BaseEmbedding):
-    def __init__(self, feature_size: int, d_model: int):
+    def __init__(self, feature_size: int, d_model: int, use_value_norm: bool = False): # Added use_value_norm
         super().__init__(d_model)
         self.value_projection = nn.Linear(feature_size, d_model, bias=False)
+        # Conditionally create LayerNorm
+        self.value_norm = nn.LayerNorm(d_model) if use_value_norm else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.value_projection(x)
+        # x is [B, T, feature_size]
+        proj = self.value_projection(x)    # → [B, T, d_model]
+        # Apply LayerNorm if it exists
+        if self.value_norm is not None:
+            return self.value_norm(proj)   # → [B, T, d_model]
+        return proj # Return projected value if no norm
 
 
 @register_module("embedding", "flexible_value")
@@ -75,7 +81,8 @@ class FlexibleValueEmbedding(BaseEmbedding):
         d_model: int,
         input_dims: Union[int, Sequence[int]],
         proj_builder: Callable[[int,int,Dict[str,Any]], nn.Module] = None,
-        proj_kwargs: Dict[str,Any] = None
+        proj_kwargs: Dict[str,Any] = None,
+        use_layer_norm: bool = False # Added layer norm option
     ):
         """
         d_model     – output embedding size
@@ -83,6 +90,7 @@ class FlexibleValueEmbedding(BaseEmbedding):
         proj_builder– factory fn (in_dim, out_dim, extra_kwargs) → nn.Module
                        if None, defaults to a simple linear
         proj_kwargs – extra kwargs passed to proj_builder
+        use_layer_norm - If True, applies LayerNorm after projections. Defaults to False.
         """
         super().__init__(d_model)
         proj_kwargs = proj_kwargs or {}
@@ -101,6 +109,9 @@ class FlexibleValueEmbedding(BaseEmbedding):
         else:
             self.projections = proj_builder(input_dims, d_model, proj_kwargs)
             self.input_dims = [input_dims] # Store as list for consistency
+        
+        # Conditionally create LayerNorm
+        self.layer_norm = nn.LayerNorm(d_model) if use_layer_norm else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -112,9 +123,14 @@ class FlexibleValueEmbedding(BaseEmbedding):
             # Ensure self.input_dims was stored correctly
             blocks = torch.split(x, self.input_dims, dim=-1)
             # embed each block and sum
-            return sum(proj(b) for proj, b in zip(self.projections, blocks))
+            emb = sum(proj(b) for proj, b in zip(self.projections, blocks))
         else:
-            return self.projections(x)
+            emb = self.projections(x)
+        
+        # Apply LayerNorm if it exists
+        if self.layer_norm is not None:
+            return self.layer_norm(emb)
+        return emb # Return embedded value if no norm
 
 
 # -----------------------------\

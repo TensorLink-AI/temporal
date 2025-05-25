@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.fft
-
+from torch.distributions import StudentT, LogNormal, NegativeBinomial, Normal, Categorical # Added for MixtureLoss
 
 
 class MQLoss(nn.Module):
@@ -301,3 +301,162 @@ class FastSoftDTWLoss(nn.Module):
         elif self.reduction == "sum":
             return loss.sum()
         return loss
+
+
+class SpreadPenalty(nn.Module):
+    """
+    Calculates a penalty based on the spread of predicted quantiles.
+    Aims to penalize overconfident predictions (spread too small) or
+    encourage uncertainty.
+    """
+    def __init__(self, penalty_type: str = 'log', epsilon: float = 1e-3, reduction: str = 'mean'):
+        """
+        Args:
+            penalty_type (str): Type of penalty. 'log' for -log(spread) or 'inverse' for 1/spread.
+                                Defaults to 'log' for better stability.
+            epsilon (float): Small value to add to spread for numerical stability,
+                             preventing log(0) or division by zero. Defaults to 1e-3.
+            reduction (str): Specifies the reduction to apply to the output:
+                             'none' | 'mean' | 'sum'. 'mean': outputs the mean of the penalty.
+                             Defaults to 'mean'.
+        """
+        super().__init__()
+        if penalty_type not in ['log', 'inverse']:
+            raise ValueError("penalty_type must be 'log' or 'inverse'")
+        if reduction not in ['none', 'mean', 'sum']:
+            raise ValueError("reduction must be 'none', 'mean', or 'sum'")
+
+        self.penalty_type = penalty_type
+        self.epsilon = epsilon
+        self.reduction = reduction
+
+    def forward(self, preds: torch.Tensor) -> torch.Tensor:
+        """
+        Calculates the spread penalty.
+
+        Args:
+            preds (torch.Tensor): Predictions tensor, expected shape (B, T, Q)
+                                  where Q is the number of quantiles.
+                                  It's assumed preds are sorted by quantile,
+                                  i.e., preds[..., 0] is the lowest quantile and
+                                  preds[..., -1] is the highest.
+        Returns:
+            torch.Tensor: The calculated spread penalty. Shape depends on reduction.
+        """
+        if preds.ndim < 3 or preds.shape[-1] < 2:
+            # Need at least 2 quantiles (e.g., q_low, q_high) along the last dimension
+            raise ValueError(
+                "Predictions tensor 'preds' must have at least 3 dimensions (e.g., B, T, Q) "
+                "and the last dimension (number of quantiles) must be at least 2. "
+                f"Got shape: {preds.shape}"
+            )
+
+        # spread = q_highest - q_lowest
+        spread = preds[..., -1] - preds[..., 0]
+
+        # Ensure spread is non-negative, clip at 0 if necessary before adding epsilon.
+        # This can prevent issues if quantiles are somehow crossed, though ideally they shouldn't be.
+        spread = torch.clamp(spread, min=0.0)
+
+        if self.penalty_type == 'log':
+            # -log(spread + eps)
+            penalty = -torch.log(spread + self.epsilon)
+        elif self.penalty_type == 'inverse':
+            # 1 / (spread + eps)
+            penalty = 1.0 / (spread + self.epsilon)
+        else:
+            # This case should be caught by __init__, but as a safeguard:
+            raise RuntimeError(f"Invalid penalty_type '{self.penalty_type}' encountered in forward pass.")
+
+        if self.reduction == 'mean':
+            return penalty.mean()
+        elif self.reduction == 'sum':
+            return penalty.sum()
+        elif self.reduction == 'none':
+            return penalty
+        
+        # Should be covered by above, but to satisfy linters/type checkers if they complain
+        return penalty
+
+
+class MixtureLoss(nn.Module):
+    def __init__(self, reduction="mean", min_df=2.0, fixed_sigma=1e-3):
+        super().__init__()
+        self.reduction = reduction
+        self.min_df = min_df
+        self.fixed_sigma = fixed_sigma
+
+    def forward(self, preds: dict, targets: torch.Tensor, loss_mask: torch.Tensor = None):
+        """
+        Args:
+            preds: dict of predicted parameters. It should contain:
+                   - "mixture_logits": Tensor of shape [B, T, M] (M = number of components)
+                   - "components": List[str] of distribution names for each component (must match keys below)
+                   - Parameters for each distribution, e.g., "student_df", "student_mu", "student_scale".
+                     These tensors are expected to have shape [B, T] or be broadcastable.
+                     The OutputHead must ensure these keys are populated as expected by the loss.
+            targets: Ground truth tensor of shape [B, T]
+            loss_mask: Optional float or bool mask of shape [B, T]
+        """
+        logits = preds["mixture_logits"]  # [B, T, M]
+        weights = F.softmax(logits, dim=-1)  # [B, T, M]
+
+        log_probs = []
+        target_for_dist = targets # Shape [B, T]
+
+        for i, dist_name in enumerate(preds["components"]):
+            if dist_name == "student_t":
+                nu = F.softplus(preds["student_df"]) + self.min_df # Shape [B,T]
+                mu = preds["student_mu"] # Shape [B,T]
+                tau = F.softplus(preds["student_scale"]) # Shape [B,T]
+                dist = StudentT(df=nu, loc=mu, scale=tau)
+                log_prob = dist.log_prob(target_for_dist)
+            elif dist_name == "log_normal":
+                mu = preds["lognorm_mu"] # Shape [B,T]
+                sigma = F.softplus(preds["lognorm_sigma"]) # Shape [B,T]
+                dist = LogNormal(loc=mu, scale=sigma) # PyTorch LogNormal takes loc (mu) and scale (sigma)
+                log_prob = dist.log_prob(torch.clamp(target_for_dist, min=1e-6))  # clamp for log domain
+            elif dist_name == "neg_binomial":
+                r = F.softplus(preds["nb_r"]) # Shape [B,T]
+                p = torch.sigmoid(preds["nb_p"]) # Shape [B,T]
+                dist = NegativeBinomial(total_count=r, probs=p)
+                log_prob = dist.log_prob(target_for_dist)
+            elif dist_name == "fixed_normal":
+                mu = preds["normal_mu"] # Shape [B,T]
+                sigma_val = torch.tensor(self.fixed_sigma, device=mu.device, dtype=mu.dtype)
+                sigma = sigma_val.expand_as(mu) # Expand to [B,T]
+                dist = Normal(loc=mu, scale=sigma)
+                log_prob = dist.log_prob(target_for_dist)
+            else:
+                raise ValueError(f"Unknown distribution component: {dist_name}")
+
+            log_probs.append(log_prob)  # Appending tensor of shape [B, T]
+
+        log_probs_tensor = torch.stack(log_probs, dim=-1)  # Converts list of M tensors [B,T] to one tensor [B, T, M]
+        
+        # Log-sum-exp for stable mixture likelihood calculation
+        # log P(y|θ) = log Σ_i w_i * P(y|θ_i) = log Σ_i exp(log w_i + log P(y|θ_i))
+        # Add epsilon to weights before log to avoid log(0)
+        log_weighted_log_prob = log_probs_tensor + torch.log(weights + 1e-9) 
+        weighted_log_prob = torch.logsumexp(log_weighted_log_prob, dim=-1)  # Results in shape [B, T]
+        
+        nll = -weighted_log_prob  # Negative Log-Likelihood, shape [B, T]
+
+        if loss_mask is not None:
+            # Ensure mask is broadcastable if not identical shape, though typically [B,T] expected.
+            if loss_mask.shape != nll.shape and loss_mask.ndim == nll.ndim:
+                loss_mask = loss_mask.expand_as(nll) # Try to expand if dims match but sizes differ at singleton
+            elif loss_mask.shape != nll.shape:
+                 raise ValueError(f"loss_mask shape {loss_mask.shape} incompatible with nll shape {nll.shape}")
+            
+            nll = nll * loss_mask
+            num_active_elements = loss_mask.sum().clamp(min=1e-9) 
+        else:
+            num_active_elements = torch.tensor(nll.numel(), device=nll.device, dtype=nll.dtype).clamp(min=1e-9)
+
+        if self.reduction == "mean":
+            return nll.sum() / num_active_elements
+        elif self.reduction == "sum":
+            return nll.sum()
+        # reduction == "none" or other
+        return nll

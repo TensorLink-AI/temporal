@@ -11,7 +11,9 @@ from temporal.modules.losses.loss_functions import (
     KernelEnergyLoss,
     EnergyDistanceLoss,
     SpectralLoss,
-    FastSoftDTWLoss
+    FastSoftDTWLoss,
+    SpreadPenalty, # Added SpreadPenalty
+    MixtureLoss # Added MixtureLoss
 )
 # Import the CRPS function
 from temporal.losses.crps_loss_ensemble import crps_ensemble
@@ -178,9 +180,13 @@ class CRPSLoss(BaseLoss):
     Computes the Continuous Ranked Probability Score (CRPS) using the ensemble/quantile approach.
     Uses the Probability Weighted Moments (PWM) estimator for efficiency.
     Includes an option to scale the loss based on target sequence statistics.
+    Optionally includes a spread penalty for regularization.
     """
     def __init__(self, reduction: str = "mean", estimator: str = "pwm", axis: int = -1,
-                 scaling_type: str = "none", scaling_dim: int = 1, scaling_eps: float = 1e-8, **kwargs):
+                 scaling_type: str = "none", scaling_dim: int = 1, scaling_eps: float = 1e-8,
+                 spread_lambda: float = 0.0, spread_penalty_type: str = 'log',
+                 spread_penalty_epsilon: float = 1e-3,
+                 **kwargs):
         """
         Args:
             reduction (str): Specifies the reduction to apply: 'none', 'mean', 'sum'.
@@ -191,6 +197,11 @@ class CRPSLoss(BaseLoss):
                                Defaults to 1 (typically the time dimension for targets [B, T, ...]).
             scaling_eps (float): Epsilon value added to the denominator for numerical stability during scaling.
                                  Defaults to 1e-8.
+            spread_lambda (float): Coefficient for the spread penalty. If 0, penalty is not applied.
+                                   Defaults to 0.0.
+            spread_penalty_type (str): Type of spread penalty ('log' or 'inverse'). Defaults to 'log'.
+            spread_penalty_epsilon (float): Epsilon for numerical stability in spread penalty.
+                                            Defaults to 1e-3.
             **kwargs: Catches unused arguments like 'quantiles' from the config.
         """
         super().__init__(reduction=reduction)
@@ -198,6 +209,8 @@ class CRPSLoss(BaseLoss):
             raise ValueError(f"Invalid estimator '{estimator}'. Choose 'pwm', 'nrg', or 'fair'.")
         if scaling_type not in ["none", "std", "minmax"]:
             raise ValueError(f"Invalid scaling_type '{scaling_type}'. Choose 'none', 'std', or 'minmax'.")
+        if spread_penalty_type not in ['log', 'inverse']:
+            raise ValueError("spread_penalty_type must be 'log' or 'inverse'")
 
         self.estimator = estimator
         self.axis = axis # Store the ensemble axis
@@ -205,15 +218,25 @@ class CRPSLoss(BaseLoss):
         self.scaling_dim = scaling_dim
         self.scaling_eps = scaling_eps
 
+        self.spread_lambda = spread_lambda
+        self.spread_penalty_fn = None
+        if self.spread_lambda > 0:
+            self.spread_penalty_fn = SpreadPenalty(
+                penalty_type=spread_penalty_type,
+                epsilon=spread_penalty_epsilon,
+                reduction='mean' # Penalty is mean over spread elements, then scaled by lambda
+            )
+
     def forward(self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
         """
-        Calculates the CRPS loss.
+        Calculates the CRPS loss with optional spread penalty.
 
         Args:
             preds (torch.Tensor): Model predictions (ensemble/quantiles). Shape e.g., [B, T, K] or [B, K, T].
-                                   The dimension specified by \`self.axis\` is treated as the ensemble.
+                                   The dimension specified by `self.axis` is treated as the ensemble.
+                                   For spread penalty, last dimension is assumed to be quantiles.
             targets (torch.Tensor): Ground truth values. Shape e.g., [B, T] or [B, T, 1]. Must be broadcastable
-                                    against \`preds\` after removing the ensemble dimension.
+                                    against `preds` after removing the ensemble dimension.
             loss_mask (torch.Tensor, optional): Boolean or float tensor for masking loss elements.
                                                 Shape e.g., [B, T]. Defaults to None.
 
@@ -246,16 +269,43 @@ class CRPSLoss(BaseLoss):
                        f"targets {crps_targets.shape} (after potential unsqueeze), expected targets shape {expected_target_shape} "
                        f"or {target_shape_with_singleton}"
                    )
-        preds = torch.sort(preds, dim=self.axis)[0]
+        
+        # Sort predictions along the ensemble/quantile axis for CRPS and spread calculation
+        # CRPS ensemble often expects sorted forecasts. Spread penalty assumes sorted for q_low, q_high.
+        preds_sorted = torch.sort(preds, dim=self.axis)[0]
+
 
         # Calculate element-wise CRPS (returns shape without ensemble dim, e.g., [B, T])
         elementwise_crps = crps_ensemble(
             observations=crps_targets, # Use the potentially unsqueezed targets
-            forecasts=preds,
+            forecasts=preds_sorted, # Use sorted predictions
             estimator=self.estimator,
             axis=self.axis,
             reduce=False # Get per-element loss before reduction
         )
+
+        # --- Apply Spread Penalty ---
+        if self.spread_lambda > 0 and self.spread_penalty_fn is not None:
+            # SpreadPenalty expects quantiles as the last dimension (B, T, Q)
+            # If self.axis is not the last dim for preds, we might need to permute or warn.
+            # For now, assuming preds is (B, T, Q) if spread penalty is active,
+            # which aligns with common use where axis=-1 for quantiles.
+            if self.axis != -1 and self.axis != preds.ndim - 1:
+                # This is a simplification. If axis is not last, SpreadPenalty might not work as intended
+                # without a transpose, or SpreadPenalty needs to be axis-aware.
+                # For now, we proceed assuming axis is compatible or user ensures preds are (..., Q)
+                pass # Potentially add warning or transpose logic if necessary
+
+            # We use preds_sorted here as spread penalty also benefits from sorted quantiles
+            # and it's already available.
+            spread_penalty_value = self.spread_penalty_fn(preds_sorted) # This returns a scalar mean penalty
+            
+            # Add scaled penalty to elementwise_crps.
+            # Since spread_penalty_value is already a mean scalar, adding it to elementwise_crps (e.g. [B,T])
+            # will broadcast. This means the penalty is uniformly applied across all batch/time elements
+            # before the final reduction of the combined loss.
+            elementwise_crps = elementwise_crps + (self.spread_lambda * spread_penalty_value)
+
 
         # --- Apply Scaling ---
         if self.scaling_type != "none":
@@ -303,3 +353,39 @@ class CRPSLoss(BaseLoss):
         # Apply mask (if any) and reduction using the helper method
         return self._apply_reduction(elementwise_crps, loss_mask)
 
+
+# --- New Mixture Loss Wrapper ---
+@register_module("loss", "mixture")
+class RegisteredMixtureLoss(BaseLoss): # Inherits from BaseLoss for consistency
+    """
+    Registered wrapper for MixtureLoss.
+    The actual MixtureLoss function (from loss_functions.py) handles its own reduction and masking.
+    This wrapper primarily serves for registration and standardized __init__ from config.
+    """
+    def __init__(self, reduction: str = "mean", min_df: float = 2.0, fixed_sigma: float = 1e-3, **kwargs):
+        """
+        Args:
+            reduction (str): Specifies the reduction for MixtureLoss: 'none', 'mean', 'sum'.
+            min_df (float): Minimum degrees of freedom for StudentT components.
+            fixed_sigma (float): Fixed standard deviation for FixedNormal components.
+            **kwargs: Catches unused arguments from the config if any.
+        """
+        super().__init__(reduction=reduction) 
+        self.loss_fn = MixtureLoss( # Instance of the actual MixtureLoss from loss_functions.py
+            reduction=reduction,
+            min_df=min_df,
+            fixed_sigma=fixed_sigma
+        )
+
+    def forward(self, preds: dict, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
+        """
+        Calculates the Mixture NLL loss.
+        Args:
+            preds (dict): Predictions from MixtureOutputHead. Expected to be a dictionary.
+            targets (torch.Tensor): Ground truth values. Shape [B, T].
+            loss_mask (torch.Tensor, optional): Mask for loss elements. Shape [B, T].
+        Returns:
+            torch.Tensor: The calculated mixture loss.
+        """
+        # MixtureLoss itself handles reduction and masking based on its init params
+        return self.loss_fn(preds=preds, targets=targets, loss_mask=loss_mask)
