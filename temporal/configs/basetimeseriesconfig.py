@@ -37,34 +37,33 @@ class BaseTimeSeriesConfig(PretrainedConfig):
         prediction_length: int = 12,
         quantiles: List[float] = [0.1, 0.5, 0.9],
         output_token_lengths: int = 1,
-        loss_type: str = "quantile", # Default might change based on typical use
+        loss_type: str = "quantile",
         use_dynamic_features: bool = False,
         use_static_features: bool = False,
         autoregressive: bool = True,
         is_decoder: bool = False,
         **kwargs,
     ):
+        # 1) Remove any accidental duplicates before calling HF’s init
+        kwargs.pop("feature_size", None)
+        kwargs.pop("target_dim",     None)
+
         super().__init__(**kwargs)
 
-        # core settings
+        # 2) Now set your real ones
         self.feature_size         = feature_size
         self.context_length       = context_length
         self.prediction_length    = prediction_length
-
-        # probabilistic forecasting
         self.quantiles            = quantiles
         self.output_token_lengths = output_token_lengths
         self.loss_type            = loss_type
-
-        # covariate flags
         self.use_dynamic_features = use_dynamic_features
         self.use_static_features  = use_static_features
-
-        # sequence mode
         self.autoregressive       = autoregressive
         self.is_decoder           = is_decoder
 
         self.validate_config()
+
 
     def validate_config(self):
         """Validates configuration for consistency."""

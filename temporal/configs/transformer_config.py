@@ -518,7 +518,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         dynamic_embedding_dim: Optional[List[int]] = None,
         past_dynamic_embedding_dim: Optional[List[int]] = None,
         time_features: Optional[List[str]] = None,
-        loss_config: Optional[LossConfig] = None, # MODIFIED
+        loss_config: Optional[LossConfig] = None, 
         scaling: bool = True,
         model_type: str = "transformer",
         d_model: int = 64,
@@ -542,7 +542,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         use_teacher_forcing: bool = True,
         attention_blocks: Optional[Any] = None, # Deprecated
         feedforward_config: Optional[Any] = None, # Deprecated
-        feature_size: Optional[int] = None, # For backward compatibility
+        # feature_size is removed from here, will be handled via input_dim and kwargs
         autoregressive: Optional[bool] = None,
         is_decoder: Optional[bool] = None,
         **kwargs: Any,
@@ -552,17 +552,43 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if feedforward_config is not None:
             print("Warning: `feedforward_config` key is deprecated. Configure FFN within `encoder_blocks`/`decoder_blocks`.")
 
+        # Pop feature_size and target_dim from kwargs if they exist, to prevent multiple values error
+        # for BaseTimeSeriesConfig.__init__
+        feature_size_from_kwargs = kwargs.pop('feature_size', None)
+        target_dim_from_kwargs = kwargs.pop('target_dim', None)
+
+        # Determine the feature_size to be passed to the superclass.
+        # TransformerTimeSeriesConfig uses 'input_dim' for this concept.
+        _input_dim_resolved = input_dim
+        if feature_size_from_kwargs is not None and feature_size_from_kwargs != _input_dim_resolved:
+            print(
+                f"Warning: 'feature_size' ({feature_size_from_kwargs}) found in kwargs "
+                f"differs from 'input_dim' ({_input_dim_resolved}). "
+                f"Using 'input_dim' ({_input_dim_resolved}) for BaseTimeSeriesConfig's 'feature_size'."
+            )
+        
+        # Determine the target_dim to be passed to the superclass.
+        # TransformerTimeSeriesConfig derives this from 'output_dim' or 'input_dim'.
+        _target_dim_resolved = output_dim if output_dim is not None else input_dim
+        if target_dim_from_kwargs is not None and target_dim_from_kwargs != _target_dim_resolved:
+            print(
+                f"Warning: 'target_dim' ({target_dim_from_kwargs}) found in kwargs "
+                f"differs from the derived target dimension ({_target_dim_resolved}). "
+                f"Using the derived value ({_target_dim_resolved}) for BaseTimeSeriesConfig's 'target_dim'."
+            )
+
         self.model_type = model_type
         self.d_model = d_model
         self.hidden_dropout_prob = hidden_dropout_prob
         self.max_position_embeddings = max_position_embeddings
         self.architecture = architecture or TransformerArchitectureConfig()
-        self.value_embedding_config = value_embedding_config or EmbeddingConfig(type="value", kwargs={"feature_size": input_dim, "d_model": d_model})
+        # Ensure value_embedding_config uses the resolved input_dim if it depends on feature_size
+        self.value_embedding_config = value_embedding_config or EmbeddingConfig(type="value", kwargs={"feature_size": _input_dim_resolved, "d_model": d_model})
         self.positional_embedding_config = positional_embedding_config or EmbeddingConfig(type="sinusoidal", kwargs={"max_seq_len": max_position_embeddings, "d_model": d_model})
         self.encoder_blocks = encoder_blocks
         self.decoder_blocks = decoder_blocks
-        _output_dim = output_dim if output_dim is not None else input_dim
-        self.output_head_config = output_head_config or OutputHeadConfig(type="linear", output_size=_output_dim)
+        # Ensure output_head_config uses the resolved target_dim for its output_size
+        self.output_head_config = output_head_config or OutputHeadConfig(type="linear", output_size=_target_dim_resolved)
         self.norm_config = norm_config or NormalizationConfig()
         self.head_agg_config = head_agg_config or HeadAggregationConfig()
         self.output_attentions = output_attentions
@@ -573,11 +599,10 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.vocab_size = vocab_size
         self.decoder_start_token_id = decoder_start_token_id
         
-        self.loss_config = loss_config or LossConfig() # ADDED
+        self.loss_config = loss_config or LossConfig()
 
-        _target_dim = output_dim if output_dim is not None else input_dim
-        _autoregressive = autoregressive if autoregressive is not None else (self.architecture.layout != "encoder-only")
-        _is_decoder = is_decoder if is_decoder is not None else (self.architecture.layout != "encoder-only")
+        _autoregressive = autoregressive if autoregressive is not None else (self.architecture.layout != "encoder-only") # Check original logic: != "encoder" or != "encoder-only"
+        _is_decoder = is_decoder if is_decoder is not None else (self.architecture.layout != "encoder-only") # Check original logic
 
         _quantiles = quantiles
         if num_quantiles is not None and quantiles is None:
@@ -587,10 +612,11 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
                  raise ValueError(f"num_quantiles ({num_quantiles}) does not match len(quantiles) ({len(quantiles)}). Set one or the other.")
              num_quantiles = len(quantiles)
         self.num_quantiles = num_quantiles
-
+        
+        # Pass resolved values to superclass
         super().__init__(
-            feature_size=input_dim,
-            target_dim=_target_dim,
+            feature_size=_input_dim_resolved, # Use the resolved input_dim
+            target_dim=_target_dim_resolved,   # Use the resolved target_dim
             context_length=context_length,
             prediction_length=prediction_length,
             static_dim=static_dim,
@@ -603,12 +629,12 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             dynamic_embedding_dim=dynamic_embedding_dim,
             past_dynamic_embedding_dim=past_dynamic_embedding_dim,
             time_features=time_features,
-            loss_config=self.loss_config.to_dict(), # MODIFIED
+            loss_config=self.loss_config.to_dict(),
             scaling=scaling,
             quantiles=_quantiles,
             autoregressive=_autoregressive,
             is_decoder=_is_decoder,
-            **kwargs,
+            **kwargs, # Pass remaining kwargs
         )
 
     def to_flat_dict(self) -> Dict[str, Any]:
@@ -693,21 +719,18 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             "norm_config": NormalizationConfig,
             "head_agg_config": HeadAggregationConfig,
             "quantizer_config": QuantizerConfig,
-            "loss_config": LossConfig, # ADDED
+            "loss_config": LossConfig,
         }
         for key, config_cls in config_map.items():
             config_dict = d.get(key)
             if isinstance(config_dict, dict):
-                # If loss_config is already a LossConfig instance, don't re-wrap
                 if key == "loss_config" and isinstance(config_dict, LossConfig):
                     d[key] = config_dict
                 else:
                     d[key] = config_cls.from_dict(config_dict)
-            elif config_dict is None and key == "loss_config": # ADDED default for loss_config
+            elif config_dict is None and key == "loss_config": 
                  d[key] = LossConfig()
-            elif config_dict is None:
-                 d[key] = None
-
+            # No 'else: d[key]=None' needed as .get already returns None if not found
 
         for block_key in ["encoder_blocks", "decoder_blocks"]:
             block_list = d.get(block_key)
@@ -716,24 +739,35 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
 
         if "hidden_size" in d and "d_model" not in d:
             d["d_model"] = d.pop("hidden_size")
-        if "feature_size" in d and "input_dim" not in d:
-             d["input_dim"] = d["feature_size"]
-        # Ensure loss_config is handled correctly if old 'loss_type' exists
+        
+        # Handle feature_size/input_dim carefully for backward compatibility
+        # If input_dim is present, it takes precedence.
+        # If only feature_size is present (from old config), use it for input_dim.
+        if "input_dim" not in d and "feature_size" in d:
+             d["input_dim"] = d.pop("feature_size")
+        elif "feature_size" in d and "input_dim" in d and d["feature_size"] != d["input_dim"]:
+            print(f"Warning: Both 'input_dim' ({d['input_dim']}) and 'feature_size' ({d['feature_size']}) found in config dict. "
+                  f"Preferring 'input_dim'. 'feature_size' will be ignored.")
+            d.pop("feature_size") # Remove to avoid confusion
+        elif "feature_size" in d: # If they were equal or only feature_size existed before mapping
+            d.pop("feature_size")
+
+
         if "loss_type" in d and "loss_config" not in d:
              d["loss_config"] = LossConfig(type=d.pop("loss_type"))
+        elif "loss_type" in d and "loss_config" in d and isinstance(d["loss_config"], LossConfig) and d["loss_config"].type is None: # If LossConfig obj exists with no type
+            d["loss_config"].type = d.pop("loss_type")
         elif "loss_type" in d and "loss_config" in d and isinstance(d["loss_config"], dict) and "type" not in d["loss_config"]:
-            # if loss_config dict exists but doesn't have type, and loss_type is present, use loss_type
             d["loss_config"]["type"] = d.pop("loss_type")
-        elif "loss_type" in d: # if loss_type still exists, remove it as loss_config object will handle it
+        elif "loss_type" in d: 
             d.pop("loss_type")
 
 
-        d.pop("attention_blocks", None) # Remove deprecated
-        d.pop("feedforward_config", None) # Remove deprecated
+        d.pop("attention_blocks", None) 
+        d.pop("feedforward_config", None)
 
-        if "input_dim" not in d and "feature_size" in d:
-            d["input_dim"] = d["feature_size"]
-        elif "input_dim" not in d:
-             raise ValueError("Missing required argument: input_dim (or feature_size for backward compatibility)")
+        if "input_dim" not in d:
+             # This case should ideally not be hit if feature_size was correctly mapped
+             raise ValueError("Missing required argument: input_dim")
 
         return cls(**d)
