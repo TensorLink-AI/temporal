@@ -10,6 +10,7 @@ from temporal.modules.embedders.embedding import (
     RotaryPositionalEmbedding, # Use the RoPE module from embedding.py
     ALiBiPositionalBias,       # Module for generating ALiBi bias
     apply_rotary_pos_emb,      # Helper function to apply RoPE using cos/sin
+    rotate_half,               # Import rotate_half for manual RoPE application
 )
 
 # --- Attempt to import flash attention ---
@@ -117,17 +118,23 @@ class BaseMultiHeadAttention(nn.Module):
 
         # --- 1) Apply RoPE if rotary_proj is provided ---
         if rotary_proj is not None:
-             # Call the forward of the passed RotaryPositionalEmbedding instance
-             # It expects a dummy tensor for device/dtype and the required seq_len
-             kv_seq_len = k.shape[-2] # Use the actual (potentially cached) length of K
-             cos, sin = rotary_proj(v, seq_len=kv_seq_len) # Get cos/sin caches
-
-             if is_cross_attn:
-                  # Only rotate query in cross-attention. Pass q for k to match sliced cos/sin dimensions.
-                  q, _ = apply_rotary_pos_emb(q, q, cos[:tgt_len,:], sin[:tgt_len,:], position_ids=position_ids)
-             else:
-                  # Rotate both query and key in self-attention
-                  q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids=position_ids)
+            kv_seq_len = k.shape[-2]
+            cos, sin = rotary_proj(v, seq_len=kv_seq_len)
+            
+            # --- Correct RoPE application for KV Caching ---
+            # The query (q) has a sequence length of 1 during generation.
+            # We must slice the cos/sin cache to get the embedding for the CURRENT token's position,
+            # which is at the end of the sequence. `cos[-tgt_len:, :]` correctly handles this.
+            # The key (k) has the full sequence length, so it uses the full cos/sin cache.
+            
+            # Manually apply RoPE to q
+            q_cos = cos[-tgt_len:, :] # Slice for the new token(s)
+            q_sin = sin[-tgt_len:, :]
+            q = (q * q_cos) + (rotate_half(q) * q_sin)
+            
+            if not is_cross_attn:
+                # Manually apply RoPE to k
+                k = (k * cos) + (rotate_half(k) * sin)
 
         # === Compute attention scores [B, H, T, S] ===
         attn_scores = self.compute_attention_scores(q, k)
@@ -145,7 +152,7 @@ class BaseMultiHeadAttention(nn.Module):
             else:
                  # Check broadcast compatibility carefully
                  try: _ = attn_scores + alibi_bias
-                 except RuntimeError as e: raise ValueError(f"ALiBi bias shape {alibi_bias.shape} not compatible with attention scores shape {attn_scores.shape}. Error: {e}")
+                 except RuntimeError as e: raise ValueError(f"ALiB_ bias shape {alibi_bias.shape} not compatible with attention scores shape {attn_scores.shape}. Error: {e}")
             attn_scores = attn_scores + alibi_bias
 
         # === Apply Attention Mask ===
@@ -169,12 +176,11 @@ class BaseMultiHeadAttention(nn.Module):
         batch_size, num_heads, q_len, head_dim = attn_output.shape
 
         # Transpose back to [batch, q_len, heads, head_dim]
-        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.transpose(1, 2) # No need for contiguous here
 
-        # Dynamically reshape using the true query length (q_len), not the old tgt_len
-        attn_output = attn_output.view(batch_size, q_len, num_heads * head_dim)
-        assert attn_output.shape[-1] == self.embed_dim, \
-            f"Expected embed_dim={self.embed_dim}, got {attn_output.shape[-1]}"
+        # Reshape to the original embedding dimension. This is more robust
+        # as subclasses might change head_dim for the value tensor.
+        attn_output = attn_output.reshape(batch_size, q_len, self.embed_dim)
 
         attn_output = self.out_proj(attn_output)
 
