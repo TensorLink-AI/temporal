@@ -82,7 +82,7 @@ class BaseMultiHeadAttention(nn.Module):
         bsz, tgt_len, _ = hidden_states.size()
         is_cross_attn = key_value_states is not None
         kv_source = key_value_states if is_cross_attn else hidden_states
-        
+
         # Determine the source sequence length
         if is_cross_attn and key_value_states is not None:
             src_len = key_value_states.size(1)
@@ -93,16 +93,16 @@ class BaseMultiHeadAttention(nn.Module):
         q = self.q_proj(hidden_states)
         k = self.k_proj(kv_source)
         v = self.v_proj(kv_source)
-        
+
         # Reshape Q, K, V
         q = q.view(bsz, tgt_len, self.num_heads, self.head_dim).transpose(1, 2)
-        
+
         # When using cache, the key/value states from the source are only for the *current* step.
         # So, their length is `tgt_len`, not `src_len`.
         kv_len = tgt_len if past_key_value is not None else src_len
         k = k.view(bsz, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(bsz, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
-        
+
 
         present_key_value = None
         if use_cache:
@@ -165,13 +165,21 @@ class BaseMultiHeadAttention(nn.Module):
 
         # === Compute final output ===
         attn_output = torch.matmul(attn_probs, v)
+        # attn_output shape: [batch, heads, q_len, head_dim]
+        batch_size, num_heads, q_len, head_dim = attn_output.shape
+
+        # Transpose back to [batch, q_len, heads, head_dim]
         attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.view(bsz, tgt_len, self.num_heads * self.head_dim)
+
+        # Dynamically reshape using the true query length (q_len), not the old tgt_len
+        attn_output = attn_output.view(batch_size, q_len, num_heads * head_dim)
         assert attn_output.shape[-1] == self.embed_dim, \
             f"Expected embed_dim={self.embed_dim}, got {attn_output.shape[-1]}"
+
         attn_output = self.out_proj(attn_output)
 
-        if not output_attentions: attn_probs = None
+        if not output_attentions:
+            attn_probs = None
         return attn_output, attn_probs, present_key_value
 
 
