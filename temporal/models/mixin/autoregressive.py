@@ -146,8 +146,12 @@ class AutoregressiveMixin:
 
             # Prepare input for the next step - Use the predicted features directly.
             # The decoder's value_embedding should handle projection from OutputFeatures to HiddenSize.
-            expected_input_features = getattr(self.config, "feature_size", 1)
-            next_decoder_input_step = next_pred_features[:, :, :expected_input_features].contiguous()
+            # Use output head's internal logic to reduce to feedback input
+            if hasattr(self.output_heads, "predict"):
+                next_decoder_input_step = self.output_heads.predict(next_pred_features)
+            else:
+                expected_input_features = getattr(self.config, "feature_size", 1)
+                next_decoder_input_step = next_pred_features[:, :, :expected_input_features].contiguous()
 
             # NOTE: The previous logic assuming the input to the next step should be model_dim was likely incorrect.
             # The standard flow is: predict features -> feed features back -> value_embedding projects features to model_dim.

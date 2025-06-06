@@ -174,6 +174,27 @@ class DistPredHead(BaseOutputHead):
              else:
                  # This shouldn't happen if __init__ validation passed
                  raise RuntimeError(f"Internal shape mismatch in DistPredHead forward: {proj_out.shape[-1]} vs {self.num_outputs}")
+   
+    def predict(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Reduce the output from [B, T, K] or [B, T, F, K] → [B, T, F]
+        using the median (middle quantile). This ensures the output is 
+        compatible with decoder input: [B, T, feature_size]
+
+        Args:
+            x (torch.Tensor): output from self.forward()
+
+        Returns:
+            torch.Tensor: feedback tensor of shape [B, T, F]
+        """
+        if self.feature_size == 1:
+            # x shape: [B, T, K]
+            mid = self.num_outputs // 2
+            return x[:, :, mid:mid+1]  # → [B, T, 1]
+        else:
+            # x shape: [B, T, F, K]
+            mid = self.num_outputs // 2
+            return x[:, :, :, mid]  # → [B, T, F]
 
     def get_loss_fn(self) -> Optional[nn.Module]:
         """Returns None to indicate the head does not determine the loss."""
