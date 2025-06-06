@@ -110,12 +110,11 @@ class AutoregressiveMixin:
         # 3) Autoregressive Loop
         for step in range(prediction_length):
             # Use last *feature* step as input if using cache, otherwise full history
+            step_attention_mask = internal_decoder_attention_mask if not use_cache or past_key_values is None else None
             step_inputs = decoder_input_ids[:, -1:, :] \
                         if use_cache and past_key_values is not None \
                         else decoder_input_ids
-            print(f"[debug] step_inputs.shape = {step_inputs.shape}, "
-                f"feature_size = {self.config.feature_size}, "
-                f"d_model = {self.config.d_model}")
+
             # decide how to call the decoder
             feat_dim = self.config.feature_size
             hidden_dim = self.config.d_model
@@ -131,6 +130,7 @@ class AutoregressiveMixin:
                     f"Step input last dim={step_inputs.shape[-1]} "
                     f"but expected feature_size={feat_dim} or d_model={hidden_dim}"
                 )
+            if not hasattr(self, 'decoder') or self.decoder is None: raise AttributeError("Model missing decoder")
 
             decoder_outputs = self.decoder(
                 **dec_call,
