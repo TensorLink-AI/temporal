@@ -82,24 +82,38 @@ class BaseMultiHeadAttention(nn.Module):
         bsz, tgt_len, _ = hidden_states.size()
         is_cross_attn = key_value_states is not None
         kv_source = key_value_states if is_cross_attn else hidden_states
-        src_len = kv_source.size(1)
+        
+        # Determine the source sequence length
+        if is_cross_attn and key_value_states is not None:
+            src_len = key_value_states.size(1)
+        else:
+            src_len = hidden_states.size(1)
+
 
         q = self.q_proj(hidden_states)
         k = self.k_proj(kv_source)
         v = self.v_proj(kv_source)
-
+        
+        # Reshape Q, K, V
         q = q.view(bsz, tgt_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(bsz, src_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(bsz, src_len, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        # When using cache, the key/value states from the source are only for the *current* step.
+        # So, their length is `tgt_len`, not `src_len`.
+        kv_len = tgt_len if past_key_value is not None else src_len
+        k = k.view(bsz, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(bsz, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
+        
 
         present_key_value = None
         if use_cache:
             if past_key_value is not None:
+                # k and v have sequence length 1 here.
                 k = torch.cat([past_key_value[0], k], dim=2)
                 v = torch.cat([past_key_value[1], v], dim=2)
             present_key_value = (k, v)
 
-        src_len = k.size(2) # Updated key sequence length
+        # The source length is now the full length of the key tensor
+        src_len = k.size(2)
 
         # --- 1) Apply RoPE if rotary_proj is provided ---
         if rotary_proj is not None:
