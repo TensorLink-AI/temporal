@@ -140,8 +140,14 @@ class MultiStepMixin:
                      # Causal mask already handles row masking for future tokens attending to history.
 
                      # Mask attending TO masked history positions
-                     # Make column `j` False if hist_mask_bool[b, j] is False
-                     full_mask_bool[:, :, :history_len] = full_mask_bool[:, :, :history_len] & hist_mask_bool[:, None, :history_len]
+                    # FIXED masking section
+                    full_mask_bool = causal_mask[None, :, :].expand(batch_size, -1, -1).bool()
+
+                    # Apply TO-mask: nothing should attend to a masked history position
+                    full_mask_bool[:, :, :history_len] &= hist_mask_bool[:, None, :history_len]
+
+                    # Apply FROM-mask: a masked history position shouldn't attend to anything
+                    full_mask_bool[:, :history_len, :] &= hist_mask_bool[:, :history_len, None]
 
                      # Mask attending FROM masked history positions
                      # Make row `j` False if hist_mask_bool[b, j] is False
