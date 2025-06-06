@@ -151,7 +151,10 @@ class BaseMultiHeadAttention(nn.Module):
 
         # === Compute final output ===
         attn_output = torch.matmul(attn_probs, v)
-        attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, tgt_len, self.embed_dim)
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.view(bsz, tgt_len, self.num_heads * self.head_dim)
+        assert attn_output.shape[-1] == self.embed_dim, \
+            f"Expected embed_dim={self.embed_dim}, got {attn_output.shape[-1]}"
         attn_output = self.out_proj(attn_output)
 
         if not output_attentions: attn_probs = None
