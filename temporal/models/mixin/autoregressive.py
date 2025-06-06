@@ -114,7 +114,9 @@ class AutoregressiveMixin:
             step_inputs = decoder_input_ids[:, -1:, :] \
                         if use_cache and past_key_values is not None \
                         else decoder_input_ids
-
+            print(f"[debug] step_inputs.shape = {step_inputs.shape}, "
+                f"feature_size = {self.config.feature_size}, "
+                f"d_model = {self.config.d_model}")
             # decide how to call the decoder
             feat_dim = self.config.feature_size
             hidden_dim = self.config.d_model
