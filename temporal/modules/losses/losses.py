@@ -173,188 +173,97 @@ class TimeSeriesLoss(BaseLoss): # Inherit from BaseLoss
              return self._apply_reduction(elementwise_loss, loss_mask)
 
 
-# --- New CRPS Loss Module ---
-@register_module("loss", "crps") # Register this loss
+
+@register_module("loss", "crps")
 class CRPSLoss(BaseLoss):
     """
-    Computes the Continuous Ranked Probability Score (CRPS) using the ensemble/quantile approach.
-    Uses the Probability Weighted Moments (PWM) estimator for efficiency.
-    Includes an option to scale the loss based on target sequence statistics.
-    Optionally includes a spread penalty for regularization.
+    Continuous Ranked Probability Score with per‐step spread penalty.
     """
-    def __init__(self, reduction: str = "mean", estimator: str = "pwm", axis: int = -1,
-                 scaling_type: str = "none", scaling_dim: int = 1, scaling_eps: float = 1e-8,
-                 spread_lambda: float = 0.0, spread_penalty_type: str = 'symmetric_log',
-                 spread_penalty_epsilon: float = 1e-3, spread_target_spread: float = 0.0,
-                 **kwargs):
-        """
-        Args:
-            reduction (str): Specifies the reduction to apply: 'none', 'mean', 'sum'.
-            estimator (str): CRPS estimator ('pwm', 'nrg', 'fair'). Defaults to 'pwm'.
-            axis (int): Dimension corresponding to the ensemble/quantiles in predictions. Defaults to -1.
-            scaling_type (str): Type of scaling to apply to the loss: 'none', 'std', 'minmax'. Defaults to 'none'.
-            scaling_dim (int): Dimension of the original target tensor along which to compute scaling statistics.
-                               Defaults to 1 (typically the time dimension for targets [B, T, ...]).
-            scaling_eps (float): Epsilon value added to the denominator for numerical stability during scaling.
-                                 Defaults to 1e-8.
-            spread_lambda (float): Coefficient for the spread penalty. If 0, penalty is not applied.
-                                   Defaults to 0.0.
-            spread_penalty_type (str): Type of spread penalty ('log', 'inverse', 'symmetric_log'). Defaults to 'symmetric_log'.
-            spread_penalty_epsilon (float): Epsilon for numerical stability in spread penalty.
-                                            Defaults to 1e-3.
-            spread_target_spread (float): Target spread for 'symmetric_log' penalty. Defaults to 0.0.
-            **kwargs: Catches unused arguments like 'quantiles' from the config.
-        """
+    def __init__(
+        self,
+        reduction: str = "mean",
+        estimator: str = "pwm",
+        axis: int = -1,
+        scaling_type: str = "none",
+        scaling_dim: int = 1,
+        scaling_eps: float = 1e-8,
+        spread_lambda: float = 0.0,
+        spread_penalty_type: str = "symmetric_log",
+        spread_penalty_epsilon: float = 1e-3,
+        spread_target_spread: float = 0.0,
+        **kwargs
+    ):
         super().__init__(reduction=reduction)
+        # Validate
         if estimator not in ["pwm", "nrg", "fair"]:
-            raise ValueError(f"Invalid estimator '{estimator}'. Choose 'pwm', 'nrg', or 'fair'.")
+            raise ValueError(f"Invalid estimator '{estimator}'.")
         if scaling_type not in ["none", "std", "minmax"]:
-            raise ValueError(f"Invalid scaling_type '{scaling_type}'. Choose 'none', 'std', or 'minmax'.")
-        if spread_penalty_type not in ['log', 'inverse', 'symmetric_log']:
-            raise ValueError("spread_penalty_type must be 'log', 'inverse', or 'symmetric_log'")
+            raise ValueError(f"Invalid scaling_type '{scaling_type}'.")
+        if spread_penalty_type not in ["log", "inverse", "symmetric_log"]:
+            raise ValueError(f"Invalid spread_penalty_type '{spread_penalty_type}'.")
 
         self.estimator = estimator
-        self.axis = axis # Store the ensemble axis
+        self.axis = axis
         self.scaling_type = scaling_type
         self.scaling_dim = scaling_dim
         self.scaling_eps = scaling_eps
 
         self.spread_lambda = spread_lambda
         self.spread_penalty_fn = None
-        if self.spread_lambda > 0:
+        if spread_lambda > 0.0:
+            # per‐step penalty: no reduction inside SpreadPenalty
             self.spread_penalty_fn = SpreadPenalty(
                 penalty_type=spread_penalty_type,
                 epsilon=spread_penalty_epsilon,
                 target_spread=spread_target_spread,
-                reduction='mean' # Penalty is mean over spread elements, then scaled by lambda
+                reduction="none"
             )
 
-    def forward(self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
-        """
-        Calculates the CRPS loss with optional spread penalty.
+    def forward(
+        self,
+        preds: torch.Tensor,       # [B, T, Q] or similar
+        targets: torch.Tensor,     # [B, T] or broadcastable
+        loss_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        # Unsqueeze targets to match preds if needed
+        if targets.ndim == preds.ndim - 1:
+            axis = self.axis if self.axis >= 0 else preds.ndim + self.axis
+            targets = targets.unsqueeze(axis)
 
-        Args:
-            preds (torch.Tensor): Model predictions (ensemble/quantiles). Shape e.g., [B, T, K] or [B, K, T].
-                                   The dimension specified by `self.axis` is treated as the ensemble.
-                                   For spread penalty, last dimension is assumed to be quantiles.
-            targets (torch.Tensor): Ground truth values. Shape e.g., [B, T] or [B, T, 1]. Must be broadcastable
-                                    against `preds` after removing the ensemble dimension.
-            loss_mask (torch.Tensor, optional): Boolean or float tensor for masking loss elements.
-                                                Shape e.g., [B, T]. Defaults to None.
-
-        Returns:
-            torch.Tensor: The calculated CRPS loss (scalar if reduction is 'mean' or 'sum').
-        """
-        original_targets_for_scaling = targets # Store a reference for scaling calculations
-        crps_targets = targets # This variable will be used for crps_ensemble, might be modified
-
-        # Ensure target shape is suitable for crps_ensemble (expects obs shape matching forecasts except for ensemble axis)
-        if crps_targets.ndim == preds.ndim - 1:
-            ensemble_dim_index = self.axis if self.axis >= 0 else preds.ndim + self.axis
-            crps_targets = crps_targets.unsqueeze(ensemble_dim_index)
-
-        # Check if target shape is now broadcastable (matches preds shape excluding the ensemble dim)
-        expected_target_shape_list = list(preds.shape)
-        actual_axis = self.axis if self.axis >= 0 else preds.ndim + self.axis
-        if 0 <= actual_axis < preds.ndim:
-             del expected_target_shape_list[actual_axis]
-        else:
-             raise ValueError(f"Invalid axis {self.axis} for preds shape {preds.shape}")
-        expected_target_shape = torch.Size(expected_target_shape_list)
-
-        if list(crps_targets.shape) != expected_target_shape_list:
-             target_shape_with_singleton = list(expected_target_shape)
-             target_shape_with_singleton.insert(actual_axis, 1)
-             if list(crps_targets.shape) != target_shape_with_singleton:
-                   raise ValueError(
-                       f"Shape mismatch for CRPS: preds {preds.shape} (axis={self.axis}), "
-                       f"targets {crps_targets.shape} (after potential unsqueeze), expected targets shape {expected_target_shape} "
-                       f"or {target_shape_with_singleton}"
-                   )
-        
-        # Sort predictions along the ensemble/quantile axis for CRPS and spread calculation
-        # CRPS ensemble often expects sorted forecasts. Spread penalty assumes sorted for q_low, q_high.
+        # Sort forecasts along ensemble/quantile axis
         preds_sorted = torch.sort(preds, dim=self.axis)[0]
 
-
-        # Calculate element-wise CRPS (returns shape without ensemble dim, e.g., [B, T])
+        # Compute elementwise CRPS → shape [B, T, ...] without ensemble dim
         elementwise_crps = crps_ensemble(
-            observations=crps_targets, # Use the potentially unsqueezed targets
-            forecasts=preds_sorted, # Use sorted predictions
+            observations=targets,
+            forecasts=preds_sorted,
             estimator=self.estimator,
             axis=self.axis,
-            reduce=False # Get per-element loss before reduction
+            reduce=False
         )
 
-        # --- Apply Spread Penalty ---
-        if self.spread_lambda > 0 and self.spread_penalty_fn is not None:
-            # SpreadPenalty expects quantiles as the last dimension (B, T, Q)
-            # If self.axis is not the last dim for preds, we might need to permute or warn.
-            # For now, assuming preds is (B, T, Q) if spread penalty is active,
-            # which aligns with common use where axis=-1 for quantiles.
-            if self.axis != -1 and self.axis != preds.ndim - 1:
-                # This is a simplification. If axis is not last, SpreadPenalty might not work as intended
-                # without a transpose, or SpreadPenalty needs to be axis-aware.
-                # For now, we proceed assuming axis is compatible or user ensures preds are (..., Q)
-                pass # Potentially add warning or transpose logic if necessary
+        # Add per‐step spread penalty if enabled
+        if self.spread_lambda > 0.0 and self.spread_penalty_fn is not None:
+            # assume preds_sorted is (..., T, Q) so penalty returns (..., T)
+            spread_penalty_map = self.spread_penalty_fn(preds_sorted)
+            elementwise_crps = elementwise_crps + self.spread_lambda * spread_penalty_map
 
-            # We use preds_sorted here as spread penalty also benefits from sorted quantiles
-            # and it's already available.
-            spread_penalty_value = self.spread_penalty_fn(preds_sorted) # This returns a scalar mean penalty
-            
-            # Add scaled penalty to elementwise_crps.
-            # Since spread_penalty_value is already a mean scalar, adding it to elementwise_crps (e.g. [B,T])
-            # will broadcast. This means the penalty is uniformly applied across all batch/time elements
-            # before the final reduction of the combined loss.
-            elementwise_crps = elementwise_crps + (self.spread_lambda * spread_penalty_value)
-
-
-        # --- Apply Scaling ---
+        # Optional scaling
         if self.scaling_type != "none":
-            # Use original_targets_for_scaling for calculating std, min, max.
-            # This tensor has the shape as it was passed into the forward method.
-            # elementwise_crps has shape of original_targets_for_scaling, or compatible (e.g. [B,T])
-
-            # Validate scaling_dim against original_targets_for_scaling
-            if not (0 <= self.scaling_dim < original_targets_for_scaling.ndim):
-                raise ValueError(
-                    f"Invalid scaling_dim {self.scaling_dim} for original_targets_for_scaling shape {original_targets_for_scaling.shape}."
-                )
-
-            # For 'std' and 'minmax', the dimension size must be > 1
-            can_scale = original_targets_for_scaling.size(self.scaling_dim) > 1
-            scaling_factor = None
-
-            if can_scale:
+            # compute scaling factor along scaling_dim on original targets
+            dim_size = targets.size(self.scaling_dim)
+            if dim_size > 1:
                 if self.scaling_type == "std":
-                    std_dev = torch.std(original_targets_for_scaling, dim=self.scaling_dim, keepdim=True, unbiased=False)
-                    scaling_factor = std_dev
-                elif self.scaling_type == "minmax":
-                    min_val = torch.min(original_targets_for_scaling, dim=self.scaling_dim, keepdim=True).values
-                    max_val = torch.max(original_targets_for_scaling, dim=self.scaling_dim, keepdim=True).values
-                    scaling_factor = max_val - min_val
-            elif self.scaling_type != "none":
-                 # If scaling was intended but cannot be performed (e.g., dim size 1 for std)
-                 # We simply don't scale, could also issue a warning.
-                 # print(f"Warning: Scaling type '{self.scaling_type}' skipped because dimension {self.scaling_dim} has size <= 1.")
-                 pass
+                    factor = torch.std(targets, dim=self.scaling_dim, keepdim=True, unbiased=False)
+                else:  # "minmax"
+                    mn = torch.min(targets, dim=self.scaling_dim, keepdim=True).values
+                    mx = torch.max(targets, dim=self.scaling_dim, keepdim=True).values
+                    factor = mx - mn
+                factor = factor + self.scaling_eps
+                elementwise_crps = elementwise_crps / factor
 
-
-            if scaling_factor is not None:
-                scaling_factor = scaling_factor + self.scaling_eps
-                # Ensure scaling_factor is broadcastable with elementwise_crps.
-                # elementwise_crps shape is typically [B, T] or [B, other_dims...].
-                # original_targets_for_scaling could be [B, T, F...].
-                # torch.std/min/max with keepdim=True preserves rank, so broadcasting should align
-                # if scaling_dim correctly targets a shared dimension.
-                # E.g., elementwise_crps [B,T], original_targets_for_scaling [B,T,1].
-                # If scaling_dim=1 (T dim), std_dev is [B,1,1], which broadcasts to [B,T].
-                elementwise_crps = elementwise_crps / scaling_factor
-        # --- End Apply Scaling ---
-
-        # Apply mask (if any) and reduction using the helper method
+        # Apply mask & reduce
         return self._apply_reduction(elementwise_crps, loss_mask)
-
 
 # --- New Mixture Loss Wrapper ---
 @register_module("loss", "mixture")
