@@ -19,6 +19,7 @@ from temporal.modules.losses.loss_functions import (
 from temporal.losses.crps_loss_ensemble import crps_ensemble
 # Import the registry decorator
 from temporal.registry.core import register_module
+from typing import Optional, Tuple
 
 # Assuming BaseLoss is not defined elsewhere and TimeSeriesLoss should inherit from nn.Module
 class BaseLoss(nn.Module):
