@@ -3,40 +3,49 @@ import json
 import torch
 import torch.nn as nn
 
-
 class BaseTemporalModel(nn.Module):
     """Base class for all full time series model architectures.
 
-    This class defines the interface for temporal models, handling common save/load
-    functionality and enforcing implementation of core methods.
+    This class defines the interface for temporal models, enforcing the
+    implementation of core `forward` and `generate` methods. It also holds
+    the model's configuration and main components.
+
+    Saving and loading of this model, especially for Hugging Face compatibility,
+    should be handled by the `save_hf` and `load_hf` functions in
+    `temporal.utils.hf_accessors`, often used in conjunction with the
+    `temporal.utils.hf_adapter.TimeSeriesTransformerModel` wrapper.
 
     Attributes:
-        config: Configuration object containing model hyperparameters.
-        encoder (nn.Module or None): Encoder module, if any.
-        decoder (nn.Module or None): Decoder module, if any.
-        output_heads (nn.Module or None): Module(s) producing final outputs.
-        head_aggregator (callable or None): Aggregator for multiple output heads.
-        loss_fn (callable or None): Loss function used during training.
+        config: The configuration object containing model hyperparameters.
+        encoder (nn.Module or None): The encoder module of the model.
+        decoder (nn.Module or None): The decoder module of the model.
+        output_heads (nn.Module or None): The module(s) producing the final outputs.
+        head_aggregator (callable or None): A function or module to aggregate
+            outputs from multiple heads if they exist.
+        loss_fn (callable or None): The loss function to be used during training.
     """
 
     def __init__(
         self,
         config,
-        encoder=None,
-        decoder=None,
-        output_heads=None,
-        head_aggregator=None,
-        loss_fn=None,
+        encoder: nn.Module = None,
+        decoder: nn.Module = None,
+        output_heads: nn.Module = None,
+        head_aggregator: callable = None,
+        loss_fn: callable = None,
     ):
-        """Initialize the BaseTemporalModel.
+        """Initializes the BaseTemporalModel.
 
         Args:
-            config: Configuration instance for the model.
-            encoder (nn.Module, optional): Encoder network.
-            decoder (nn.Module, optional): Decoder network.
+            config: The configuration instance for the model.
+            encoder (nn.Module, optional): The encoder network. Defaults to None.
+            decoder (nn.Module, optional): The decoder network. Defaults to None.
             output_heads (nn.Module, optional): One or more output head modules.
-            head_aggregator (callable, optional): Function/module to combine output heads.
-            loss_fn (callable, optional): Loss function to use during training.
+                Defaults to None.
+            head_aggregator (callable, optional): A function or module to combine
+                outputs from multiple heads. Defaults to None.
+            loss_fn (callable, optional): The loss function to use during training.
+                Defaults to None.
         """
         super().__init__()
         self.config = config
@@ -47,79 +56,25 @@ class BaseTemporalModel(nn.Module):
         self.loss_fn = loss_fn
 
     def forward(self, *args, **kwargs):
-        """Perform a forward pass through the model.
+        """Performs a forward pass through the model.
 
-        Subclasses must override this method to define the computation logic.
+        This method defines the core computation of the model, from inputs to
+        final outputs (before loss calculation). Subclasses must override this
+        method.
 
         Raises:
-            NotImplementedError: Indicates that subclasses must implement this method.
+            NotImplementedError: This method must be implemented by a subclass.
         """
-        raise NotImplementedError("Subclasses must implement forward()")
+        raise NotImplementedError("Subclasses must implement the forward() method.")
 
     def generate(self, *args, **kwargs):
-        """Generate predictions from the model in inference mode.
+        """Generates predictions or forecasts from the model in inference mode.
 
-        Subclasses must override this method to define generation behavior.
+        This method defines the generation or sampling behavior of the model,
+        which might involve autoregressive decoding or other sampling strategies.
+        Subclasses must override this method.
 
         Raises:
-            NotImplementedError: Indicates that subclasses must implement this method.
+            NotImplementedError: This method must be implemented by a subclass.
         """
-        raise NotImplementedError("Subclasses must implement generate()")
-
-    def save_pretrained(self, save_path: str, safe: bool = False):
-            """
-            Save model weights and config. If `safe=True` and safetensors installed,
-            writes `model.safetensors`, otherwise writes `pytorch_model.bin`.
-            """
-            os.makedirs(save_path, exist_ok=True)
-
-            # 1) Save config.json
-            config_path = os.path.join(save_path, "config.json")
-            with open(config_path, "w") as f:
-                json.dump(self.config.to_dict(), f, indent=2)
-
-            # 2) Save weights
-            if safe:
-                if not _has_safetensors:
-                    raise RuntimeError("`safe=True` requires the `safetensors` library.")
-                path = os.path.join(save_path, "model.safetensors")
-                # state_dict must be all CPU tensors
-                sd = {k: v.cpu() for k, v in self.state_dict().items()}
-                _safetensors_save(sd, path)
-            else:
-                path = os.path.join(save_path, "pytorch_model.bin")
-                torch.save(self.state_dict(), path)
-
-    @classmethod
-    def from_pretrained(cls, path: str, config_cls=None, safe: bool = False, **kwargs):
-        """
-        Load config & weights. If `safe=True`, tries to read `model.safetensors`,
-        otherwise `pytorch_model.bin`.
-        """
-        # 1) Load config
-        cfg_path = os.path.join(path, "config.json")
-        with open(cfg_path, "r") as f:
-            cfg_dict = json.load(f)
-        config = (
-            config_cls.from_dict(cfg_dict)
-            if (config_cls and hasattr(config_cls, "from_dict"))
-            else cfg_dict
-        )
-
-        # 2) Initialize model
-        model = cls(config, **kwargs)
-
-        # 3) Load weights
-        if safe:
-            if not _has_safetensors:
-                raise RuntimeError("`safe=True` requires the `safetensors` library.")
-            weights_path = os.path.join(path, "model.safetensors")
-            sd = _safetensors_load(weights_path)
-            # safetensors returns cpu tensors
-            model.load_state_dict(sd)
-        else:
-            weights_path = os.path.join(path, "pytorch_model.bin")
-            sd = torch.load(weights_path, map_location="cpu")
-            model.load_state_dict(sd)
-
-        return model
+        raise NotImplementedError("Subclasses must implement the generate() method.")

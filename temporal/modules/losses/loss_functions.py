@@ -2,21 +2,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.fft
-from torch.distributions import StudentT, LogNormal, NegativeBinomial, Normal, Categorical # Added for MixtureLoss
+from torch.distributions import StudentT, LogNormal, NegativeBinomial, Normal
 import math
 
 class MQLoss(nn.Module):
-    """
-    Multi-Quantile Loss (MQ Loss) for probabilistic forecasting.
-    Optionally computes CRPS approximation.
-    """
+    """Computes the Multi-Quantile Loss (MQL) for probabilistic forecasting.
 
-    def __init__(self, quantiles, reduction="mean", use_crps=False):
-        """
+    This loss function computes the average pinball loss over a set of specified
+    quantiles. It is a common metric for evaluating the accuracy of quantile
+    forecasts.
+
+    Attributes:
+        quantiles (torch.Tensor): The quantiles to be evaluated.
+        reduction (str): The reduction method to apply to the final loss.
+        use_crps (bool): If True, adds a penalty term to approximate the CRPS.
+    """
+    def __init__(self, quantiles: list, reduction: str = "mean", use_crps: bool = False):
+        """Initializes the MQLoss module.
+
         Args:
-            quantiles (list or Tensor): List of quantiles (e.g., [0.1, 0.5, 0.9])
-            reduction (str): 'mean', 'sum', or 'none'
-            use_crps (bool): If True, approximate CRPS instead of basic MQ loss
+            quantiles (list): A list of quantiles to evaluate (e.g., [0.1, 0.5, 0.9]).
+            reduction (str): The reduction method: 'mean', 'sum', or 'none'.
+            use_crps (bool): If True, approximates CRPS by adding a spread penalty.
         """
         super().__init__()
         self.register_buffer("quantiles", torch.tensor(quantiles).float())
@@ -24,53 +31,56 @@ class MQLoss(nn.Module):
         self.use_crps = use_crps
 
     def forward(self, preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """
+        """Calculates the Multi-Quantile Loss.
+
         Args:
-            preds: Tensor of shape (B, T, Q) — predicted quantiles
-            target: Tensor of shape (B, T) — ground truth
+            preds (torch.Tensor): The predicted quantiles, shape `(B, T, Q)`.
+            target (torch.Tensor): The ground truth values, shape `(B, T)`.
 
         Returns:
-            Scalar loss (or tensor if reduction='none')
+            torch.Tensor: The computed loss, as a scalar or a tensor depending
+            on the reduction method.
         """
-        q = self.quantiles.view(1, 1, -1)  # (1, 1, Q)
-        y = target.unsqueeze(-1)          # (B, T, 1)
-        e = y - preds                     # (B, T, Q)
+        q = self.quantiles.view(1, 1, -1)
+        y = target.unsqueeze(-1)
+        e = y - preds
 
-        # Pinball loss
         loss = torch.max(q * e, (q - 1) * e)
 
         if self.use_crps:
-            # CRPS approx: add pairwise quantile disagreement penalty
             preds_sorted, _ = torch.sort(preds, dim=-1)
-            diff = preds_sorted[..., 1:] - preds_sorted[..., :-1]  # (B, T, Q-1)
-            crps_term = torch.mean(diff ** 2, dim=-1)              # (B, T)
-            loss = loss.sum(dim=-1) + crps_term                    # (B, T)
+            diff = preds_sorted[..., 1:] - preds_sorted[..., :-1]
+            crps_term = torch.mean(diff ** 2, dim=-1)
+            loss = loss.sum(dim=-1) + crps_term
         else:
-            loss = loss.sum(dim=-1)  # (B, T)
+            loss = loss.sum(dim=-1)
 
         if self.reduction == "mean":
             return loss.mean()
         elif self.reduction == "sum":
             return loss.sum()
-        return loss  # (B, T)
-
+        return loss
 
 
 class WeightedQuantileLoss(nn.Module):
-    """
-    Weighted Quantile Loss (wQL)
+    """Computes the Weighted Quantile Loss (wQL).
 
-    This loss penalizes under- and over-predictions asymmetrically,
-    depending on the quantile (τ). Automatically falls back to
-    unweighted QL if denominator is too small (i.e., near-zero target sum).
-    """
+    wQL is a variant of the quantile loss that is normalized by the sum of the
+    absolute target values. This can be useful for stabilizing training when
+    the target values have a large dynamic range.
 
-    def __init__(self, quantiles=(0.1, 0.5, 0.9), epsilon=1e-8, reduction='mean'):
-        """
+    Attributes:
+        quantiles (torch.Tensor): The quantiles to be evaluated.
+        epsilon (float): A small constant to prevent division by zero.
+        reduction (str): The reduction method.
+    """
+    def __init__(self, quantiles: tuple = (0.1, 0.5, 0.9), epsilon: float = 1e-8, reduction: str = 'mean'):
+        """Initializes the WeightedQuantileLoss module.
+
         Args:
-            quantiles (tuple): Quantile levels (τ) in (0, 1)
-            epsilon (float): Small number to avoid divide-by-zero
-            reduction (str): 'mean' (default), 'sum', or 'none'
+            quantiles (tuple): The quantile levels (τ) to evaluate, between 0 and 1.
+            epsilon (float): A small value to add to the denominator for stability.
+            reduction (str): The reduction method: 'mean', 'sum', or 'none'.
         """
         super().__init__()
         self.register_buffer("quantiles", torch.tensor(quantiles).float())
@@ -78,59 +88,61 @@ class WeightedQuantileLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """
+        """Calculates the Weighted Quantile Loss.
+
         Args:
-            preds: Tensor of shape (B, T, Q)
-            target: Tensor of shape (B, T)
+            preds (torch.Tensor): Predicted quantiles, shape `(B, T, Q)`.
+            target (torch.Tensor): Ground truth values, shape `(B, T)`.
 
         Returns:
-            Scalar loss (or tensor if reduction='none')
+            torch.Tensor: The computed loss.
         """
         B, T, Q = preds.shape
-        assert Q == len(self.quantiles), "Mismatch between preds and quantiles"
+        if Q != len(self.quantiles):
+            raise ValueError("Mismatch between number of predicted quantiles and configured quantiles.")
 
-        target = target.unsqueeze(-1)               # (B, T, 1)
-        errors = target - preds                     # (B, T, Q)
-        taus = self.quantiles.view(1, 1, Q)         # (1, 1, Q)
+        target = target.unsqueeze(-1)
+        errors = target - preds
+        taus = self.quantiles.view(1, 1, Q)
 
         weighted_losses = torch.max(
             taus * errors, (taus - 1) * errors
-        )  # pinball loss (B, T, Q)
+        )
 
-        # Numerator: weighted quantile loss
-        num = weighted_losses.sum(dim=(0, 1))  # (Q,)
-
-        # Denominator: sum of absolute target values (per quantile)
-        denom = torch.abs(target).sum(dim=(0, 1)) + self.epsilon  # (Q,)
-
-        wql = num / denom  # (Q,)
+        num = weighted_losses.sum(dim=(0, 1))
+        denom = torch.abs(target).sum(dim=(0, 1)) + self.epsilon
+        wql = num / denom
 
         if self.reduction == "mean":
             return wql.mean()
         elif self.reduction == "sum":
             return wql.sum()
-        return wql  # no reduction: returns one value per quantile
-
+        return wql
 
 
 class QuantileLoss(nn.Module):
-    """
-    Quantile loss (a.k.a. Pinball loss) for probabilistic regression.
-    
-    Parameters:
-    -----------
-    quantile : float
-        The quantile to predict, e.g. 0.1, 0.5 (median), 0.9.
-    reduction : str
-        One of "mean" (default), "sum", or "none".
+    """Computes the Quantile Loss (also known as Pinball Loss).
+
+    This loss function is used for quantile regression. It asymmetrically
+    penalizes over- and under-prediction to encourage the model to output a
+    specific quantile of the target distribution.
+
+    Attributes:
+        quantile (float): The target quantile, between 0 and 1.
+        reduction (str): The reduction method.
     """
     def __init__(self, quantile: float, reduction: str = "mean"):
+        """Initializes the QuantileLoss module.
+        """
         super().__init__()
-        assert 0 < quantile < 1, "Quantile must be between 0 and 1."
+        if not 0 < quantile < 1:
+            raise ValueError("Quantile must be between 0 and 1.")
         self.quantile = quantile
         self.reduction = reduction
 
     def forward(self, predictions: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Calculates the Quantile Loss.
+        """
         errors = labels - predictions
         loss = torch.max(
             (self.quantile - 1) * errors,
@@ -140,112 +152,91 @@ class QuantileLoss(nn.Module):
             return loss.mean()
         elif self.reduction == "sum":
             return loss.sum()
-        else:  # "none"
-            return loss
-
+        return loss
 
 
 class KernelEnergyLoss(nn.Module):
-    """
-    Kernel-based loss for probabilistic forecasting using Energy Distance.
-    
-    Accepts:
-    - Predicted samples (B, T, N): N samples per forecast
-    - Target values (B, T): observed values
-    """
+    """Computes a kernel-based energy distance loss for probabilistic forecasts.
 
+    This loss function is a proper scoring rule that encourages the distribution
+    of predicted samples to match the distribution of the true data. It is
+    based on the energy distance between the two distributions.
+    """
     def __init__(self, reduction: str = "mean"):
-        """
-        Args:
-            reduction: 'mean' | 'sum' | 'none'
+        """Initializes the KernelEnergyLoss module.
         """
         super().__init__()
         self.reduction = reduction
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """
+        """Calculates the kernel-based energy loss.
+
         Args:
-            preds: Forecast samples of shape (B, T, N)
-            targets: Ground truth values of shape (B, T)
+            preds (torch.Tensor): A tensor of predicted samples, shape `(B, T, N)`.
+            targets (torch.Tensor): The ground truth values, shape `(B, T)`.
+
         Returns:
-            Energy distance-based loss (scalar or per-sample)
+            torch.Tensor: The computed loss.
         """
         B, T, N = preds.shape
-        y = targets.unsqueeze(-1)  # (B, T, 1)
+        y = targets.unsqueeze(-1)
 
-        # Pairwise distances between samples (symmetric term)
-        diff_samples = preds.unsqueeze(-1) - preds.unsqueeze(-2)  # (B, T, N, N)
-        sample_term = torch.mean(torch.abs(diff_samples), dim=(2, 3))  # (B, T)
+        diff_samples = preds.unsqueeze(-1) - preds.unsqueeze(-2)
+        sample_term = torch.mean(torch.abs(diff_samples), dim=(2, 3))
 
-        # Distance between samples and target (cross term)
-        diff_target = preds - y  # (B, T, N)
-        cross_term = torch.mean(torch.abs(diff_target), dim=2)  # (B, T)
+        diff_target = preds - y
+        cross_term = torch.mean(torch.abs(diff_target), dim=2)
 
-        # Energy distance per sample
-        energy = 2 * cross_term - sample_term  # (B, T)
+        energy = 2 * cross_term - sample_term
 
         if self.reduction == "mean":
             return energy.mean()
         elif self.reduction == "sum":
             return energy.sum()
-        return energy  # (B, T)
-
-
+        return energy
 
 
 class EnergyDistanceLoss(nn.Module):
+    """Computes the Energy Distance loss.
+
+    This is another implementation of the energy distance, often used for
+    evaluating the similarity of two distributions.
+    """
     def __init__(self, reduction: str = "mean"):
         super().__init__()
         self.reduction = reduction
 
     def forward(self, samples: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """
-        samples: (B, S, T)  - S samples per time series
-        target:  (B, T)
+        """Calculates the Energy Distance.
         """
         B, S, T = samples.shape
-
-        # ED term 1: ||s_i - y||_2
         ed1 = torch.norm(samples - target.unsqueeze(1), dim=-1).mean(dim=1)
-
-        # ED term 2: ||s_i - s_j||_2 between all sample pairs
-        pairwise_dists = torch.norm(samples.unsqueeze(2) - samples.unsqueeze(1), dim=-1)  # (B, S, S)
+        pairwise_dists = torch.norm(samples.unsqueeze(2) - samples.unsqueeze(1), dim=-1)
         ed2 = pairwise_dists.mean(dim=(1, 2))
-
-        ed = 2 * ed1 - ed2  # Energy Distance per sample
+        ed = 2 * ed1 - ed2
         return ed.mean() if self.reduction == "mean" else ed.sum()
 
 
-
-
 class SpectralLoss(nn.Module):
+    """Computes a loss in the frequency domain.
+
+    This loss function calculates the L2 distance between the Fast Fourier
+    Transforms (FFTs) of the predictions and the targets. It encourages the
+    model to match the frequency components of the target sequence.
     """
-    Spectral Loss based on the L2 distance between FFTs of predictions and targets.
-
-    Encourages models to match frequency components.
-
-    Args:
-        reduction (str): 'mean' | 'sum' | 'none'
-    """
-
     def __init__(self, reduction: str = "mean"):
+        """Initializes the SpectralLoss module.
+        """
         super().__init__()
         self.reduction = reduction
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            preds: (B, T)
-            targets: (B, T)
-        Returns:
-            Loss (scalar or per batch)
+        """Calculates the spectral loss.
         """
         fft_pred = torch.fft.rfft(preds, dim=1)
         fft_target = torch.fft.rfft(targets, dim=1)
-
         loss = torch.abs(fft_pred - fft_target) ** 2
-        loss = loss.sum(dim=1)  # (B,)
-
+        loss = loss.sum(dim=1)
         if self.reduction == "mean":
             return loss.mean()
         elif self.reduction == "sum":
@@ -253,49 +244,43 @@ class SpectralLoss(nn.Module):
         return loss
 
 
-
-
 class FastSoftDTWLoss(nn.Module):
-    """
-    Differentiable Dynamic Time Warping (Soft-DTW) Loss (pure PyTorch, batched).
-    
-    Args:
-        gamma (float): Smoothing parameter. Lower → closer to hard DTW.
-        reduction (str): 'mean', 'sum', or 'none'.
-    """
+    """Computes a differentiable approximation of Dynamic Time Warping (DTW).
 
+    Soft-DTW is a differentiable loss function that measures the alignment
+    between two time series. It can be useful for tasks where the sequences
+    might be out of phase.
+
+    Attributes:
+        gamma (float): The smoothing parameter. A lower gamma makes the loss
+            closer to the non-differentiable DTW.
+    """
     def __init__(self, gamma: float = 1.0, reduction: str = "mean"):
+        """Initializes the FastSoftDTWLoss module.
+        """
         super().__init__()
         self.gamma = gamma
         self.reduction = reduction
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            preds: Tensor of shape (B, T) - predicted sequence
-            targets: Tensor of shape (B, T) - ground truth sequence
-        Returns:
-            Soft-DTW loss (scalar if reduced, else shape [B])
+        """Calculates the Soft-DTW loss.
         """
         B, T = preds.shape
-        preds = preds.unsqueeze(2)  # (B, T, 1)
-        targets = targets.unsqueeze(1)  # (B, 1, T)
-        D = (preds - targets).pow(2)  # (B, T, T)
-
+        preds = preds.unsqueeze(2)
+        targets = targets.unsqueeze(1)
+        D = (preds - targets).pow(2)
         R = torch.full((B, T + 1, T + 1), float("inf"), device=preds.device)
         R[:, 0, 0] = 0.0
 
         for i in range(1, T + 1):
             D_i = D[:, i - 1, :]
             for j in range(1, T + 1):
-                r0 = R[:, i - 1, j - 1]
-                r1 = R[:, i - 1, j]
-                r2 = R[:, i, j - 1]
+                r0, r1, r2 = R[:, i - 1, j - 1], R[:, i - 1, j], R[:, i, j - 1]
                 r = torch.stack((r0, r1, r2), dim=-1)
                 softmin = -self.gamma * torch.logsumexp(-r / self.gamma, dim=-1)
                 R[:, i, j] = D_i[:, j - 1] + softmin
 
-        loss = R[:, T, T]  # (B,)
+        loss = R[:, T, T]
         if self.reduction == "mean":
             return loss.mean()
         elif self.reduction == "sum":
@@ -304,23 +289,26 @@ class FastSoftDTWLoss(nn.Module):
 
 
 class SpreadPenalty(nn.Module):
-    """
-    Computes a penalty on the predicted quantile spread to regularize uncertainty.
-    Supports asymmetric penalties (log or inverse), or symmetric log penalty around a target spread.
+    """Computes a penalty on the spread of predicted quantiles.
+
+    This module is used to regularize the uncertainty of a probabilistic
+    forecast. It can penalize excessively wide or narrow quantile ranges.
     """
     def __init__(
         self,
         penalty_type: str = 'log',
         epsilon: float = 1e-3,
         reduction: str = 'mean',
-        target_spread: float = 1.0,
+        target_spread: float = 0.0,
     ):
-        """
+        """Initializes the SpreadPenalty module.
+
         Args:
-            penalty_type (str): 'log', 'inverse', or 'symmetric_log'.
-            epsilon (float): Numerical stability constant.
-            reduction (str): 'mean', 'sum', or 'none'.
-            target_spread (float): Target spread used in 'symmetric_log' mode.
+            penalty_type (str): The type of penalty function to use ('log', 'inverse', 'symmetric_log').
+            epsilon (float): A small constant for numerical stability.
+            reduction (str): The reduction method for the final penalty.
+            target_spread (float): The target spread value, used only for the
+                'symmetric_log' penalty type.
         """
         super().__init__()
         if penalty_type not in ['log', 'inverse', 'symmetric_log']:
@@ -334,15 +322,17 @@ class SpreadPenalty(nn.Module):
         self.target_spread = target_spread
 
     def forward(self, preds: torch.Tensor) -> torch.Tensor:
-        """
+        """Calculates the spread penalty.
+
         Args:
-            preds (torch.Tensor): Tensor of quantile predictions, shape [B, T, Q].
-                                  Assumes quantiles are sorted along Q.
+            preds (torch.Tensor): A tensor of quantile predictions, assumed to be
+                sorted along the last dimension, shape `[B, T, Q]`.
+
         Returns:
-            torch.Tensor: Scalar penalty (or tensor if reduction='none').
+            torch.Tensor: The computed penalty.
         """
         if preds.ndim < 3 or preds.shape[-1] < 2:
-            raise ValueError(f"Expected preds shape [B, T, Q≥2], got: {preds.shape}")
+            raise ValueError(f"Expected preds shape [B, T, Q>=2], got: {preds.shape}")
 
         spread = preds[..., -1] - preds[..., 0]
         spread = torch.clamp(spread, min=0.0)
@@ -353,7 +343,6 @@ class SpreadPenalty(nn.Module):
             penalty = 1.0 / (spread + self.epsilon)
         elif self.penalty_type == 'symmetric_log':
             log_spread = torch.log(spread + self.epsilon)
-            # Add epsilon to target_spread before log to avoid math domain error if target_spread is 0
             log_target = math.log(self.target_spread + self.epsilon if self.target_spread == 0 else self.target_spread)
             penalty = (log_spread - log_target) ** 2
         else:
@@ -366,79 +355,89 @@ class SpreadPenalty(nn.Module):
         return penalty
 
 
-
 class MixtureLoss(nn.Module):
+    """Computes the Negative Log-Likelihood for a Mixture Density Network.
+
+    This loss function is designed to work with the output of a
+    `MixtureOutputHead`. It calculates the likelihood of the target values
+    under a mixture of probability distributions, whose parameters are
+    predicted by the model.
+
+    Attributes:
+        min_df (float): The minimum degrees of freedom for a Student's T distribution.
+        fixed_sigma (float): The fixed standard deviation for a Normal distribution
+            if its sigma is not predicted.
+    """
     def __init__(self, reduction="mean", min_df=2.0, fixed_sigma=1e-3):
+        """Initializes the MixtureLoss module.
+
+        Args:
+            reduction (str): The reduction method for the final loss.
+            min_df (float): A minimum value for the degrees of freedom of the
+                Student's T distribution to ensure stability.
+            fixed_sigma (float): The standard deviation to use for a
+                `fixed_normal` component.
+        """
         super().__init__()
         self.reduction = reduction
         self.min_df = min_df
         self.fixed_sigma = fixed_sigma
 
     def forward(self, preds: dict, targets: torch.Tensor, loss_mask: torch.Tensor = None):
-        """
-        Args:
-            preds: dict of predicted parameters. It should contain:
-                   - "mixture_logits": Tensor of shape [B, T, M] (M = number of components)
-                   - "components": List[str] of distribution names for each component (must match keys below)
-                   - Parameters for each distribution, e.g., "student_df", "student_mu", "student_scale".
-                     These tensors are expected to have shape [B, T] or be broadcastable.
-                     The OutputHead must ensure these keys are populated as expected by the loss.
-            targets: Ground truth tensor of shape [B, T]
-            loss_mask: Optional float or bool mask of shape [B, T]
-        """
-        logits = preds["mixture_logits"]  # [B, T, M]
-        weights = F.softmax(logits, dim=-1)  # [B, T, M]
+        """Calculates the mixture loss.
 
+        Args:
+            preds (dict): A dictionary of predicted parameters from a `MixtureOutputHead`.
+            targets (torch.Tensor): The ground truth values.
+            loss_mask (Optional[torch.Tensor]): An optional mask for the loss.
+
+        Returns:
+            torch.Tensor: The final computed loss.
+        """
+        logits = preds["mixture_logits"]
+        weights = F.softmax(logits, dim=-1)
         log_probs = []
-        target_for_dist = targets # Shape [B, T]
+        target_for_dist = targets
 
         for i, dist_name in enumerate(preds["components"]):
             if dist_name == "student_t":
-                nu = F.softplus(preds["student_df"]) + self.min_df # Shape [B,T]
-                mu = preds["student_mu"] # Shape [B,T]
-                tau = F.softplus(preds["student_scale"]) # Shape [B,T]
+                nu = F.softplus(preds["student_df"]) + self.min_df
+                mu = preds["student_mu"]
+                tau = F.softplus(preds["student_scale"])
                 dist = StudentT(df=nu, loc=mu, scale=tau)
                 log_prob = dist.log_prob(target_for_dist)
             elif dist_name == "log_normal":
-                mu = preds["lognorm_mu"] # Shape [B,T]
-                sigma = F.softplus(preds["lognorm_sigma"]) # Shape [B,T]
-                dist = LogNormal(loc=mu, scale=sigma) # PyTorch LogNormal takes loc (mu) and scale (sigma)
-                log_prob = dist.log_prob(torch.clamp(target_for_dist, min=1e-6))  # clamp for log domain
+                mu = preds["lognorm_mu"]
+                sigma = F.softplus(preds["lognorm_sigma"])
+                dist = LogNormal(loc=mu, scale=sigma)
+                log_prob = dist.log_prob(torch.clamp(target_for_dist, min=1e-6))
             elif dist_name == "neg_binomial":
-                r = F.softplus(preds["nb_r"]) # Shape [B,T]
-                p = torch.sigmoid(preds["nb_p"]) # Shape [B,T]
+                r = F.softplus(preds["nb_r"])
+                p = torch.sigmoid(preds["nb_p"])
                 dist = NegativeBinomial(total_count=r, probs=p)
                 log_prob = dist.log_prob(target_for_dist)
             elif dist_name == "fixed_normal":
-                mu = preds["normal_mu"] # Shape [B,T]
+                mu = preds["normal_mu"]
                 sigma_val = torch.tensor(self.fixed_sigma, device=mu.device, dtype=mu.dtype)
-                sigma = sigma_val.expand_as(mu) # Expand to [B,T]
+                sigma = sigma_val.expand_as(mu)
                 dist = Normal(loc=mu, scale=sigma)
                 log_prob = dist.log_prob(target_for_dist)
             else:
                 raise ValueError(f"Unknown distribution component: {dist_name}")
+            log_probs.append(log_prob)
 
-            log_probs.append(log_prob)  # Appending tensor of shape [B, T]
-
-        log_probs_tensor = torch.stack(log_probs, dim=-1)  # Converts list of M tensors [B,T] to one tensor [B, T, M]
-        
-        # Log-sum-exp for stable mixture likelihood calculation
-        # log P(y|θ) = log Σ_i w_i * P(y|θ_i) = log Σ_i exp(log w_i + log P(y|θ_i))
-        # Add epsilon to weights before log to avoid log(0)
-        log_weighted_log_prob = log_probs_tensor + torch.log(weights + 1e-9) 
-        weighted_log_prob = torch.logsumexp(log_weighted_log_prob, dim=-1)  # Results in shape [B, T]
-        
-        nll = -weighted_log_prob  # Negative Log-Likelihood, shape [B, T]
+        log_probs_tensor = torch.stack(log_probs, dim=-1)
+        log_weighted_log_prob = log_probs_tensor + torch.log(weights + 1e-9)
+        weighted_log_prob = torch.logsumexp(log_weighted_log_prob, dim=-1)
+        nll = -weighted_log_prob
 
         if loss_mask is not None:
-            # Ensure mask is broadcastable if not identical shape, though typically [B,T] expected.
             if loss_mask.shape != nll.shape and loss_mask.ndim == nll.ndim:
-                loss_mask = loss_mask.expand_as(nll) # Try to expand if dims match but sizes differ at singleton
+                loss_mask = loss_mask.expand_as(nll)
             elif loss_mask.shape != nll.shape:
                  raise ValueError(f"loss_mask shape {loss_mask.shape} incompatible with nll shape {nll.shape}")
-            
             nll = nll * loss_mask
-            num_active_elements = loss_mask.sum().clamp(min=1e-9) 
+            num_active_elements = loss_mask.sum().clamp(min=1e-9)
         else:
             num_active_elements = torch.tensor(nll.numel(), device=nll.device, dtype=nll.dtype).clamp(min=1e-9)
 
@@ -446,5 +445,4 @@ class MixtureLoss(nn.Module):
             return nll.sum() / num_active_elements
         elif self.reduction == "sum":
             return nll.sum()
-        # reduction == "none" or other
         return nll

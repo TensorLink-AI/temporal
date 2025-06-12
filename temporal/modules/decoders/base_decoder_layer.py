@@ -10,7 +10,40 @@ import copy # Import copy for deepcopy
 
 @register_module("block", "default_decoder")
 class TimeSeriesTransformerDecoderLayer(nn.Module):
+    """A standard Transformer decoder layer for time series.
+
+    This module implements a single layer of a Transformer decoder, which is
+    a fundamental building block for sequence-to-sequence models in time series
+    forecasting. It consists of three main components:
+    1.  A masked self-attention mechanism to process the decoder's own input sequence.
+    2.  An optional cross-attention mechanism to attend to the output of an encoder.
+    3.  A feed-forward network (FFN).
+
+    Each component is followed by a residual connection and layer normalization.
+    The specific implementations of attention, FFN, and normalization are
+    dynamically built based on the provided configuration.
+
+    Attributes:
+        config (TransformerBlockConfig): The configuration for this specific block.
+        is_encoder_decoder (bool): Flag indicating if this layer is part of an
+            encoder-decoder architecture, which determines if cross-attention is built.
+        self_attn (nn.Module): The self-attention module.
+        cross_attn (Optional[nn.Module]): The cross-attention module.
+        ffn (nn.Module): The feed-forward network.
+        norm1 (nn.Module): Layer normalization after self-attention.
+        norm2 (Optional[nn.Module]): Layer normalization after cross-attention.
+        norm3 (nn.Module): Layer normalization after the FFN.
+        dropout (nn.Dropout): Dropout layer.
+    """
     def __init__(self, config: TransformerBlockConfig, builder: ModuleBuilder):
+        """Initializes the TimeSeriesTransformerDecoderLayer.
+
+        Args:
+            config (TransformerBlockConfig): The configuration specific to this decoder
+                layer, defining the types of attention and FFN to be used.
+            builder (ModuleBuilder): A helper class that constructs the sub-modules
+                (attention, FFN, normalization) based on the main model configuration.
+        """
         super().__init__()
         self.config = config # Stores the block config
         main_config: TransformerTimeSeriesConfig = builder.config # Get main config from builder
@@ -102,57 +135,84 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False, # Standard HF argument
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[Tuple[Tuple, Tuple]]]:
+        """Performs the forward pass of the decoder layer.
 
+        Args:
+            hidden_states (torch.Tensor): The input to the layer, shape `[B, T_dec, D]`.
+            encoder_hidden_states (Optional[torch.Tensor]): The sequence from the
+                encoder's output, shape `[B, T_enc, D]`. Required for cross-attention.
+            attention_mask (Optional[torch.Tensor]): The causal mask for self-attention,
+                shape `[B, 1, T_dec, T_dec]`.
+            encoder_attention_mask (Optional[torch.Tensor]): The padding mask for
+                cross-attention, shape `[B, 1, T_dec, T_enc]`.
+            past_key_value (Optional[Tuple[Optional[Tuple], Optional[Tuple]]]): A tuple
+                containing cached key-value states for self-attention and cross-attention,
+                used for efficient autoregressive decoding.
+            output_attentions (bool): Whether to return the attention weights.
+            use_cache (bool): If True, the layer will return the updated key-value
+                states for future decoding steps.
+
+        Returns:
+            Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[Tuple[Tuple, Tuple]]]:
+                - The output hidden states of the layer, shape `[B, T_dec, D]`.
+                - The self-attention probabilities (if `output_attentions` is True).
+                - The cross-attention probabilities (if `output_attentions` is True).
+                - The updated key-value cache (if `use_cache` is True).
+        """
         residual = hidden_states
-        self_attn_probs = None
-        cross_attn_probs = None
-        present_self_kv = None
-        present_cross_kv = None
+        self_attention_probabilities = None
+        cross_attention_probabilities = None
+        present_self_key_value = None
+        present_cross_key_value = None
 
         # --- Self Attention ---
         self_attn_past_key_value = past_key_value[0] if past_key_value is not None else None
-        self_attn_outputs = self.self_attn(
+        self_attention_outputs = self.self_attn(
             hidden_states=hidden_states,
             key_value_states=None, # Self-attention does not use key_value_states
             past_key_value=self_attn_past_key_value,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
-            use_cache=use_cache 
+            use_cache=use_cache
         )
-        self_attn_out = self_attn_outputs[0]
-        if output_attentions: self_attn_probs = self_attn_outputs[1]
-        if use_cache: present_self_kv = self_attn_outputs[2] if len(self_attn_outputs) > 2 else None 
-        hidden_states = self.norm1(residual + self.dropout(self_attn_out))
+        self_attention_output = self_attention_outputs[0]
+        if output_attentions:
+            self_attention_probabilities = self_attention_outputs[1]
+        if use_cache:
+            present_self_key_value = self_attention_outputs[2] if len(self_attention_outputs) > 2 else None
+        hidden_states = self.norm1(residual + self.dropout(self_attention_output))
         # --- End Self Attention ---
 
         # --- Cross Attention ---
         if self.is_encoder_decoder and self.cross_attn is not None and encoder_hidden_states is not None:
             residual = hidden_states
             cross_attn_past_key_value = past_key_value[1] if past_key_value is not None else None
-            cross_attn_outputs = self.cross_attn(
+            cross_attention_outputs = self.cross_attn(
                 hidden_states=hidden_states,
                 key_value_states=encoder_hidden_states,
                 past_key_value=cross_attn_past_key_value,
-                attention_mask=encoder_attention_mask, 
+                attention_mask=encoder_attention_mask,
                 output_attentions=output_attentions,
-                use_cache=use_cache 
+                use_cache=use_cache
             )
-            cross_attn_out = cross_attn_outputs[0]
-            if output_attentions: cross_attn_probs = cross_attn_outputs[1]
-            if use_cache: present_cross_kv = cross_attn_outputs[2] if len(cross_attn_outputs) > 2 else None
+            cross_attention_output = cross_attention_outputs[0]
+            if output_attentions:
+                cross_attention_probabilities = cross_attention_outputs[1]
+            if use_cache:
+                present_cross_key_value = cross_attention_outputs[2] if len(cross_attention_outputs) > 2 else None
             
             if self.norm2 is not None:
-                hidden_states = self.norm2(residual + self.dropout(cross_attn_out))
-            else: 
-                hidden_states = residual + self.dropout(cross_attn_out)
+                hidden_states = self.norm2(residual + self.dropout(cross_attention_output))
+            else:
+                hidden_states = residual + self.dropout(cross_attention_output)
         # --- End Cross Attention ---
 
         # --- Feedforward ---
         residual = hidden_states
-        ffn_out = self.ffn(hidden_states)
-        hidden_states = self.norm3(residual + self.dropout(ffn_out))
+        ffn_output = self.ffn(hidden_states)
+        hidden_states = self.norm3(residual + self.dropout(ffn_output))
         # --- End Feedforward ---
 
-        present_key_value = (present_self_kv, present_cross_kv) if use_cache else None
+        present_key_value = (present_self_key_value, present_cross_key_value) if use_cache else None
 
-        return hidden_states, self_attn_probs, cross_attn_probs, present_key_value
+        return hidden_states, self_attention_probabilities, cross_attention_probabilities, present_key_value

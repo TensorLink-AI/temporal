@@ -10,14 +10,43 @@ from temporal.registry.core import register_module
 
 @register_module("block", "default_encoder")
 class TimeSeriesTransformerEncoderLayer(nn.Module):
+    """A standard Transformer encoder layer for time series.
+
+    This module implements a single layer of a Transformer encoder, which is a
+    fundamental building block for sequence-to-sequence models in time series
+    forecasting. It consists of two main components:
+    1.  A self-attention mechanism to process the input sequence.
+    2.  A feed-forward network (FFN).
+
+    Each component is followed by a residual connection and layer normalization.
+    The specific implementations of attention, FFN, and normalization are
+    dynamically built based on the provided configuration.
+
+    Attributes:
+        config (TransformerBlockConfig): The configuration for this specific block.
+        self_attn (nn.Module): The self-attention module.
+        ffn (nn.Module): The feed-forward network.
+        norm1 (nn.Module): Layer normalization after self-attention.
+        norm2 (nn.Module): Layer normalization after the FFN.
+        dropout (nn.Dropout): Dropout layer.
+    """
     def __init__(self, config: TransformerBlockConfig, builder: ModuleBuilder):
+        """Initializes the TimeSeriesTransformerEncoderLayer.
+
+        Args:
+            config (TransformerBlockConfig): The configuration specific to this encoder
+                layer, defining the types of attention and FFN to be used.
+            builder (ModuleBuilder): A helper class that constructs the sub-modules
+                (attention, FFN, normalization) based on the main model configuration.
+        """
         super().__init__()
-        self.config = config 
-        main_config: TransformerTimeSeriesConfig = builder.config 
+        self.config = config
+        main_config: TransformerTimeSeriesConfig = builder.config
 
         # --- Resolve Attention Config ---
-        resolved_attn_config = config.attention_config 
+        resolved_attn_config = config.attention_config
         if resolved_attn_config is None:
+             # Fallback to a global config if a block-specific one isn't provided
              if hasattr(main_config, 'attention_config_global') and main_config.attention_config_global:
                  resolved_attn_config = main_config.attention_config_global.encoder_attention
              else:
@@ -30,6 +59,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         # --- Resolve FFN Config ---
         resolved_ffn_config = config.ffn_config
         if resolved_ffn_config is None:
+            # Fallback to a global config if a block-specific one isn't provided
             if hasattr(main_config, 'feedforward_config') and main_config.feedforward_config:
                 resolved_ffn_config = main_config.feedforward_config
             else:
@@ -49,41 +79,47 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         output_attentions: Optional[bool] = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]: # Return signature adjusted
-        """
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Performs the forward pass of the encoder layer.
+
         Args:
-            hidden_states (`torch.FloatTensor`): input shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`): mask shape `(batch, 1, tgt_len, src_len)`
-            output_attentions (`bool`, *optional*): Whether to return attention probabilities.
+            hidden_states (torch.Tensor): The input to the layer of shape
+                `(batch, seq_len, embed_dim)`.
+            attention_mask (Optional[torch.Tensor]): A mask to prevent attention
+                to padding tokens, shape `(batch, 1, seq_len, seq_len)`.
+            output_attentions (Optional[bool]): Whether to return the attention
+                probabilities.
+
         Returns:
-             Tuple: (hidden_states, attn_probs)
-                    attn_probs is None if output_attentions is False or not returned by attn layer.
+             Tuple[torch.Tensor, Optional[torch.Tensor]]: A tuple containing:
+                - The output hidden states of the layer.
+                - The attention probabilities, if `output_attentions` is True;
+                  otherwise, None.
         """
         residual = hidden_states
-        attn_probs = None 
+        attention_probabilities = None
 
-        # --- Self-Attention ---
-        attn_outputs = self.self_attn(
+        # --- Self-Attention Block ---
+        attention_outputs = self.self_attn(
             hidden_states=hidden_states,
-            key_value_states=None,      
-            past_key_value=None,        
+            key_value_states=None,      # Not used in self-attention
+            past_key_value=None,        # Not used in encoder
             attention_mask=attention_mask,
             output_attentions=output_attentions,
-            use_cache=False             
+            use_cache=False             # Not used in encoder
         )
-        attn_output = attn_outputs[0]
-        # Capture attn_probs only if output_attentions is True AND the attn module returned them
-        if output_attentions and len(attn_outputs) > 1:
-             attn_probs = attn_outputs[1] 
+        attention_output = attention_outputs[0]
+        # Capture attention probabilities if requested and returned
+        if output_attentions and len(attention_outputs) > 1:
+             attention_probabilities = attention_outputs[1]
 
-        hidden_states = self.norm1(residual + self.dropout(attn_output))
-        # --- End Self-Attention ---
+        hidden_states = self.norm1(residual + self.dropout(attention_output))
+        # --- End Self-Attention Block ---
 
-        # --- Feedforward ---
+        # --- Feedforward Block ---
         residual = hidden_states
         ffn_output = self.ffn(hidden_states)
         hidden_states = self.norm2(residual + self.dropout(ffn_output))
-        # --- End Feedforward ---
+        # --- End Feedforward Block ---
 
-        # Always return a tuple (hidden_states, attn_probs or None)
-        return (hidden_states, attn_probs)
+        return (hidden_states, attention_probabilities)

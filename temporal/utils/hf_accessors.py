@@ -2,7 +2,7 @@
 import os
 import json
 import torch
-from typing import Optional
+from typing import Optional, Type
 
 # Optional safetensors support
 try:
@@ -28,55 +28,52 @@ except ImportError:
 
 def save_hf(
     model: torch.nn.Module,
-    config, # Expecting an instance like TransformerTimeSeriesConfig here
+    config,
     save_directory: str,
     safe: bool = False,
-    # --- New parameters for Hugging Face Hub ---
     repo_id: Optional[str] = None,
     commit_message: Optional[str] = "Save model using custom save_hf",
-    private: bool = False, # Used ONLY when creating the repo if it doesn't exist
-    token: Optional[str] = None, # Use HF_TOKEN env var or login if None
-    push_to_hub: bool = False # Set to True to enable pushing
-    # --- End new parameters ---
+    private: bool = False,
+    token: Optional[str] = None,
+    push_to_hub: bool = False
 ):
-    """
-    Save a PyTorch model + HF-compatible config to a directory,
-    optionally creating and/or pushing to HF Hub.
+    """Saves a model and its configuration to a directory, with optional Hub upload.
+
+    This function saves a model's state dictionary and its configuration file
+    in a format that is compatible with the Hugging Face ecosystem. It can
+    also create a new repository on the Hub and upload the saved files.
 
     Args:
-        model: Your nn.Module (state_dict will be saved).
-        config: An instance of PretrainedConfig (e.g. TransformerTimeSeriesConfig).
-                Its model_type might be overridden.
-        save_directory: Path to write files into locally.
-        safe: If True, uses safetensors. Otherwise uses torch.save.
-        repo_id (Optional[str]): Repository ID on Hugging Face Hub (e.g., 'your-username/your-model-name').
-                                 Required if push_to_hub is True.
-        commit_message (Optional[str]): Commit message for the Hub upload.
-        private (bool): If True, creates the repository as private if it doesn't exist.
-                        This argument is IGNORED if the repository already exists.
-        token (Optional[str]): Hugging Face API token. Uses logged-in user or HF_TOKEN env var if None.
-        push_to_hub (bool): If True, attempts to create the repo (if needed) and uploads
-                          the `save_directory` to the specified `repo_id` after saving locally.
+        model (torch.nn.Module): The PyTorch model to save.
+        config: The configuration object for the model. It should have a
+            `to_dict()` method.
+        save_directory (str): The local directory where the model and config
+            will be saved.
+        safe (bool): If True, saves the model weights using `safetensors`.
+            Otherwise, uses `torch.save` (pickle format). Defaults to False.
+        repo_id (Optional[str]): The ID of the repository on the Hugging Face
+            Hub (e.g., 'username/repo_name'). Required if `push_to_hub` is True.
+        commit_message (Optional[str]): The commit message for the upload.
+        private (bool): Whether to create the repository as private if it
+            doesn't exist. This is ignored if the repo already exists.
+        token (Optional[str]): Your Hugging Face API token. If None, it uses
+            the token from the environment or login cache.
+        push_to_hub (bool): If True, the function will push the `save_directory`
+            to the specified `repo_id` on the Hub.
+
+    Raises:
+        ImportError: If `safetensors` or `huggingface_hub` is required but not installed.
+        ValueError: If `push_to_hub` is True but `repo_id` is not provided.
     """
     os.makedirs(save_directory, exist_ok=True)
 
-    # 1) Get config dict and potentially OVERRIDE model_type
     config_dict = config.to_dict()
-    # Ensure model_type matches the registered name if needed by your builder
-    if "model_type" not in config_dict or config_dict["model_type"] is None:
-         # Example: Set a default if missing, adjust as needed
-         # config_dict["model_type"] = "transformer"
-         pass # Or raise an error if it's mandatory
-
-    # Your existing modification (ensure this is correct for your use case)
     config_dict["model_type"] = "transformer"
 
-    # 2) Save config.json
     config_path = os.path.join(save_directory, "config.json")
     with open(config_path, "w") as f:
         json.dump(config_dict, f, indent=2)
 
-    # 3) Save weights
     weights_name = "model.safetensors" if safe else "pytorch_model.bin"
     weights_path = os.path.join(save_directory, weights_name)
     if safe:
@@ -89,7 +86,6 @@ def save_hf(
 
     print(f"Model saved locally to {save_directory}")
 
-    # --- Push to Hub ---
     if push_to_hub:
         if not _HAS_HUGGINGFACE_HUB:
              raise ImportError("huggingface_hub library is required to push to Hub. Please install it (`pip install huggingface_hub`).")
@@ -98,7 +94,6 @@ def save_hf(
 
         api = HfApi(token=token)
 
-        # Check if repo exists, create if it doesn't
         try:
             api.repo_info(repo_id=repo_id, repo_type="model")
             print(f"Repository '{repo_id}' already exists on the Hub.")
@@ -110,87 +105,81 @@ def save_hf(
                     token=token,
                     private=private,
                     repo_type="model",
-                    exist_ok=False # Don't error if it was created between check and now
+                    exist_ok=False
                 )
                 print(f"Successfully created repository '{repo_id}'.")
             except Exception as create_e:
                 print(f"Error creating repository '{repo_id}': {create_e}")
-                raise create_e # Re-raise creation error
-        except Exception as e: # Catch other potential errors during repo_info check
+                raise create_e
+        except Exception as e:
             print(f"Error checking repository status: {e}")
             raise e
 
-        # Proceed with upload
         print(f"Pushing contents of {save_directory} to repository: {repo_id}...")
         try:
             api_url = upload_folder(
                 folder_path=save_directory,
                 repo_id=repo_id,
                 commit_message=commit_message,
-                # private=private, # Removed argument - visibility set at creation or on Hub
                 token=token,
-                repo_type="model" # Assuming it's a model
+                repo_type="model"
             )
             print(f"Push successful. Model uploaded to: {api_url}")
         except Exception as e:
-            # Provide more context in case of upload error after creation attempt
             print(f"Error pushing to Hub repository '{repo_id}': {e}")
             print("Please ensure you have write permissions and the token is valid.")
             raise e
-    # --- End Push to Hub ---
 
-# ... (keep load_hf function below)
 
 def load_hf(
-    model_name_or_path: str, # Changed from save_directory
-    model_cls,
+    model_name_or_path: str,
+    model_cls: Type[torch.nn.Module],
     config_cls,
-    safe: bool = False, # Check for safetensors file if True
+    safe: bool = False,
     map_location="cpu",
-    # --- New parameters for Hugging Face Hub ---
     cache_dir: Optional[str] = None,
     force_download: bool = False,
-    token: Optional[str] = None, # Use HF_TOKEN env var or login if None
-    # --- End new parameters ---
+    token: Optional[str] = None,
     **model_kwargs
 ):
-    """
-    Load a model + config saved with `save_hf`, from local path or HF Hub.
+    """Loads a model and configuration from a local path or the Hugging Face Hub.
+
+    This function can load models saved with `save_hf`. It automatically handles
+    downloading files from the Hub if the `model_name_or_path` is a repository ID.
 
     Args:
-        model_name_or_path (str): Can be either:
-            - Path to a local directory containing config.json and model weights.
-            - A Hugging Face Hub repository ID (e.g., 'your-username/your-model-name').
-        model_cls: Class of your model, signature __init__(config, **model_kwargs).
-        config_cls: Config class with `.from_dict()` or `.from_pretrained()` capability.
-        safe (bool): If True, attempts to load `model.safetensors`, otherwise `pytorch_model.bin`.
-        map_location: Passed to torch.load (if not using safetensors).
-        cache_dir (Optional[str]): Path to Hugging Face cache directory for downloads.
-        force_download (bool): Whether to force download from Hub, even if cached.
-        token (Optional[str]): Hugging Face API token for private repos.
-        model_kwargs: Extra args forwarded to model_cls(config, **model_kwargs).
+        model_name_or_path (str): The path to a local directory or a repository
+            ID on the Hugging Face Hub.
+        model_cls (Type[torch.nn.Module]): The class of the model to instantiate.
+            It is expected to have an `__init__(self, config, **kwargs)` signature.
+        config_cls: The configuration class for the model. It should have a
+            `from_pretrained` or `from_dict` method.
+        safe (bool): If True, prioritizes loading `model.safetensors`.
+        map_location (str): The device to load the model weights onto (e.g., 'cpu', 'cuda:0').
+        cache_dir (Optional[str]): The directory for caching downloaded Hub files.
+        force_download (bool): If True, forces a re-download from the Hub.
+        token (Optional[str]): Your Hugging Face API token for private repos.
+        **model_kwargs: Additional keyword arguments to pass to the model's constructor.
 
     Returns:
-        model: An instance of model_cls with loaded weights.
+        torch.nn.Module: An instance of `model_cls` with the loaded weights.
     """
     load_path = model_name_or_path
     is_local = os.path.isdir(load_path)
     resolved_from_hub = False
 
-    # --- Download from Hub if not a local directory ---
     if not is_local:
         if not _HAS_HUGGINGFACE_HUB:
             raise ImportError("huggingface_hub library is required to load from Hub. Please install it (`pip install huggingface_hub`).")
 
         print(f"Attempting to download '{model_name_or_path}' from Hugging Face Hub...")
         try:
-            # snapshot_download downloads the whole repo content
             load_path = snapshot_download(
                 repo_id=model_name_or_path,
                 cache_dir=cache_dir,
                 force_download=force_download,
                 token=token,
-                repo_type="model" # Assuming it's a model
+                repo_type="model"
             )
             print(f"Files downloaded to cache: {load_path}")
             resolved_from_hub = True
@@ -198,55 +187,39 @@ def load_hf(
             raise ValueError(f"Could not download repository '{model_name_or_path}' from Hub. Please ensure it's a valid repository ID and you have access.") from e
     else:
         print(f"Loading from local directory: {load_path}")
-    # --- End Hub download ---
 
-    # --- Load Config ---
     config_path = os.path.join(load_path, "config.json")
     if not os.path.exists(config_path):
          raise FileNotFoundError(f"Config file 'config.json' not found in {load_path}.")
 
     try:
-        # Try HF's loading first if available and config_cls supports it
-        # Note: This might fail if config_cls isn't a true HF PretrainedConfig subclass
-        # Use token if loading potentially private config from hub
         cfg = config_cls.from_pretrained(load_path, token=token if resolved_from_hub else None)
         print("Config loaded using from_pretrained.")
-    except (AttributeError, TypeError, Exception): # Catch broad exceptions as from_pretrained might fail variously
+    except (AttributeError, TypeError, Exception):
          print("from_pretrained failed or not available for config, falling back to manual load.")
-         # Fallback to manual JSON loading
          with open(config_path, "r") as f:
              cfg_dict = json.load(f)
-         # Try from_dict if available, otherwise assume constructor works
          if hasattr(config_cls, "from_dict"):
               cfg = config_cls.from_dict(cfg_dict)
          else:
-              # This assumes your config_cls can be initialized from a dict directly
               try:
                   cfg = config_cls(**cfg_dict)
               except TypeError as e:
                   raise ValueError(f"Could not instantiate config class {config_cls.__name__} from dictionary. Ensure it has a from_dict method or accepts the config keys as __init__ arguments.") from e
-    # --- End Load Config ---
 
-
-    # 2) Instantiate model
-    # Pass the loaded config object to your model class constructor
     model = model_cls(cfg, **model_kwargs)
 
-
-    # 3) Load weights
     weights_name = "model.safetensors" if safe else "pytorch_model.bin"
     weights_path = os.path.join(load_path, weights_name)
 
     if not os.path.exists(weights_path):
-         # If the primary weight file isn't found, try the alternative
          alt_weights_name = "pytorch_model.bin" if safe else "model.safetensors"
          alt_weights_path = os.path.join(load_path, alt_weights_name)
          if os.path.exists(alt_weights_path):
              print(f"Warning: Requested {'safetensors' if safe else 'pytorch'} but found {alt_weights_name}. Loading found file.")
              weights_path = alt_weights_path
-             safe = not safe # Update safe flag based on found file
+             safe = not safe
          else:
-            # If loading from hub, give a specific message about potential missing files in repo
             location_msg = f"in downloaded repository '{model_name_or_path}'" if resolved_from_hub else f"in local directory {load_path}"
             raise FileNotFoundError(f"Could not find weight file '{weights_name}' or '{alt_weights_name}' {location_msg}.")
 
@@ -254,20 +227,16 @@ def load_hf(
     print(f"Loading weights from: {weights_path}")
     if safe:
         if not _HAS_SAFETENSORS:
-            raise RuntimeError("safetensors not installed; cannot load safe tensors.")
-        # Load using safetensors
-        sd = _safetensors_load(weights_path, device=map_location) # Pass map_location to device
+            raise ImportError("safetensors is not installed, but is required to load .safetensors files.")
+        sd = _safetensors_load(weights_path, device=map_location)
     else:
-        # torch.load allows specifying map_location
         sd = torch.load(weights_path, map_location=map_location)
 
-    # Load the state dict into the instantiated model
     try:
         model.load_state_dict(sd)
     except RuntimeError as e:
          print(f"Error loading state_dict: {e}")
-         print("This might happen if the model architecture definition does not match the saved weights.")
-         # You might want to add more specific error handling here if needed
+         print("This can happen if the model architecture definition does not match the saved weights.")
          raise
 
     print(f"Model loaded successfully from {model_name_or_path}{' (via Hub)' if resolved_from_hub else ' (local)'}.")

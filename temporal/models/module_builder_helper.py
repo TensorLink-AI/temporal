@@ -1,199 +1,227 @@
 import inspect
-from typing import Dict, Any
+from typing import Dict, Any, Type
 import torch.nn as nn
 from temporal.registry.core import resolve
 
-def _prepare_args(cls: type[nn.Module],
-                  base: Dict[str, Any],
-                  extra: Dict[str, Any],
-                  builder_instance=None) -> Dict[str, Any]:
-    """
-    Merge `base` + `extra`, keep only ctor-accepted keys, add hidden-size aliases,
-    and optionally add the builder instance if accepted.
-    """
-    sig = inspect.signature(cls.__init__)
-    params = sig.parameters
-    args = {**base, **extra}
+def _prepare_args(
+    cls: Type[nn.Module],
+    base_kwargs: Dict[str, Any],
+    user_kwargs: Dict[str, Any],
+    builder_instance=None
+) -> Dict[str, Any]:
+    """Prepares the final keyword arguments for a module's constructor.
 
-    # --- Refined Alias Handling --- 
-    # Determine the primary dimension size from args (d_model > hidden_size > embed_dim)
-    target_dim = None
-    if "d_model" in args:
-        target_dim = args["d_model"]
-    elif "hidden_size" in args:
-        target_dim = args["hidden_size"]
-    elif "embed_dim" in args:
-        target_dim = args["embed_dim"]
+    This helper function intelligently merges base and user-provided arguments,
+    handles common dimension aliases (e.g., `d_model`, `hidden_size`), and
+    only keeps arguments that are actually accepted by the target class's
+    `__init__` method. It can also inject the `ModuleBuilder` instance itself
+    if the constructor accepts a `builder` argument.
+
+    Args:
+        cls (Type[nn.Module]): The module class to be instantiated.
+        base_kwargs (Dict[str, Any]): Base arguments provided by the builder
+            (e.g., `num_heads`, `dropout`).
+        user_kwargs (Dict[str, Any]): Arguments provided by the user in the
+            configuration's `kwargs` section.
+        builder_instance (optional): An instance of `ModuleBuilder` to be
+            injected if the constructor accepts it.
+
+    Returns:
+        Dict[str, Any]: A clean dictionary of keyword arguments ready to be
+        passed to the class constructor.
+    """
+    signature = inspect.signature(cls.__init__)
+    accepted_params = set(signature.parameters.keys())
+    
+    # Merge base and user kwargs, with user kwargs taking precedence.
+    merged_args = {**base_kwargs, **user_kwargs}
+
+    # Handle common aliases for the model's main hidden dimension.
+    # Find the primary dimension size from the provided arguments.
+    target_dim = merged_args.get("d_model") or merged_args.get("hidden_size") or merged_args.get("embed_dim")
         
-    # If a dimension size was found, add missing aliases if the constructor accepts them
     if target_dim is not None:
         possible_aliases = {
-            "d_model", "hidden_size", "embed_dim", "dim", 
-            "embedding_dim", "normalized_shape" # Add any other common aliases
+            "d_model", "hidden_size", "embed_dim", "dim",
+            "embedding_dim", "normalized_shape"
         }
         for alias in possible_aliases:
-            if alias in params and alias not in args:
-                args[alias] = target_dim
-    # --- End Refined Alias Handling ---
+            if alias in accepted_params and alias not in merged_args:
+                merged_args[alias] = target_dim
     
-    # Check if constructor accepts 'builder' argument
-    accepts_builder = 'builder' in params
+    # Filter the merged arguments to include only those accepted by the constructor.
+    final_args = {k: v for k, v in merged_args.items() if k in accepted_params}
 
-    # Drop unsupported keys, but keep track if 'builder' was originally passed
-    allowed = {p for p in params if p not in ("self", "args", "kwargs")}
-    final_args = {k: v for k, v in args.items() if k in allowed and k != 'builder'}
-
-    # Add the builder instance if the constructor accepts it and an instance was provided
-    if accepts_builder and builder_instance is not None:
+    # Inject the builder instance if the constructor accepts it.
+    if 'builder' in accepted_params and builder_instance is not None:
         final_args['builder'] = builder_instance
         
-    # Handle original 'builder' argument if passed and constructor accepts it
-    if 'builder' in args and 'builder' not in final_args and accepts_builder: 
-        final_args['builder'] = args['builder']
-        
-    # print(f"_prepare_args for {cls.__name__}: final_args = {final_args.keys()}") # Debug print
     return final_args
 
 
 class ModuleBuilder:
+    """A helper class to build all primitive modules of a time series model.
+
+    This class reads from a main configuration object and uses the module
+    registry to instantiate the various components needed for the model,
+    such as attention layers, embeddings, normalization layers, and loss functions.
+    It encapsulates the logic for preparing arguments and handling dependencies
+    between different configuration sections.
+
+    Attributes:
+        config: The main `TransformerTimeSeriesConfig` object.
+    """
     def __init__(self, config):
+        """Initializes the ModuleBuilder.
+
+        Args:
+            config: The main configuration object for the model.
+
+        Raises:
+            ValueError: If the config does not contain `d_model` or `hidden_size`.
+        """
         self.config = config
-        # Store d_model or hidden_size for convenience
         self._model_dim = getattr(config, 'd_model', getattr(config, 'hidden_size', None))
         if self._model_dim is None:
-             raise ValueError("Config must have d_model or hidden_size")
+             raise ValueError("The configuration must define 'd_model' or 'hidden_size'.")
 
-    # ------------------------------------------------------------------
-    # Generic resolver
-    # ------------------------------------------------------------------
-    def _build(self,
-               kind: str,
-               name: str,
-               base_kwargs: Dict[str, Any] | None = None,
-               user_kwargs: Dict[str, Any] | None = None):
-        base_kwargs  = base_kwargs  or {}
-        user_kwargs  = user_kwargs  or {}
+    def _build(
+        self,
+        kind: str,
+        name: str,
+        base_kwargs: Dict[str, Any] = None,
+        user_kwargs: Dict[str, Any] = None
+    ) -> nn.Module:
+        """The generic, core build method.
+
+        This method resolves a class from the registry and instantiates it
+        using a combination of base arguments and user-specified arguments.
+
+        Args:
+            kind (str): The category of the module (e.g., "attention").
+            name (str): The specific type of the module (e.g., "full").
+            base_kwargs (Dict[str, Any], optional): Default arguments for this kind.
+            user_kwargs (Dict[str, Any], optional): User-defined arguments from config.
+
+        Returns:
+            nn.Module: An instantiated PyTorch module.
+        """
+        base_kwargs = base_kwargs or {}
+        user_kwargs = user_kwargs or {}
         cls = resolve(kind, name)
 
-        # === Pass self (the builder instance) to _prepare_args ===
-        # Automatically add model dimension to base_kwargs for alias handling
-        # Ensure it's added *before* calling _prepare_args
+        # Automatically add the model's hidden dimension to the base arguments.
         if 'd_model' not in base_kwargs and 'hidden_size' not in base_kwargs:
-             base_kwargs['d_model'] = self._model_dim # Use stored dim
+             base_kwargs['d_model'] = self._model_dim
              
         kwargs = _prepare_args(cls, base_kwargs, user_kwargs, builder_instance=self)
-        # print(f"Building {kind}/{name} ({cls.__name__}) with args: {kwargs.keys()}") # Debug print keys
+        
         try:
             return cls(**kwargs)
         except TypeError as e:
-             # Improve error message to show which arguments were actually passed
-             passed_args_str = ", ".join(f"{k}={v!r}" for k,v in kwargs.items()) # Show values too
-             raise TypeError(f"Error instantiating {kind}/{name} ({cls.__name__}) with args [{passed_args_str}]: {e}") from e
+             passed_args_str = ", ".join(f"{k}={type(v).__name__}" for k,v in kwargs.items())
+             raise TypeError(
+                 f"Failed to instantiate '{name}' ({cls.__name__}) for kind '{kind}'.
+"
+                 f"  > Provided args: {{{passed_args_str}}}
+"
+                 f"  > Original error: {e}"
+             ) from e
 
-    # ------------------------------------------------------------------
-    # Specific helpers
-    # ------------------------------------------------------------------
-    def build_attention(self, cfg): # cfg is AttentionConfig
-        # Base kwargs now mostly handled by _build and _prepare_args alias logic
+    def build_attention(self, cfg) -> nn.Module:
+        """Builds an attention module from an `AttentionConfig`."""
         return self._build(
             "attention", cfg.attention_type,
-            base_kwargs=dict(
-                num_heads=cfg.num_heads,
-                dropout=cfg.dropout,
-                bias=getattr(cfg, 'bias', True),
-                use_rope=getattr(cfg, 'use_rope', False),
-                rope_base=getattr(cfg, 'rope_base', 10000),
-                use_alibi=getattr(cfg, 'use_alibi', False),
-                max_position_embeddings=getattr(self.config, 'max_position_embeddings', 4096) # from main model config
-            ),
+            base_kwargs={
+                "num_heads": cfg.num_heads,
+                "dropout": cfg.dropout,
+                "bias": getattr(cfg, 'bias', True),
+                "use_rope": getattr(cfg, 'use_rope', False),
+                "rope_base": getattr(cfg, 'rope_base', 10000),
+                "use_alibi": getattr(cfg, 'use_alibi', False),
+                "max_position_embeddings": getattr(self.config, 'max_position_embeddings', 4096)
+            },
             user_kwargs=cfg.kwargs,
         )
 
-    def build_feedforward(self, cfg=None):
+    def build_feedforward(self, cfg=None) -> nn.Module:
+        """Builds a feed-forward network from a `FeedForwardConfig`."""
         cfg = cfg or self.config.feedforward_config
-        # --- Explicitly add hidden_size to base_kwargs --- # Corrected
         return self._build(
             "feedforward", cfg.type,
-            base_kwargs=dict( 
-                             hidden_size=self._model_dim, # Pass the model dim directly
-                             intermediate_size=cfg.intermediate_size,
-                             activation=cfg.activation,
-                             dropout=cfg.dropout),
+            base_kwargs={
+                "hidden_size": self._model_dim,
+                "intermediate_size": cfg.intermediate_size,
+                "activation": cfg.activation,
+                "dropout": cfg.dropout
+            },
             user_kwargs=cfg.kwargs,
         )
 
-    def build_value_embedding(self):
+    def build_value_embedding(self) -> nn.Module:
+        """Builds the primary value embedding module."""
         cfg = self.config.value_embedding_config
-        # Base kwargs (d_model/hidden_size, feature_size) handled by _prepare_args
         return self._build(
             "embedding", cfg.type,
-            base_kwargs={ 
+            base_kwargs={
                 "feature_size": getattr(self.config, 'feature_size', getattr(self.config, 'input_dim', 1))
-                }, 
+            }, 
             user_kwargs=cfg.kwargs,
         )
 
-    def build_positional_embedding(self):
+    def build_positional_embedding(self) -> nn.Module:
+        """Builds the positional embedding module."""
         cfg = self.config.positional_embedding_config
-        # Base kwargs (d_model/hidden_size) handled by _build/_prepare_args
-        return self._build("embedding", cfg.type,
-                           base_kwargs={},
-                           user_kwargs=cfg.kwargs)
+        return self._build("embedding", cfg.type, user_kwargs=cfg.kwargs)
 
-    def build_normalization(self):
+    def build_normalization(self) -> nn.Module:
+        """Builds a normalization layer from a `NormalizationConfig`."""
         cfg = self.config.norm_config
-         # Base kwargs (d_model/hidden_size/normalized_shape) handled by _prepare_args
         return self._build(
             "normalization", cfg.norm_type,
-            base_kwargs=dict(eps=cfg.eps),
+            base_kwargs={"eps": cfg.eps},
             user_kwargs=cfg.kwargs
         )
 
-    def build_head_aggregator(self):
+    def build_head_aggregator(self) -> nn.Module:
+        """Builds a head aggregator module."""
         cfg = self.config.head_agg_config
-        # Ensure output_head_config exists and has output_size
-        if not hasattr(self.config, 'output_head_config') or not hasattr(self.config.output_head_config, 'output_size'):
-             raise ValueError("output_head_config with output_size must be set in main config.")
-        out_sz = self.config.output_head_config.output_size
-        if out_sz is None:
-            raise ValueError("output_head_config.output_size cannot be None.")
-            
+        if not hasattr(self.config, 'output_head_config') or self.config.output_head_config.output_size is None:
+             raise ValueError("output_head_config with a valid output_size must be set in the main config.")
+        
         if not hasattr(self.config, 'output_token_lengths'):
              raise ValueError("config.output_token_lengths must be set for head aggregation.")
 
+        output_size = self.config.output_head_config.output_size
         return self._build(
             "head_agg", cfg.type,
-            base_kwargs=dict(input_size=out_sz,
-                             output_size=out_sz,
-                             num_heads=self.config.output_token_lengths),
+            base_kwargs={
+                "input_size": output_size,
+                "output_size": output_size,
+                "num_heads": self.config.output_token_lengths
+            },
             user_kwargs=cfg.kwargs,
         )
 
-    # --- build_loss method ---
-    def build_loss(self):
-        """Builds the loss function based on config.loss_config."""
+    def build_loss(self) -> nn.Module:
+        """Builds the loss function from the `loss_config`."""
         if not hasattr(self.config, 'loss_config'):
-            raise ValueError("Config is missing 'loss_config' attribute.")
+            raise ValueError("Config is missing the 'loss_config' attribute.")
         
         cfg = self.config.loss_config
         loss_type = cfg.get("type")
         if not loss_type:
-            raise ValueError("loss_config must contain a 'type' key.")
+            raise ValueError("'loss_config' must contain a 'type' key.")
             
-        # Prepare base kwargs (pass quantiles if available and loss needs it)
         base_kwargs = {}
         if hasattr(self.config, 'quantiles'):
              base_kwargs['quantiles'] = self.config.quantiles
              
-        # User kwargs from the loss_config itself
         user_kwargs = cfg.get("kwargs", {})
 
-        # Build the loss module
         return self._build(
             kind="loss",
             name=loss_type,
             base_kwargs=base_kwargs,
             user_kwargs=user_kwargs
         )
-    # --- End build_loss method ---
-

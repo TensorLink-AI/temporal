@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Assuming these loss functions are defined in temporal/losses/loss_functions.py
-# We might need to restructure imports if BaseLoss is intended
 from temporal.modules.losses.loss_functions import (
     QuantileLoss,
     MQLoss,
@@ -12,52 +10,69 @@ from temporal.modules.losses.loss_functions import (
     EnergyDistanceLoss,
     SpectralLoss,
     FastSoftDTWLoss,
-    SpreadPenalty, # Added SpreadPenalty
-    MixtureLoss # Added MixtureLoss
+    SpreadPenalty,
+    MixtureLoss
 )
-# Import the CRPS function
 from temporal.losses.crps_loss_ensemble import crps_ensemble
-# Import the registry decorator
 from temporal.registry.core import register_module
 from typing import Optional, Tuple
 
-# Assuming BaseLoss is not defined elsewhere and TimeSeriesLoss should inherit from nn.Module
 class BaseLoss(nn.Module):
-    """Base class for loss functions, inheriting from nn.Module."""
+    """An abstract base class for time series loss functions.
+
+    This class provides a common interface for all loss modules, including
+    standardized handling of reduction ('mean', 'sum', 'none') and optional
+    masking of loss values.
+
+    Attributes:
+        reduction (str): The type of reduction to apply to the loss.
+    """
     def __init__(self, reduction: str = "mean"):
+        """Initializes the BaseLoss.
+
+        Args:
+            reduction (str): The reduction method. Must be one of
+                'mean', 'sum', or 'none'.
+        """
         super().__init__()
         if reduction not in ["mean", "sum", "none"]:
             raise ValueError(f"Invalid reduction type: {reduction}")
         self.reduction = reduction
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
+        """The forward pass for the loss calculation. Must be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement the forward method")
 
     def _apply_reduction(self, loss: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
-        """Applies reduction to the loss tensor, considering the mask."""
+        """Applies masking and reduction to a calculated loss tensor.
+
+        Args:
+            loss (torch.Tensor): The raw, unreduced loss tensor.
+            loss_mask (Optional[torch.Tensor]): A boolean or binary tensor used
+                to mask the loss.
+
+        Returns:
+            torch.Tensor: The final loss, either as a scalar (for 'mean' or 'sum')
+            or a tensor (for 'none').
+        """
         if loss_mask is not None:
-            # Ensure mask has same dimensions as loss for element-wise multiplication
-            # Or can be broadcasted. Typically loss is [B, T] and mask is [B, T]
             if loss_mask.shape != loss.shape:
-                 # Attempt broadcasting if mask is [B, T] and loss is [B, T, ...]
-                 if loss_mask.ndim == loss.ndim: # Allow broadcasting if mask matches leading dims
+                 if loss_mask.ndim == loss.ndim:
                       mask_expanded_shape = loss_mask.shape + (1,) * (loss.ndim - loss_mask.ndim)
                       loss_mask = loss_mask.view(mask_expanded_shape).expand_as(loss)
-                 elif loss_mask.shape == loss.shape[:loss_mask.ndim]: # Old logic
+                 elif loss_mask.shape == loss.shape[:loss_mask.ndim]:
                      loss_mask = loss_mask.unsqueeze(-1).expand_as(loss)
                  else:
                       raise ValueError(f"Loss shape {loss.shape} and mask shape {loss_mask.shape} are incompatible.")
 
             loss = loss * loss_mask
             if self.reduction == "mean":
-                # Compute mean only over masked elements
-                return loss.sum() / loss_mask.sum().clamp(min=1e-9) # Avoid division by zero
+                return loss.sum() / loss_mask.sum().clamp(min=1e-9)
             elif self.reduction == "sum":
                 return loss.sum()
             else: # reduction == "none"
-                return loss # Return masked loss per element
+                return loss
         else:
-            # No mask, apply standard reduction
             if self.reduction == "mean":
                 return loss.mean()
             elif self.reduction == "sum":
@@ -66,41 +81,51 @@ class BaseLoss(nn.Module):
                 return loss
 
 
-@register_module("loss", "timeseries_generic") # Register this loss
-class TimeSeriesLoss(BaseLoss): # Inherit from BaseLoss
+@register_module("loss", "timeseries_generic")
+class TimeSeriesLoss(BaseLoss):
+    """A generic wrapper for various standard time series loss functions.
+
+    This module acts as a factory and wrapper, allowing for the selection of
+    common loss functions like MSE, MAE, and Quantile Loss via a configuration
+    string. It handles the instantiation of the appropriate underlying loss
+    function and applies it during the forward pass.
+
+    Attributes:
+        loss_fn: The underlying instantiated loss function module.
+    """
     def __init__(
         self,
         loss_type: str = "mse",
         quantiles: list = [0.1, 0.5, 0.9],
-        # output_token_len: int = 1, # This seems unused, consider removing
         reduction: str = "mean",
         **kwargs
     ):
-        super().__init__(reduction=reduction) # Pass reduction to BaseLoss
-        self.loss_type = loss_type
-        # self.reduction = reduction # Handled by BaseLoss
-        self.quantiles = quantiles
-        # self.output_token_len = output_token_len
+        """Initializes the TimeSeriesLoss.
 
-        # --- Define Loss Function based on type ---
-        # We need to adapt these to potentially handle masks if BaseLoss doesn't do it automatically
-        # For nn losses, we'll set their reduction to 'none' and handle reduction in forward
-        nn_reduction = 'none' # Apply mask and reduction manually later
+        Args:
+            loss_type (str): The type of loss to use (e.g., 'mse', 'mae', 'mq').
+            quantiles (list): A list of quantiles, used for quantile-based losses.
+            reduction (str): The reduction method ('mean', 'sum', 'none').
+            **kwargs: Catches unused arguments.
+        """
+        super().__init__(reduction=reduction)
+        self.loss_type = loss_type
+        self.quantiles = quantiles
+
+        nn_reduction = 'none'
 
         if loss_type == "mse":
             self.loss_fn = nn.MSELoss(reduction=nn_reduction)
         elif loss_type == "mae":
             self.loss_fn = nn.L1Loss(reduction=nn_reduction)
         elif loss_type == "rmse":
-             # RMSE needs mean first, then sqrt. Handle this logic in forward.
-             self._mse_for_rmse = nn.MSELoss(reduction='none') # Use MSE with no reduction first
-             self.loss_fn = None # Indicate special handling needed
+             self._mse_for_rmse = nn.MSELoss(reduction='none')
+             self.loss_fn = None
         elif loss_type == "quantile":
             self.loss_fn = QuantileLoss(quantile=quantiles[0], reduction=nn_reduction)
         elif loss_type == "mq":
             self.loss_fn = MQLoss(quantiles=quantiles, reduction=nn_reduction)
         elif loss_type == "wql":
-             # Check if WeightedQuantileLoss handles reduction internally or needs adaptation
             self.loss_fn = WeightedQuantileLoss(quantiles=quantiles, reduction=nn_reduction)
         elif loss_type == "kernel_energy":
             self.loss_fn = KernelEnergyLoss(reduction=nn_reduction)
@@ -110,75 +135,76 @@ class TimeSeriesLoss(BaseLoss): # Inherit from BaseLoss
             self.loss_fn = SpectralLoss(reduction=nn_reduction)
         elif loss_type == "softdtw":
             gamma = kwargs.get("gamma", 1.0)
-            # Check if FastSoftDTWLoss handles reduction or needs adaptation
             self.loss_fn = FastSoftDTWLoss(gamma=gamma, reduction=nn_reduction)
         else:
             raise ValueError(f"Unsupported loss_type: {loss_type}")
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
-        # --- Shape Adjustments ---
-        # Ensure target has extra dim if needed for broadcasting with quantile outputs
+        """Calculates the loss for the given predictions and targets.
+
+        Args:
+            preds (torch.Tensor): The model's predictions.
+            targets (torch.Tensor): The ground truth values.
+            loss_mask (Optional[torch.Tensor]): An optional mask to apply to
+                the loss values.
+
+        Returns:
+            torch.Tensor: The final computed loss.
+        """
         if self.loss_type in ("quantile", "mq", "wql"):
             if preds.ndim == targets.ndim + 1 and preds.shape[-1] == len(self.quantiles):
-                 targets = targets.unsqueeze(-1) # Make target [B, T, 1] for broadcasting
-
-        # Ensure target shape matches prediction shape for element-wise losses if needed
-        elif self.loss_type in ("mse", "mae", "rmse"): # Element-wise losses
+                 targets = targets.unsqueeze(-1)
+        elif self.loss_type in ("mse", "mae", "rmse"):
              if preds.shape != targets.shape:
-                  # Attempt to unsqueeze target if preds has an extra dim (e.g. single output model)
                   if preds.ndim == targets.ndim + 1 and preds.shape[-1] == 1:
                        targets = targets.unsqueeze(-1)
                   elif preds.ndim + 1 == targets.ndim and targets.shape[-1] == 1:
-                       targets = targets.squeeze(-1) # Or squeeze target if it has extra dim
-
-             # If shapes still don't match after adjustments, the loss_fn call will likely fail
+                       targets = targets.squeeze(-1)
              if preds.shape != targets.shape:
                   raise ValueError(f"Shape mismatch for loss '{self.loss_type}': preds {preds.shape}, targets {targets.shape}")
 
-        # --- Calculate Loss ---
         if self.loss_type == "rmse":
-             # Calculate element-wise MSE first
              mse_loss = self._mse_for_rmse(preds, targets)
-             # Apply mask *before* sqrt to avoid issues with masked zeros
              if loss_mask is not None:
-                  # Ensure mask compatibility
                   if loss_mask.shape != mse_loss.shape:
                       if loss_mask.shape == mse_loss.shape[:loss_mask.ndim]:
                            loss_mask = loss_mask.unsqueeze(-1).expand_as(mse_loss)
                       else:
                            raise ValueError(f"RMSE Loss shape {mse_loss.shape} and mask shape {loss_mask.shape} are incompatible.")
                   masked_mse_loss = mse_loss * loss_mask
-                  # Calculate mean MSE over *masked* elements
                   mean_masked_mse = masked_mse_loss.sum() / loss_mask.sum().clamp(min=1e-9)
-                  loss = torch.sqrt(mean_masked_mse) # Final RMSE is sqrt of mean
-                  # Since reduction='mean' is implied by RMSE calculation, return the scalar
+                  loss = torch.sqrt(mean_masked_mse)
                   return loss
              else:
-                  # No mask, calculate standard RMSE
                   mean_mse = mse_loss.mean()
                   loss = torch.sqrt(mean_mse)
-                  return loss # Return scalar RMSE
-
+                  return loss
         else:
-             # Calculate element-wise loss using the specific loss_fn
              elementwise_loss = self.loss_fn(preds, targets)
-
-             # --- Apply Mask and Reduction using BaseLoss helper ---
-             # Note: Quantile/MQ losses might return shape [B, T, Q]. We might need to average over Q first.
-             # Let's assume loss_fn returns [B, T] or similar shape compatible with mask [B, T]
              if self.loss_type in ("mq", "wql"):
-                  # MQLoss/WQLoss might return shape [B, T, Q]. Check and average over quantiles if needed.
                   if elementwise_loss.ndim > targets.ndim and elementwise_loss.shape[-1] == len(self.quantiles):
-                      elementwise_loss = elementwise_loss.mean(dim=-1) # Now shape [B, T]
-
+                      elementwise_loss = elementwise_loss.mean(dim=-1)
              return self._apply_reduction(elementwise_loss, loss_mask)
-
 
 
 @register_module("loss", "crps")
 class CRPSLoss(BaseLoss):
-    """
-    Continuous Ranked Probability Score with per‐step spread penalty.
+    """Computes the Continuous Ranked Probability Score (CRPS).
+
+    CRPS is a proper scoring rule that generalizes the Mean Absolute Error (MAE)
+    to probabilistic forecasts. It measures the difference between the predicted
+    cumulative distribution function (CDF) and the empirical CDF of the target.
+
+    This implementation supports different estimators for CRPS and an optional
+    spread penalty to regularize the variance of the forecast distribution.
+
+    Attributes:
+        estimator (str): The CRPS estimator ('pwm', 'nrg', 'fair').
+        axis (int): The axis representing the ensemble/quantile dimension.
+        scaling_type (str): The type of scaling to apply to the loss.
+        spread_lambda (float): The coefficient for the spread penalty.
+        spread_penalty_fn (Optional[SpreadPenalty]): The spread penalty function
+            module, if enabled.
     """
     def __init__(
         self,
@@ -194,8 +220,26 @@ class CRPSLoss(BaseLoss):
         spread_target_spread: float = 0.0,
         **kwargs
     ):
+        """Initializes the CRPSLoss module.
+
+        Args:
+            reduction (str): The final reduction method for the loss.
+            estimator (str): The CRPS estimator to use.
+            axis (int): The dimension corresponding to the ensemble/quantiles.
+            scaling_type (str): The type of scaling to apply to the loss values
+                ('none', 'std', 'minmax').
+            scaling_dim (int): The dimension along which to compute scaling factors.
+            scaling_eps (float): A small epsilon to add for numerical stability
+                during scaling.
+            spread_lambda (float): The coefficient for the spread penalty. If 0,
+                the penalty is disabled.
+            spread_penalty_type (str): The type of spread penalty function.
+            spread_penalty_epsilon (float): Epsilon for the spread penalty function.
+            spread_target_spread (float): A target spread value for the penalty
+                function.
+            **kwargs: Catches unused arguments.
+        """
         super().__init__(reduction=reduction)
-        # Validate
         if estimator not in ["pwm", "nrg", "fair"]:
             raise ValueError(f"Invalid estimator '{estimator}'.")
         if scaling_type not in ["none", "std", "minmax"]:
@@ -208,11 +252,10 @@ class CRPSLoss(BaseLoss):
         self.scaling_type = scaling_type
         self.scaling_dim = scaling_dim
         self.scaling_eps = scaling_eps
-
         self.spread_lambda = spread_lambda
         self.spread_penalty_fn = None
+
         if spread_lambda > 0.0:
-            # per‐step penalty: no reduction inside SpreadPenalty
             self.spread_penalty_fn = SpreadPenalty(
                 penalty_type=spread_penalty_type,
                 epsilon=spread_penalty_epsilon,
@@ -222,19 +265,28 @@ class CRPSLoss(BaseLoss):
 
     def forward(
         self,
-        preds: torch.Tensor,       # [B, T, Q] or similar
-        targets: torch.Tensor,     # [B, T] or broadcastable
+        preds: torch.Tensor,
+        targets: torch.Tensor,
         loss_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        # Unsqueeze targets to match preds if needed
+        """Calculates the CRPS loss.
+
+        Args:
+            preds (torch.Tensor): The predicted ensemble/quantiles, shape
+                `[B, T, Q]`.
+            targets (torch.Tensor): The ground truth values, shape `[B, T]`.
+            loss_mask (Optional[torch.Tensor]): An optional mask to apply to
+                the loss values.
+
+        Returns:
+            torch.Tensor: The final computed loss.
+        """
         if targets.ndim == preds.ndim - 1:
             axis = self.axis if self.axis >= 0 else preds.ndim + self.axis
             targets = targets.unsqueeze(axis)
 
-        # Sort forecasts along ensemble/quantile axis
         preds_sorted = torch.sort(preds, dim=self.axis)[0]
 
-        # Compute elementwise CRPS → shape [B, T, ...] without ensemble dim
         elementwise_crps = crps_ensemble(
             observations=targets,
             forecasts=preds_sorted,
@@ -243,61 +295,64 @@ class CRPSLoss(BaseLoss):
             reduce=False
         )
 
-        # Add per‐step spread penalty if enabled
         if self.spread_lambda > 0.0 and self.spread_penalty_fn is not None:
-            # assume preds_sorted is (..., T, Q) so penalty returns (..., T)
             spread_penalty_map = self.spread_penalty_fn(preds_sorted)
             elementwise_crps = elementwise_crps + self.spread_lambda * spread_penalty_map
 
-        # Optional scaling
         if self.scaling_type != "none":
-            # compute scaling factor along scaling_dim on original targets
             dim_size = targets.size(self.scaling_dim)
             if dim_size > 1:
                 if self.scaling_type == "std":
                     factor = torch.std(targets, dim=self.scaling_dim, keepdim=True, unbiased=False)
-                else:  # "minmax"
+                else:
                     mn = torch.min(targets, dim=self.scaling_dim, keepdim=True).values
                     mx = torch.max(targets, dim=self.scaling_dim, keepdim=True).values
                     factor = mx - mn
                 factor = factor + self.scaling_eps
                 elementwise_crps = elementwise_crps / factor
 
-        # Apply mask & reduce
         return self._apply_reduction(elementwise_crps, loss_mask)
 
-# --- New Mixture Loss Wrapper ---
+
 @register_module("loss", "mixture")
-class RegisteredMixtureLoss(BaseLoss): # Inherits from BaseLoss for consistency
-    """
-    Registered wrapper for MixtureLoss.
-    The actual MixtureLoss function (from loss_functions.py) handles its own reduction and masking.
-    This wrapper primarily serves for registration and standardized __init__ from config.
+class RegisteredMixtureLoss(BaseLoss):
+    """A registered wrapper for the `MixtureLoss` function.
+
+    This module serves as a bridge between the model's configuration system
+    and the `MixtureLoss` implementation. It allows `MixtureLoss` to be
+    instantiated from a configuration dictionary via the registry. The actual
+    loss computation, including reduction and masking, is handled by the
+    underlying `MixtureLoss` instance.
+
+    Attributes:
+        loss_fn (MixtureLoss): The instantiated `MixtureLoss` object.
     """
     def __init__(self, reduction: str = "mean", min_df: float = 2.0, fixed_sigma: float = 1e-3, **kwargs):
-        """
+        """Initializes the RegisteredMixtureLoss wrapper.
+
         Args:
             reduction (str): Specifies the reduction for MixtureLoss: 'none', 'mean', 'sum'.
             min_df (float): Minimum degrees of freedom for StudentT components.
             fixed_sigma (float): Fixed standard deviation for FixedNormal components.
             **kwargs: Catches unused arguments from the config if any.
         """
-        super().__init__(reduction=reduction) 
-        self.loss_fn = MixtureLoss( # Instance of the actual MixtureLoss from loss_functions.py
+        super().__init__(reduction=reduction)
+        self.loss_fn = MixtureLoss(
             reduction=reduction,
             min_df=min_df,
             fixed_sigma=fixed_sigma
         )
 
     def forward(self, preds: dict, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
-        """
-        Calculates the Mixture NLL loss.
+        """Calculates the Mixture Negative Log-Likelihood loss.
+
         Args:
-            preds (dict): Predictions from MixtureOutputHead. Expected to be a dictionary.
+            preds (dict): A dictionary of predictions from the `MixtureOutputHead`.
             targets (torch.Tensor): Ground truth values. Shape [B, T].
-            loss_mask (torch.Tensor, optional): Mask for loss elements. Shape [B, T].
+            loss_mask (Optional[torch.Tensor]): An optional mask for the loss
+                elements, shape `[B, T]`.
+
         Returns:
-            torch.Tensor: The calculated mixture loss.
+            torch.Tensor: The final computed mixture loss.
         """
-        # MixtureLoss itself handles reduction and masking based on its init params
         return self.loss_fn(preds=preds, targets=targets, loss_mask=loss_mask)

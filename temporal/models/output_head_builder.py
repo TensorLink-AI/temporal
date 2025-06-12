@@ -1,97 +1,111 @@
 from temporal.registry.core import resolve
+import inspect
+from typing import Type
+import torch.nn as nn
 
 class OutputHeadBuilder:
-    """
-    Constructs the output head module for time series models.
+    """Constructs the output head module for a time series model.
 
-    Uses the registry to resolve the appropriate output head class based on configuration.
-    The responsibility for building the loss function is moved to the main model builder,
-    which should use `config.loss_config`.
+    This builder is responsible for instantiating the correct output head based on
+    the model's configuration. It resolves the head's class from the registry
+    and prepares the necessary arguments for its constructor, such as the model's
+    hidden dimension and the required output dimension, which can vary depending
+    on the head type (e.g., for point forecasts vs. quantile forecasts).
 
-    Args:
-        config: Configuration object containing `output_head_config`, `d_model` (or `hidden_size`).
+    Attributes:
+        config: The main configuration object for the model.
     """
     def __init__(self, config):
+        """Initializes the OutputHeadBuilder.
+
+        Args:
+            config: The main model configuration object, which should contain
+                `output_head_config` and the model's hidden dimension (`d_model`).
+        """
         self.config = config
 
-    def build(self):
-        """
-        Instantiate the output head module.
+    def build(self) -> nn.Module:
+        """Instantiates and returns the configured output head module.
 
-        Resolves the output head class via the 'output_head' registry key and validates
-        that `output_size` (or necessary components like num_quantiles/feature_size) is set
-        in the config.
+        This method resolves the appropriate output head class from the registry
+        and prepares its constructor arguments. It validates that the necessary
+        configuration values (e.g., `num_quantiles` for a quantile head) are
+        present.
 
         Returns:
-            output_head (nn.Module): The instantiated output head module.
+            An instantiated nn.Module representing the output head.
 
         Raises:
-            ValueError: If necessary configuration for the head is missing.
+            ValueError: If the configuration is missing necessary parameters
+                for the selected head type.
         """
-        cfg = self.config.output_head_config
-        head_type = cfg.type
-        cls = resolve("output_head", head_type)
+        head_config = self.config.output_head_config
+        head_type = head_config.type
+        head_class = resolve("output_head", head_type)
 
-        # Determine required args for the head's __init__
-        # Most heads need hidden_size and output_size.
-        # Specific heads might need others (e.g., num_quantiles, feature_size)
-        # passed via cfg.kwargs
-
-        # --- Configuration Validation --- 
-        # Use d_model if available, otherwise fall back to hidden_size for compatibility
         hidden_size = getattr(self.config, 'd_model', getattr(self.config, 'hidden_size', None))
         if hidden_size is None:
-            raise ValueError("Config must specify d_model (or hidden_size)." )  
+            raise ValueError("Config must specify 'd_model' or 'hidden_size'.")
 
-        # Define expected output_size based on head type and other config params
-        output_size = None
-        feature_size = getattr(self.config, 'feature_size', 1) # Default to 1 if not set
-        num_quantiles = getattr(self.config, 'num_quantiles', None)
+        # Determine the required output_size based on the head type.
+        output_size = self._calculate_output_size(head_type, head_config)
 
-        if head_type == "linear":
-            output_size = feature_size
-        elif head_type == "gaussian":
-            output_size = feature_size * 2
-        elif head_type == "t_distribution":
-             output_size = feature_size * 3 # Assuming mu, sigma, nu per feature
-        elif head_type == "quantile_regression" or head_type == "distpred":
-            if num_quantiles is None:
-                raise ValueError(f"Head type '{head_type}' requires config.num_quantiles to be set.")
-            output_size = feature_size * num_quantiles
-        else:
-             # For unknown or custom heads, rely on output_size being explicitly set in cfg
-             output_size = cfg.output_size
-             if output_size is None:
-                  raise ValueError(f"OutputHeadConfig for type '{head_type}' must specify output_size explicitly.")
-
-        # --- Instantiate Head --- 
-        # Prepare arguments for the head constructor
+        # Prepare arguments for the head's constructor.
+        # We start with the essential ones and add others from the config's kwargs.
         init_args = {
-             "hidden_size": hidden_size,
-             "output_size": output_size,
-             # Pass necessary calculated values if the head needs them (like num_quantiles)
-             "num_quantiles": num_quantiles, 
-             "feature_size": feature_size,
-         }
-        # Add any specific kwargs from the config, potentially overriding calculated ones if needed
-        init_args.update(cfg.kwargs or {}) 
-        
-        # Filter args to only those accepted by the specific head class __init__
-        # This requires inspecting the class signature or simply trying and letting TypeError occur
-        # Simpler approach: Pass all potentially relevant args and let the head handle them
-        # (assuming heads use **kwargs to catch extras)
-        
-        # Refined approach: Pass standard args + specific kwargs from config
-        final_args = {
             "hidden_size": hidden_size,
             "output_size": output_size,
-            **cfg.kwargs, # Pass kwargs directly as DistPredHead now expects num_outputs in kwargs
+            "num_quantiles": getattr(self.config, 'num_quantiles', None),
+            "feature_size": getattr(self.config, 'feature_size', 1),
+            **(head_config.kwargs or {})
         }
 
-        output_head = cls(**final_args)
+        # Filter the arguments to only those accepted by the head's constructor.
+        signature = inspect.signature(head_class.__init__)
+        accepted_params = set(signature.parameters.keys())
+        final_args = {k: v for k, v in init_args.items() if k in accepted_params}
 
-        # --- Loss Function Handling (REMOVED) ---
-        # The loss function should be built by the main model builder using config.loss_config
-        # loss_fn = output_head.get_loss_fn() # No longer call this
+        try:
+            return head_class(**final_args)
+        except TypeError as e:
+            print(f"ERROR: Failed to instantiate output head '{head_type}' ({head_class.__name__}).")
+            print(f"  > Constructor signature: {signature}")
+            print(f"  > Provided arguments: {list(final_args.keys())}")
+            raise e
 
-        return output_head # Return only the head
+    def _calculate_output_size(self, head_type: str, head_config) -> int:
+        """Calculates the required output dimension for the head's projection layer."""
+        feature_size = getattr(self.config, 'feature_size', 1)
+
+        if head_type == "linear":
+            return feature_size
+        elif head_type == "gaussian":
+            return feature_size * 2  # Mean and std dev
+        elif head_type == "t_distribution":
+            return feature_size * 3  # Mean, scale, and degrees of freedom
+        elif head_type in ("quantile_regression", "distpred"):
+            num_quantiles = getattr(self.config, 'num_quantiles', None)
+            num_outputs = head_config.kwargs.get('num_outputs', num_quantiles)
+            if num_outputs is None:
+                raise ValueError(
+                    f"Head type '{head_type}' requires 'num_quantiles' in the main "
+                    f"config or 'num_outputs' in the head's kwargs."
+                )
+            return feature_size * num_outputs
+        elif head_type == "mixture":
+            # The MixtureOutputHead calculates its own output size internally,
+            # so we can rely on its 'output_size' kwarg if provided for validation.
+            if head_config.kwargs.get("output_size") is not None:
+                return head_config.kwargs["output_size"]
+            # If not, it will be derived inside the head itself. We pass a dummy
+            # value which will be ignored if not in the signature.
+            return -1 # Placeholder, as the head itself calculates this.
+        else:
+            # For other custom heads, output_size must be set explicitly.
+            output_size = getattr(head_config, 'output_size', None)
+            if output_size is None:
+                raise ValueError(
+                    f"OutputHeadConfig for a custom head of type '{head_type}' "
+                    f"must specify the 'output_size' directly."
+                )
+            return output_size

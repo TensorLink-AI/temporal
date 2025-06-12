@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers.modeling_outputs import BaseModelOutput
-from typing import Optional, List, Tuple, Union # Added Union
+from typing import Optional, List, Tuple, Union
 
 # Import ModuleBuilder from the new helper file
 from temporal.models.module_builder_helper import ModuleBuilder
@@ -11,7 +11,36 @@ from temporal.configs.transformer_config import TransformerBlockConfig
 
 
 class TimeSeriesTransformerEncoder(nn.Module):
+    """A flexible Transformer encoder built from a list of block configurations.
+
+    This module serves as the main encoder component in a Transformer-based
+    time series model. It dynamically constructs a stack of encoder layers
+    based on a list of `TransformerBlockConfig` objects.
+
+    The encoder is responsible for:
+    - Embedding the input time series features.
+    - Adding positional information.
+    - Sequentially processing the embedded sequence through its layers to
+      create a rich contextual representation.
+
+    Attributes:
+        config: The main configuration object for the model.
+        dropout (nn.Dropout): Dropout layer applied after embeddings.
+        layernorm_embedding (nn.Module): Layer normalization applied to the embeddings.
+        value_embedding (nn.Module): The module for embedding input features.
+        positional_embedding (nn.Module): The module for adding positional information.
+        layers (nn.ModuleList): The stack of encoder layers.
+    """
     def __init__(self, config, builder: ModuleBuilder, block_configs: List[TransformerBlockConfig]):
+        """Initializes the TimeSeriesTransformerEncoder.
+
+        Args:
+            config: The main model configuration object.
+            builder (ModuleBuilder): A helper class that constructs the various
+                sub-modules (embeddings, normalization, etc.) based on the config.
+            block_configs (List[TransformerBlockConfig]): A list of configurations,
+                where each configuration defines a single encoder layer in the stack.
+        """
         super().__init__()
         self.config = config
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -26,16 +55,17 @@ class TimeSeriesTransformerEncoder(nn.Module):
         ])
 
     def _get_tensor_dim_as_int(self, tensor: torch.Tensor, dim: int) -> int:
-        """ Safely extracts a dimension size, handling potential tensor dim values. """
+        """Safely extracts a tensor dimension size as an integer.
+
+        Args:
+            tensor (torch.Tensor): The tensor to inspect.
+            dim (int): The dimension index.
+
+        Returns:
+            int: The size of the specified dimension.
+        """
         try:
             dim_size = tensor.shape[dim]
-            if torch.is_tensor(dim_size):
-                 if dim_size.numel() == 1:
-                     return int(dim_size.item())
-                 else:
-                     print(f"Warning (Encoder): Dimension {dim} size is a tensor with {dim_size.numel()} elements. Using first.")
-                     return int(dim_size[0].item())
-            # Handle non-tensor (e.g., int, torch.Size element which is int)
             return int(dim_size)
         except (IndexError, TypeError) as e:
             print(f"Warning (Encoder): Failed to get dimension {dim} size as int: {e}. Returning 0.")
@@ -48,69 +78,85 @@ class TimeSeriesTransformerEncoder(nn.Module):
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = True,
-    ) -> Union[BaseModelOutput, Tuple]: # Updated return type hint
+    ) -> Union[BaseModelOutput, Tuple]:
+        """Performs the forward pass of the Transformer encoder.
 
-        # === Embedding ===
-        value_embeds = self.value_embedding(input_values)  # [B, L, D]
+        Args:
+            input_values (torch.FloatTensor): The raw input features for the encoder,
+                shape `[B, L, F]`.
+            attention_mask (Optional[torch.Tensor]): A mask to prevent attention
+                to padding tokens.
+            output_attentions (bool): Whether to return attention weights.
+            output_hidden_states (bool): Whether to return all hidden states.
+            return_dict (bool): Whether to return a structured model output.
+
+        Returns:
+            Union[BaseModelOutput, Tuple]: The encoder's output, either as a
+            structured object or a tuple.
+        """
+        # === Embedding Layer ===
+        value_embeds = self.value_embedding(input_values)
         batch_size = self._get_tensor_dim_as_int(input_values, 0)
         seq_len = self._get_tensor_dim_as_int(input_values, 1)
+
         try:
             pos_embed = self.positional_embedding(
                 batch_size=batch_size,
                 seq_len=seq_len,
-                past_key_values_length=0
+                past_key_values_length=0  # Encoder does not use KV cache
             )
-            # REMOVED: The check for batch_dim == 1 was too restrictive
-            # if pos_embed.shape[0] != 1: raise ValueError(f"Pos emb batch dim: {pos_embed.shape[0]}. Expected 1.")
-            if pos_embed.shape[1] != seq_len: raise ValueError(f"Pos emb seq len dim: {pos_embed.shape[1]}. Expected {seq_len}.")
+            if pos_embed.shape[1] != seq_len:
+                raise ValueError(f"Positional embedding returned incorrect sequence length: got {pos_embed.shape[1]}, expected {seq_len}.")
         except Exception as e:
             print(f"Error during positional embedding call in Encoder: {e}")
             raise e
+
+        # Combine value and positional embeddings
         hidden_states = value_embeds + pos_embed
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        # === End Embedding ===
+        # === End Embedding Layer ===
 
-        # --- Transformer Layers --- 
-        all_hidden_states = () if output_hidden_states else None
-        all_attentions = () if output_attentions else None
+        # --- Transformer Layers ---
+        all_hidden_states_collector = () if output_hidden_states else None
+        all_attentions_collector = () if output_attentions else None
 
         for layer in self.layers:
+            # Support for layer dropping during training
             if self.training and torch.rand([]).item() < self.layerdrop:
                 continue
 
             if output_hidden_states:
-                all_hidden_states += (hidden_states,)
+                all_hidden_states_collector += (hidden_states,)
 
-            # Call the layer
-            # Layer is expected to return Tuple[torch.Tensor, Optional[torch.Tensor]]
-            # where the first element is hidden_states and second is attn_probs (or None)
-            layer_outputs: Tuple[torch.Tensor, Optional[torch.Tensor]] = layer(
+            # Each layer is expected to return Tuple[torch.Tensor, Optional[torch.Tensor]]
+            layer_outputs = layer(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
                 output_attentions=output_attentions,
             )
 
-            # --- Correct Unpacking --- 
-            hidden_states = layer_outputs[0] # First element is always the hidden state
+            # Unpack layer results
+            hidden_states = layer_outputs[0]
             if output_attentions:
-                attn_probs = layer_outputs[1] # Second element is attn_probs (or None)
-                if attn_probs is not None:
-                    all_attentions += (attn_probs,)
-            # --- End Correct Unpacking --- 
+                attention_probs = layer_outputs[1]
+                if attention_probs is not None:
+                    all_attentions_collector += (attention_probs,)
 
         if output_hidden_states:
-            all_hidden_states += (hidden_states,)
+            all_hidden_states_collector += (hidden_states,)
 
         if not return_dict:
-             outputs = (hidden_states,) 
-             if output_hidden_states: outputs = outputs + (all_hidden_states,)
-             if output_attentions: outputs = outputs + (all_attentions,)
+             outputs = (hidden_states,)
+             if output_hidden_states:
+                 outputs += (all_hidden_states_collector,)
+             if output_attentions:
+                 outputs += (all_attentions_collector,)
              # Filter None in case hidden states or attentions were not collected
-             return tuple(output for output in outputs if output is not None) 
-             
+             return tuple(output for output in outputs if output is not None)
+
         return BaseModelOutput(
             last_hidden_state=hidden_states,
-            hidden_states=all_hidden_states,
-            attentions=all_attentions,
+            hidden_states=all_hidden_states_collector,
+            attentions=all_attentions_collector,
         )

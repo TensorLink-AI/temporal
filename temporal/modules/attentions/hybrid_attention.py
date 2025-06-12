@@ -9,17 +9,35 @@ from temporal.modules.attentions.base_attention import BaseMultiHeadAttention # 
 
 # Assume attention kernels registered under "attention" expect standard BaseMultiHeadAttention args
 # Assume head aggregators registered under "head_agg" expect specific inputs
-
-
 @register_module("attention", "hybrid")
-class HybridAttention(nn.Module): # Inherit from nn.Module
-    """
-    Multi-head attention with per-group attention kernel types.
+class HybridAttention(nn.Module):
+    """Implements a hybrid multi-head attention mechanism.
 
-    Each group of heads uses a different attention kernel, and the group outputs
-    are fused either by concatenation + projection or by a configured head aggregator.
-    """
+    This module allows different groups of attention heads to use different
+    attention kernel implementations (e.g., 'full', 'flash'). The outputs from
+    these heterogeneous groups are then fused together to produce a single
+    output tensor.
 
+    The fusion can be a simple concatenation followed by a linear projection,
+    or a more complex, learnable aggregation module.
+
+    Attributes:
+        embed_dim (int): The total embedding dimension.
+        num_heads (int): The total number of attention heads.
+        head_dim (int): The dimension of each individual attention head.
+        head_splits (List[int]): A list specifying the number of heads in each group.
+        head_types (List[str]): A list of strings specifying the attention kernel
+            type for each group.
+        group_count (int): The number of attention groups.
+        q_proj (nn.Linear): The global query projection layer.
+        k_proj (nn.Linear): The global key projection layer.
+        v_proj (nn.Linear): The global value projection layer.
+        out_proj (Optional[nn.Linear]): The final output projection layer, used
+            only when `head_agg` is 'concat'.
+        head_groups (nn.ModuleList): A list of the instantiated attention kernel
+            modules for each group.
+        head_aggregator (Optional[nn.Module]): The instantiated head aggregation module.
+    """
     def __init__(
         self,
         embed_dim: int, # Required base arg from builder
@@ -35,6 +53,25 @@ class HybridAttention(nn.Module): # Inherit from nn.Module
         # Capture other potential base args or user kwargs
         **kwargs
     ):
+        """Initializes the HybridAttention module.
+
+        Args:
+            embed_dim (int): The total embedding dimension.
+            num_heads (int): The total number of attention heads.
+            dropout (float): The dropout rate for the attention kernels.
+            is_decoder (bool): Flag indicating if the module is used in a decoder.
+            is_cross_attention (bool): Flag indicating if it's a cross-attention module.
+            bias (bool): Whether to use a bias in the projection layers.
+            head_splits (Optional[List[int]]): A list defining the number of heads
+                for each attention group. The sum must equal `num_heads`.
+            head_types (Optional[List[str]]): A list of registered attention kernel
+                keys, one for each group.
+            head_agg (str): The method for aggregating group outputs. Can be 'concat'
+                or a key for a registered 'head_agg' module.
+            head_agg_kwargs (Optional[dict]): A dictionary of keyword arguments to
+                pass to the head aggregator's constructor.
+            **kwargs: Additional arguments passed to the attention kernel constructors.
+        """
         super().__init__()
         if not head_splits or not head_types:
              raise ValueError("HybridAttention requires 'head_splits' and 'head_types'.")
@@ -112,19 +149,38 @@ class HybridAttention(nn.Module): # Inherit from nn.Module
                  raise e
 
     def _concat_fuse(self, head_outputs: List[torch.Tensor]) -> torch.Tensor:
-        # Input head_outputs: list of [B, H_group, T, D_head] from each kernel
+        """Fuses head outputs by concatenation and a linear projection.
+
+        Args:
+            head_outputs (List[torch.Tensor]): A list of output tensors from each
+                attention group. Each tensor has the shape
+                `[batch, group_heads, seq_len, head_dim]`.
+
+        Returns:
+            torch.Tensor: The fused output tensor of shape `[batch, seq_len, embed_dim]`.
+        """
         all_heads = torch.cat(head_outputs, dim=1)  # [B, H, T, D_head]
         # Transpose and reshape for output projection
         # [B, H, T, D_head] -> [B, T, H, D_head] -> [B, T, D]
-        out = all_heads.transpose(1, 2).contiguous().view(all_heads.shape[0], all_heads.shape[2], self.embed_dim)
+        fused_output = all_heads.transpose(1, 2).contiguous().view(all_heads.shape[0], all_heads.shape[2], self.embed_dim)
         if self.out_proj is None:
              # Should not happen if head_agg is 'concat', but safety check
              raise RuntimeError("Output projection is None for concat fuse mode.")
-        return self.out_proj(out)
+        return self.out_proj(fused_output)
 
     def _aggregate_fuse(self, head_outputs: List[torch.Tensor]) -> torch.Tensor:
-        # Input head_outputs: list of [B, H_group, T, D_head]
-        # The aggregator module is responsible for handling this list input.
+        """Fuses head outputs using a registered head aggregation module.
+
+        Args:
+            head_outputs (List[torch.Tensor]): A list of output tensors from each
+                attention group. Each tensor has the shape
+                `[batch, group_heads, seq_len, head_dim]`.
+
+        Returns:
+            torch.Tensor: The fused output tensor. The shape depends on the
+                aggregator implementation but is typically
+                `[batch, seq_len, embed_dim]`.
+        """
         if self.head_aggregator is None:
             raise RuntimeError("Head aggregator is None but aggregation requested.")
         # Pass the list directly to the aggregator's forward method
@@ -140,45 +196,69 @@ class HybridAttention(nn.Module): # Inherit from nn.Module
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[List[Optional[torch.Tensor]]], Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]]]:
+        """Performs the forward pass for the HybridAttention module.
 
+        Args:
+            hidden_states (torch.Tensor): The query tensor of shape `[B, T, D]`.
+            key_value_states (Optional[torch.Tensor]): The key/value source tensor
+                for cross-attention, shape `[B, S, D]`. If None, self-attention is performed.
+            past_key_value (Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]]):
+                A list of cached key-value states, one for each attention group.
+                Used for efficient decoding.
+            attention_mask (Optional[torch.Tensor]): An additive mask applied to the
+                attention scores, shape `[B, 1, T, S]`.
+            head_mask (Optional[torch.Tensor]): A mask for heads. Not used in this
+                implementation.
+            output_attentions (bool): If True, returns the attention probabilities
+                for each group.
+            use_cache (bool): If True, returns the updated key-value states for caching.
+
+        Returns:
+            Tuple[torch.Tensor, Optional[List[Optional[torch.Tensor]]], Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]]]:
+                - The final fused attention output tensor of shape `[B, T, D]`.
+                - A list of attention probabilities from each group (if `output_attentions`).
+                - A list of updated key-value states from each group (if `use_cache`).
+        """
         B, T, D = hidden_states.shape
         is_cross_attn = key_value_states is not None
-        kv_source = key_value_states if is_cross_attn else hidden_states
-        S = kv_source.size(1)
+        key_value_source = key_value_states if is_cross_attn else hidden_states
+        S = key_value_source.size(1)
 
         # Project Q, K, V globally first
-        q_proj = self.q_proj(hidden_states) # [B, T, D]
-        k_proj = self.k_proj(kv_source)     # [B, S, D]
-        v_proj = self.v_proj(kv_source)     # [B, S, D]
+        projected_q = self.q_proj(hidden_states) # [B, T, D]
+        projected_k = self.k_proj(key_value_source)     # [B, S, D]
+        projected_v = self.v_proj(key_value_source)     # [B, S, D]
 
         # Reshape Q, K, V for multi-head processing [B, H, T/S, D_head]
-        q_heads = q_proj.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
-        k_heads = k_proj.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
-        v_heads = v_proj.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        q_by_heads = projected_q.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        k_by_heads = projected_k.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        v_by_heads = projected_v.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
 
         # Slice Q, K, V and route to appropriate attention kernel groups
-        group_outputs = []
-        all_attn_probs = [] if output_attentions else None
-        present_key_values = [] if use_cache else None
+        group_attention_outputs = []
+        all_group_attention_probs = [] if output_attentions else None
+        all_group_present_key_values = [] if use_cache else None
         head_offset = 0
 
         for i, (split, kernel) in enumerate(zip(self.head_splits, self.head_groups)):
             # Slice Q, K, V for the current group
-            q_slice = q_heads[:, head_offset : head_offset + split] # [B, H_group, T, D_head]
-            k_slice = k_heads[:, head_offset : head_offset + split] # [B, H_group, S, D_head]
-            v_slice = v_heads[:, head_offset : head_offset + split] # [B, H_group, S, D_head]
+            q_slice = q_by_heads[:, head_offset : head_offset + split] # [B, H_group, T, D_head]
+            k_slice = k_by_heads[:, head_offset : head_offset + split] # [B, H_group, S, D_head]
+            v_slice = v_by_heads[:, head_offset : head_offset + split] # [B, H_group, S, D_head]
 
             # Handle past_key_value for this group if provided
-            group_past_kv = None
+            group_past_key_value = None
             if use_cache and past_key_value is not None and i < len(past_key_value):
-                 group_past_kv = past_key_value[i]
+                 group_past_key_value = past_key_value[i]
 
             # Forward pass through the group's attention kernel
             # Assuming kernel follows standard (output, attn_probs, present_kv) signature
-            # Note: The kernel receives Q/K/V already split by heads.
-            # Its internal logic should handle these [B, H_group, T/S, D_head] inputs.
+            # Note: The kernel receives projected Q/K/V that are already split by heads.
+            # This implementation assumes the sub-kernel's `forward` method can handle
+            # `hidden_states` being passed as `q_slice` and `key_value_states` as `k_slice`.
+            # This differs from a standard BaseMultiHeadAttention which expects raw hidden states.
             # We pass the *full* attention_mask, the kernel might need to adjust/ignore it if needed.
-            kernel_result = kernel(
+            group_kernel_result = kernel(
                  hidden_states=q_slice, # Pass Q-slice
                  key_value_states=k_slice if is_cross_attn else None, # Pass K-slice if cross-attn
                  # If kernel *needs* separate K, V inputs based on BaseMultiHeadAttention structure:
@@ -186,29 +266,28 @@ class HybridAttention(nn.Module): # Inherit from nn.Module
                  # key=k_slice, # Need to adjust base class forward or kernel forward
                  # value=v_slice,
                  attention_mask=attention_mask,
-                 past_key_value=group_past_kv,
+                 past_key_value=group_past_key_value,
                  output_attentions=output_attentions,
                  use_cache=use_cache,
             )
 
             # Extract results from the kernel's output tuple
-            group_attn_output = kernel_result[0] # Expected shape [B, H_group, T, D_head]
-            group_outputs.append(group_attn_output)
+            group_output_tensor = group_kernel_result[0] # Expected shape [B, H_group, T, D_head]
+            group_attention_outputs.append(group_output_tensor)
 
             if output_attentions:
                  # Ensure kernel actually returned attn_probs
-                 attn_prob = kernel_result[1] if len(kernel_result) > 1 else None
-                 all_attn_probs.append(attn_prob) # Store attn_probs [B, H_group, T, S] or None
+                 group_probs_tensor = group_kernel_result[1] if len(group_kernel_result) > 1 else None
+                 all_group_attention_probs.append(group_probs_tensor) # Store attn_probs [B, H_group, T, S] or None
             if use_cache:
                  # Ensure kernel actually returned present_kv
-                 present_kv = kernel_result[2] if len(kernel_result) > 2 else None
-                 present_key_values.append(present_kv) # Store present_kv tuple or None
+                 group_kv_cache = group_kernel_result[2] if len(group_kernel_result) > 2 else None
+                 all_group_present_key_values.append(group_kv_cache) # Store present_kv tuple or None
 
             head_offset += split
 
         # Fuse the outputs from all groups using the selected method
-        final_output = self.fuse(group_outputs) # [B, T, D]
+        fused_output = self.fuse(group_attention_outputs) # [B, T, D]
 
         # Return combined results
-        # Note: attn_probs and present_key_values are lists (one element per group)
-        return final_output, all_attn_probs, present_key_values
+        return fused_output, all_group_attention_probs, all_group_present_key_values
