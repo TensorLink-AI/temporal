@@ -124,6 +124,8 @@ def ensemble(obs: torch.Tensor, fct: torch.Tensor, estimator: str = "pwm", reduc
         torch.Tensor:
             Either a scalar (mean) or tensor of CRPS values ([...]).
     """
+    if obs.ndim < fct.ndim:
+        obs = obs.unsqueeze(-1)
     # Ensure shapes are compatible for broadcasting along last dimension
     if not torch.broadcast_shapes(obs.shape, fct.shape):
          # This check might be redundant given the checks in crps_ensemble
