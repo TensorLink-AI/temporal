@@ -23,7 +23,7 @@ def sample_tensor(ffn_config):
 
 # --- StandardFeedForward Tests ---
 
-def test_standard_ffn_init(ffn_config):
+def test_standard_feedforward_init(ffn_config):
     """Tests the initialization of the StandardFeedForward module."""
     ffn = StandardFeedForward(**ffn_config)
     assert ffn.fc1.in_features == ffn_config["hidden_size"]
@@ -32,7 +32,7 @@ def test_standard_ffn_init(ffn_config):
     assert ffn.fc2.out_features == ffn_config["hidden_size"]
 
 @pytest.mark.parametrize("activation", ["relu", "gelu", "silu"])
-def test_standard_ffn_activations(ffn_config, sample_tensor, activation):
+def test_standard_feedforward_activations(ffn_config, sample_tensor, activation):
     """Tests that different activation functions can be used."""
     config = ffn_config.copy()
     config["activation"] = activation
@@ -40,7 +40,7 @@ def test_standard_ffn_activations(ffn_config, sample_tensor, activation):
     output = ffn(sample_tensor)
     assert output.shape == sample_tensor.shape
 
-def test_standard_ffn_invalid_activation(ffn_config):
+def test_standard_feedforward_invalid_activation(ffn_config):
     """Tests that an invalid activation function raises a ValueError."""
     config = ffn_config.copy()
     config["activation"] = "invalid_activation"
@@ -59,14 +59,14 @@ def moe_config(ffn_config):
     })
     return config
 
-def test_moe_ffn_init(moe_config):
+def test_moe_feedforward_init(moe_config):
     """Tests the initialization of the MoEFeedForward module."""
     moe = MoEFeedForward(**moe_config)
     assert len(moe.experts) == moe_config["num_experts"]
     assert moe.top_k == moe_config["top_k"]
     assert moe.gate.out_features == moe_config["num_experts"]
 
-def test_moe_ffn_forward_pass_eval_mode(moe_config, sample_tensor):
+def test_moe_feedforward_forward_pass_eval_mode(moe_config, sample_tensor):
     """Tests the forward pass of MoEFeedForward in evaluation mode."""
     moe = MoEFeedForward(**moe_config)
     moe.eval() # Ensure it's in eval mode, so aux_loss should be None
@@ -76,7 +76,7 @@ def test_moe_ffn_forward_pass_eval_mode(moe_config, sample_tensor):
     assert output.shape == sample_tensor.shape
     assert aux_loss is None
 
-def test_moe_ffn_forward_pass_train_mode(moe_config, sample_tensor):
+def test_moe_feedforward_forward_pass_train_mode(moe_config, sample_tensor):
     """Tests the forward pass of MoEFeedForward in training mode."""
     moe = MoEFeedForward(**moe_config)
     moe.train() # Ensure it's in train mode
@@ -87,7 +87,7 @@ def test_moe_ffn_forward_pass_train_mode(moe_config, sample_tensor):
     assert aux_loss is not None
     assert aux_loss.ndim == 0 # Should be a scalar tensor
 
-def test_moe_ffn_top_k_validation(ffn_config):
+def test_moe_feedforward_top_k_validation(ffn_config):
     """Tests that MoEFeedForward raises an error if top_k > num_experts."""
     config = ffn_config.copy()
     config.update({

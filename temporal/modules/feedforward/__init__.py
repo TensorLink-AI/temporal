@@ -1,6 +1,8 @@
 # ---- Feed-Forward blocks ------------------------------------------
-from .standard import StandardFFN
+from .standard import StandardFeedForward as StandardFeedForward
+from .moe import MoEFeedForward
 
 __all__ = [
-    "StandardFFN",
+    "StandardFeedForward",
+    "MoEFeedForward"
 ]
