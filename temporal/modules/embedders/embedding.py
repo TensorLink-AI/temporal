@@ -1,28 +1,23 @@
-"""
-Module: temporal_embeddings.py
-
-This module provides a variety of time-series embedding classes and helper functions,
-all registered via the `temporal.registry.core` system. Embeddings include value,
-positional (sinusoidal, rotary, learned absolute, Shaw relative, Fourier, Time2Vec,
-ALiBi, bucketed relative, convolutional, time-delta), patch, global, and flexible
-templates, as well as a stacked wrapper. Google-style docstrings are applied
-throughout for clarity.
-"""
-import inspect
-import math
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
-
-import numpy as np
 import torch
 import torch.nn as nn
+import numpy as np
+import inspect
+import math  # Import math for log calculation in BucketedRelativeBias or ALiBi
+from typing import Optional, Tuple, List, Dict, Union, Sequence, Any, Callable
 
-# Corrected imports for registry and builder
-from temporal.registry.core import register_module, resolve
+# === Corrected Imports ===
+from temporal.registry.core import register_module, resolve  # resolve is in core
 from temporal.models.module_builder_helper import ModuleBuilder
 
+"""
+Module providing a variety of time-series embedding classes and helper functions.
+All embeddings are registered via the temporal.registry.core system.
+Embeddings include value, flexible value, positional (sinusoidal, rotary, learned absolute,
+Shaw relative, Fourier, Time2Vec, ALiBi, bucketed relative, convolutional, time-delta),
+patch, global, and a stacked wrapper.
+"""
 
-# === RoPE Helper Functions ===
-
+# --- RoPE Helper Functions ---
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     """
     Rotate half of the hidden dimensions of the input tensor.
@@ -31,14 +26,13 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     before the first half, effectively rotating the vector.
 
     Args:
-        x: Input tensor of shape [..., dim].
+        x: Input tensor of shape [..., dim]
 
     Returns:
-        Tensor with rotated halves along the last dimension.
+        Rotated tensor of same shape as input.
     """
-    half = x.shape[-1] // 2
-    x1 = x[..., :half]
-    x2 = x[..., half:]
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
 
 
@@ -47,76 +41,82 @@ def apply_rotary_pos_emb(
     k: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
-    position_ids: Optional[torch.LongTensor] = None,
+    position_ids: Optional[torch.Tensor] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Apply Rotary Positional Embedding (RoPE) to query and key tensors.
+    Apply Rotary Positional Embedding to query and key tensors.
 
     Args:
-        q: Query tensor of shape [batch, heads, seq_len, head_dim].
-        k: Key tensor with same shape as `q`.
-        cos: Cosine embeddings, shape [seq_len, dim] or [batch, 1, seq_len, dim].
-        sin: Sine embeddings, matching `cos` shape.
-        position_ids: Optional position indices [batch, seq_len].
+        q: Query tensor of shape [batch_size, num_heads, seq_len, head_dim].
+        k: Key tensor of shape [batch_size, num_heads, seq_len, head_dim].
+        cos: Cosine frequencies tensor, either of shape [seq_len, dim]
+            or [batch_size, 1, seq_len, dim].
+        sin: Sine frequencies tensor, same shape as cos.
+        position_ids: Optional tensor of shape [batch_size, seq_len] for
+            indexing cached cos/sin embeddings.
 
     Returns:
-        Tuple of rotated (query, key) tensors.
+        Tuple of (q_embed, k_embed), each with same shape as inputs q and k.
     """
+    # Expand cos/sin to match q/k if needed
     if cos.dim() == 2:
         if position_ids is None:
-            cos = cos.unsqueeze(0).unsqueeze(1)
-            sin = sin.unsqueeze(0).unsqueeze(1)
+            cos = cos[None, None, :, :]
+            sin = sin[None, None, :, :]
         else:
             cos = cos[position_ids].unsqueeze(1)
             sin = sin[position_ids].unsqueeze(1)
+
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
-
 
 # -----------------------------
 # Base Embedding Interface
 # -----------------------------
 class BaseEmbedding(nn.Module):
     """
-    Abstract base class for all embedding modules. Subclasses must implement `forward`.
-    """
+    Abstract base class for all embedding modules.
 
+    Subclasses must implement the forward method with appropriate signature.
+    """
     def __init__(self, d_model: int):
         """
+        Initialize BaseEmbedding.
+
         Args:
-            d_model: Dimensionality of the embedding.
+            d_model: Dimension of the embedding output.
         """
         super().__init__()
         self.d_model = d_model
 
-    def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
+    def forward(self, *args, **kwargs):
         """
-        Compute the embedding. Must be overridden in subclasses.
+        Compute embeddings. Must be overridden by subclasses.
         """
         raise NotImplementedError("Each embedding must implement its own forward method.")
 
-
 # -----------------------------
-# Value Embeddings
+# Value Embedding
 # -----------------------------
 @register_module("embedding", "value")
 class TimeSeriesValueEmbedding(BaseEmbedding):
     """
-    Embed raw time-series feature vectors via linear projection and optional LayerNorm.
+    Projects raw feature values into embedding space, with optional LayerNorm.
     """
-
     def __init__(
         self,
         feature_size: int,
         d_model: int,
-        use_value_norm: bool = False,
+        use_value_norm: bool = False
     ):
         """
+        Initialize TimeSeriesValueEmbedding.
+
         Args:
-            feature_size: Number of input features per time step.
-            d_model: Output embedding dimension.
-            use_value_norm: Whether to apply LayerNorm after projection.
+            feature_size: Number of input features at each time step.
+            d_model: Dimension of the output embedding.
+            use_value_norm: If True, apply LayerNorm after projection.
         """
         super().__init__(d_model)
         self.value_projection = nn.Linear(feature_size, d_model, bias=False)
@@ -124,104 +124,119 @@ class TimeSeriesValueEmbedding(BaseEmbedding):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
+        Project input values and optionally normalize.
+
         Args:
-            x: Tensor of shape [batch, seq_len, feature_size].
+            x: Input tensor of shape [batch_size, seq_len, feature_size].
 
         Returns:
-            Embedded tensor of shape [batch, seq_len, d_model].
+            Tensor of shape [batch_size, seq_len, d_model].
         """
         proj = self.value_projection(x)
-        return self.value_norm(proj) if self.value_norm else proj
-
+        if self.value_norm is not None:
+            return self.value_norm(proj)
+        return proj
 
 @register_module("embedding", "flexible_value")
 class FlexibleValueEmbedding(BaseEmbedding):
     """
-    Flexible embedding with support for multiple input blocks and optional LayerNorm.
+    Flexible embedding for one or multiple feature blocks with optional LayerNorm.
     """
-
     def __init__(
         self,
         *,
         d_model: int,
         input_dims: Union[int, Sequence[int]],
-        proj_builder: Optional[Callable[[int, int, Dict[str, Any]], nn.Module]] = None,
-        proj_kwargs: Optional[Dict[str, Any]] = None,
-        use_layer_norm: bool = False,
+        proj_builder: Callable[[int, int, Dict[str, Any]], nn.Module] = None,
+        proj_kwargs: Dict[str, Any] = None,
+        use_layer_norm: bool = False
     ):
         """
+        Initialize FlexibleValueEmbedding.
+
         Args:
-            d_model: Output embedding dimension.
-            input_dims: Single int or sequence of ints for each block.
-            proj_builder: Factory for projection modules.
+            d_model: Output embedding size.
+            input_dims: Either an int or list/tuple of ints for multiple feature blocks.
+            proj_builder: Factory function (in_dim, out_dim, extra_kwargs) → nn.Module.
+                Defaults to bias-free Linear if None.
             proj_kwargs: Extra kwargs passed to proj_builder.
-            use_layer_norm: Apply LayerNorm after summation if True.
+            use_layer_norm: If True, apply LayerNorm after embedding.
         """
         super().__init__(d_model)
         proj_kwargs = proj_kwargs or {}
         if proj_builder is None:
-            proj_builder = lambda in_d, out_d, kw: nn.Linear(in_d, out_d, bias=False, **kw)
-        if isinstance(input_dims, (list, tuple)):
-            self.input_dims = list(input_dims)
-            self.projections = nn.ModuleList(
-                [proj_builder(in_d, d_model, proj_kwargs) for in_d in self.input_dims]
+            proj_builder = lambda in_dim, out_dim, kw: nn.Linear(
+                in_dim, out_dim, bias=False, **kw
             )
+
+        if isinstance(input_dims, (list, tuple)):
+            self.projections = nn.ModuleList([
+                proj_builder(in_dim, d_model, proj_kwargs)
+                for in_dim in input_dims
+            ])
+            self.input_dims = list(input_dims)
         else:
-            self.input_dims = [input_dims]
             self.projections = proj_builder(input_dims, d_model, proj_kwargs)
+            self.input_dims = [input_dims]
+
         self.layer_norm = nn.LayerNorm(d_model) if use_layer_norm else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
+        Embed input tensor, handling single or multiple blocks, then optionally normalize.
+
         Args:
-            x: Tensor of shape [batch, seq_len, sum(input_dims)] or [batch, seq_len, input_dims].
+            x: Tensor of shape [B, T, sum(input_dims)] or [B, T, input_dim].
 
         Returns:
-            Embedded tensor of shape [batch, seq_len, d_model].
+            Tensor of shape [B, T, d_model].
         """
         if isinstance(self.projections, nn.ModuleList):
             blocks = torch.split(x, self.input_dims, dim=-1)
             emb = sum(proj(b) for proj, b in zip(self.projections, blocks))
         else:
             emb = self.projections(x)
-        return self.layer_norm(emb) if self.layer_norm else emb
 
+        if self.layer_norm is not None:
+            return self.layer_norm(emb)
+        return emb
 
 # -----------------------------
-# Positional Embeddings
+# Sinusoidal Positional Embedding
 # -----------------------------
 @register_module("embedding", "sinusoidal")
 class SinusoidalPositionalEmbedding(BaseEmbedding):
     """
-    Precomputed sinusoidal positional embeddings without learned parameters.
+    Fixed sinusoidal positional embeddings as described in "Attention is All You Need".
     """
-
     def __init__(self, d_model: int, max_seq_len: int = 2048):
         """
+        Initialize SinusoidalPositionalEmbedding.
+
         Args:
-            d_model: Embedding dimension.
-            max_seq_len: Maximum supported sequence length.
+            d_model: Dimension of the embeddings.
+            max_seq_len: Maximum sequence length supported.
         """
         super().__init__(d_model)
         self.max_seq_len = max_seq_len
         weights = self._init_weights()
-        self.register_buffer("weight", weights)
+        self.register_buffer('weight', weights)
 
     def _init_weights(self) -> torch.Tensor:
         """
-        Create the sinusoidal encoding table.
+        Create sinusoidal positional encoding table.
 
         Returns:
             Tensor of shape [max_seq_len, d_model].
         """
-        pos_enc = np.array([
+        position_enc = np.array([
             [pos / np.power(10000, 2 * (j // 2) / self.d_model) for j in range(self.d_model)]
             for pos in range(self.max_seq_len)
         ])
         out = torch.zeros(self.max_seq_len, self.d_model)
-        half = self.d_model // 2
-        out[:, :half] = torch.FloatTensor(np.sin(pos_enc[:, 0::2]))
-        out[:, half:] = torch.FloatTensor(np.cos(pos_enc[:, 1::2]))
+        sentinel = self.d_model // 2 if self.d_model % 2 == 0 else (self.d_model // 2) + 1
+        out[:, 0:sentinel] = torch.FloatTensor(np.sin(position_enc[:, 0::2]))
+        out[:, sentinel:] = torch.FloatTensor(np.cos(position_enc[:, 1::2]))
         return out
 
     @torch.no_grad()
@@ -229,60 +244,167 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         self,
         batch_size: int,
         seq_len: int,
-        past_key_values_length: int = 0,
+        past_key_values_length: int = 0
     ) -> torch.Tensor:
         """
-        Retrieve embeddings for positions [past_key_values_length:past_key_values_length+seq_len].
+        Retrieve positional embeddings for a batch.
 
         Args:
-            batch_size: Batch size.
-            seq_len: Number of positions to embed.
-            past_key_values_length: Offset into the weight table.
+            batch_size: Batch size B.
+            seq_len: Number of new positions to embed.
+            past_key_values_length: Offset for position indices.
 
         Returns:
-            Tensor of shape [1, seq_len, d_model].
+            Tensor of shape [B, seq_len, d_model].
 
         Raises:
             IndexError: If requested positions exceed max_seq_len.
         """
         start = past_key_values_length
-        if seq_len <= 0:
-            return torch.empty((batch_size, 0, self.d_model), device=self.weight.device)
         end = start + seq_len
         if end > self.max_seq_len:
             raise IndexError(
-                f"Pos {end-1} out of range for max_seq_len {self.max_seq_len}."
+                f"Requested pos index {end-1} out of bounds for max_seq_len {self.max_seq_len}."
             )
-        pos = torch.arange(start, end, device=self.weight.device)
-        return self.weight[pos].unsqueeze(0)
+        positions = torch.arange(start, end, device=self.weight.device)
+        slice = self.weight[positions]
+        return slice.unsqueeze(0).expand(batch_size, -1, -1)
 
+# -----------------------------
+# Patch Embedding
+# -----------------------------
+@register_module("embedding", "patch")
+class TimeSeriesPatchEmbedding(BaseEmbedding):
+    """
+    Embed overlapping/non-overlapping patches of time-series data.
+    """
+    def __init__(
+        self,
+        patch_size: int,
+        feature_size: int,
+        d_model: int,
+        stride: Optional[int] = None,
+        pad_value: float = 0.0,
+    ):
+        """
+        Args:
+            patch_size: Length of each patch.
+            feature_size: Number of input channels F.
+            d_model: Output embedding dimension.
+            stride: Step between patch starts. Defaults to patch_size.
+            pad_value: Value to pad with if sequence length is not divisible.
+        """
+        super().__init__(d_model)
+        self.patch_size = patch_size
+        self.feature_size = feature_size
+        self.stride = stride or patch_size
+        self.pad_value = pad_value
+        self.proj = nn.Linear(patch_size * feature_size, d_model, bias=False)
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Tensor of shape [B, L, F].
+
+        Returns:
+            Tensor of shape [B, num_patches, d_model].
+
+        Raises:
+            ValueError: If input feature dimension mismatches feature_size.
+        """
+        B, L, F = x.shape
+        if F != self.feature_size:
+            raise ValueError(f"Expected feature_size={self.feature_size}, got={F}")
+
+        if L < self.patch_size:
+            pad_len = self.patch_size - L
+        else:
+            rem = (L - self.patch_size) % self.stride
+            pad_len = self.stride - rem if rem else 0
+
+        if pad_len:
+            pad_tensor = torch.full((B, pad_len, F), self.pad_value, device=x.device, dtype=x.dtype)
+            x = torch.cat([x, pad_tensor], dim=1)
+            L += pad_len
+
+        patches = x.unfold(1, self.patch_size, self.stride)
+        B, num_patches, _, _ = patches.shape
+        flat = patches.contiguous().view(B, num_patches, -1)
+        return self.proj(flat)
+
+# -----------------------------
+# Global Embedding
+# -----------------------------
+@register_module("embedding", "global")
+class TimeSeriesGlobalEmbedding(BaseEmbedding):
+    """
+    Embed entire sequence as a single global vector.
+    """
+    def __init__(self, seq_len: int, feature_size: int, d_model: int):
+        """
+        Args:
+            seq_len: Sequence length L.
+            feature_size: Number of channels F.
+            d_model: Output embedding dimension.
+        """
+        super().__init__(d_model)
+        self.seq_len = seq_len
+        self.feature_size = feature_size
+        self.global_projection = nn.Linear(seq_len * feature_size, d_model, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Tensor of shape [B, L, F].
+
+        Returns:
+            Tensor of shape [B, 1, d_model].
+
+        Raises:
+            ValueError: If input dims mismatch configured seq_len or feature_size.
+        """
+        B, L, F = x.shape
+        if L != self.seq_len or F != self.feature_size:
+            raise ValueError(
+                f"Input shape mismatch: expected (L={self.seq_len}, F={self.feature_size}), got (L={L}, F={F})"
+            )
+        flat = x.view(B, -1)
+        out = self.global_projection(flat)
+        return out.unsqueeze(1)
+
+# -----------------------------
+# Rotary Positional Embedding
+# -----------------------------
 @register_module("embedding", "rotary")
 class RotaryPositionalEmbedding(BaseEmbedding):
     """
-    Generate Rotary Positional Embedding cos/sin caches for RoPE.
+    Generates rotary position embedding frequencies (cosine and sine).
     """
-
     def __init__(self, d_model: int, max_seq_len: int = 2048, base: int = 10000):
         """
         Args:
-            d_model: Must be even.
-            max_seq_len: Cache size.
-            base: Base frequency for embedding.
+            d_model: Embedding dimension (must be even).
+            max_seq_len: Maximum sequence length for cache.
+            base: Base for frequency calculation.
         """
-        assert d_model % 2 == 0, "d_model must be even"
+        assert d_model % 2 == 0, "Rotary embedding dim must be even"
         super().__init__(d_model)
         self.max_seq_len = max_seq_len
         self.base = base
-        inv_freq = 1.0 / (base ** (torch.arange(0, d_model, 2).float() / d_model))
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, d_model, 2).float() / d_model)
+        )
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self._build_cache(max_seq_len)
 
-    def _build_cache(self, seq_len: int) -> None:
+    def _build_cache(self, seq_len: int):
         """
-        Build cos/sin buffers for up to `seq_len` positions.
+        Build cos and sin caches for sequence positions.
+
+        Args:
+            seq_len: Length to build cache for.
         """
-        t = torch.arange(seq_len, device=self.inv_freq.device)
+        t = torch.arange(seq_len, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
         freqs = torch.outer(t, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
         self.register_buffer("cos_cached", emb.cos(), persistent=False)
@@ -292,29 +414,30 @@ class RotaryPositionalEmbedding(BaseEmbedding):
     def forward(
         self,
         x: torch.Tensor,
-        seq_len: int,
+        seq_len: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Return cos/sin slices for the requested seq_len.
+        Return cos and sin caches for requested seq_len.
 
         Args:
-            x: Dummy tensor to infer device/dtype.
-            seq_len: Desired length.
+            x: Dummy tensor to infer device and dtype.
+            seq_len: Number of positions needed.
 
         Returns:
-            (cos, sin) each shape [seq_len, d_model].
+            Tuple of (cos, sin), each of shape [seq_len, d_model].
         """
-        if seq_len > self.max_seq_len_cached or x.device != self.cos_cached.device:
+        if seq_len > self.max_seq_len_cached or self.cos_cached.device != x.device:
             self._build_cache(max(seq_len, self.max_seq_len_cached))
         return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
 
-
+# -----------------------------
+# Learned Absolute Positional Embedding
+# -----------------------------
 @register_module("embedding", "learned_abs")
 class LearnedAbsolutePositionalEmbedding(BaseEmbedding):
     """
-    Learned absolute positional embedding via nn.Embedding.
+    Learned absolute positional embeddings via nn.Embedding.
     """
-
     def __init__(self, d_model: int, max_seq_len: int = 2048):
         """
         Args:
@@ -329,101 +452,118 @@ class LearnedAbsolutePositionalEmbedding(BaseEmbedding):
         self,
         batch_size: int,
         seq_len: int,
-        past_key_values_length: int = 0,
+        past_key_values_length: int = 0
     ) -> torch.Tensor:
         """
         Args:
-            batch_size: Batch size.
+            batch_size: Batch size B.
             seq_len: Number of positions.
-            past_key_values_length: Offset.
+            past_key_values_length: Offset index.
 
         Returns:
-            Tensor [1, seq_len, d_model].
+            Tensor of shape [B, seq_len, d_model].
 
         Raises:
-            IndexError: If positions exceed max_seq_len.
+            IndexError: If requested position exceeds max_seq_len.
         """
         start = past_key_values_length
-        if seq_len <= 0:
-            return torch.empty((batch_size, 0, self.d_model), device=self.embedding.weight.device)
         end = start + seq_len
         if end > self.max_seq_len:
-            raise IndexError(f"Pos {end-1} out of range for max_seq_len {self.max_seq_len}.")
-        pos = torch.arange(start, end, device=self.embedding.weight.device)
-        return self.embedding(pos).unsqueeze(0)
+            raise IndexError(
+                f"Position index {end-1} out of bounds for max_seq_len {self.max_seq_len}."
+            )
+        positions = torch.arange(start, end, device=self.embedding.weight.device)
+        embeds = self.embedding(positions)
+        return embeds.unsqueeze(0).expand(batch_size, -1, -1)
 
-
+# -----------------------------
+# Shaw Relative Positional Bias
+# -----------------------------
 @register_module("embedding", "relative_shaw")
 class ShawRelativePositionalBias(BaseEmbedding):
     """
-    Shaw-relative positional bias for self-attention.
+    Learnable relative positional biases as in Shaw et al.
     """
-
     def __init__(self, num_heads: int, max_distance: int = 128):
         """
         Args:
             num_heads: Number of attention heads.
-            max_distance: Clipping distance.
+            max_distance: Maximum relative distance.
         """
-        super().__init__(num_heads)
-        self.max_dist = max_distance
-        self.bias_table = nn.Embedding(2 * max_distance + 1, num_heads)
+        super().__init__(d_model=num_heads)
+        self.max_distance = max_distance
+        self.relative_bias = nn.Embedding(2 * max_distance + 1, num_heads)
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
         """
-        Compute relative bias tensor [1, heads, seq_len, seq_len].
-        """
-        device = self.bias_table.weight.device
-        idx = torch.arange(seq_len, device=device)
-        dist = idx[None, :] - idx[:, None]
-        dist_clamped = dist.clamp(-self.max_dist, self.max_dist) + self.max_dist
-        bias = self.bias_table(dist_clamped)
-        return bias.permute(2, 0, 1).unsqueeze(0)
+        Compute relative bias tensor for attention scores.
 
-
-@register_module("embedding", "fourier")
-class FourierFeatureEmbedding(BaseEmbedding):
-    """
-    Random Fourier features for positional encoding.
-    """
-
-    def __init__(self, d_model: int, num_features: int = 16):
-        """
-        Args:
-            d_model: Output dimension.
-            num_features: Number of random frequencies.
-        """
-        super().__init__(d_model)
-        self.num_features = num_features
-        self.proj = nn.Linear(2 * num_features, d_model)
-        self.register_buffer("freqs", torch.exp(torch.linspace(0, math.log(1000), num_features)))
-
-    def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
-        """
         Args:
             batch_size: Batch size.
             seq_len: Sequence length.
 
         Returns:
-            Tensor [1, seq_len, d_model].
+            Tensor of shape [1, num_heads, seq_len, seq_len].
+        """
+        device = self.relative_bias.weight.device
+        positions = torch.arange(seq_len, device=device)
+        diff = positions[None, :] - positions[:, None]
+        clipped = torch.clamp(diff, -self.max_distance, self.max_distance) + self.max_distance
+        biases = self.relative_bias(clipped)
+        return biases.permute(2, 0, 1).unsqueeze(0)
+
+# -----------------------------
+# Fourier Feature Embedding
+# -----------------------------
+@register_module("embedding", "fourier")
+class FourierFeatureEmbedding(BaseEmbedding):
+    """
+    Embed positions using random Fourier features.
+    """
+    def __init__(self, d_model: int, num_features: int = 16):
+        """
+        Args:
+            d_model: Output embedding dimension.
+            num_features: Number of Fourier features.
+        """
+        super().__init__(d_model)
+        self.num_features = num_features
+        self.proj = nn.Linear(2 * num_features, d_model)
+        self.register_buffer(
+            "freqs",
+            torch.exp(torch.linspace(0, np.log(1000), num_features))
+        )
+
+    def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
+        """
+        Embed positions into Fourier feature space.
+
+        Args:
+            batch_size: Batch size.
+            seq_len: Sequence length.
+
+        Returns:
+            Tensor of shape [B, seq_len, d_model].
         """
         device = self.proj.weight.device
-        pos = torch.arange(seq_len, device=device).unsqueeze(-1)
-        args = pos * self.freqs.unsqueeze(0)
+        positions = torch.arange(seq_len, device=device).unsqueeze(1)
+        args = positions * self.freqs.unsqueeze(0)
         feats = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
-        return self.proj(feats).unsqueeze(0)
+        embeds = self.proj(feats)
+        return embeds.unsqueeze(0).expand(batch_size, -1, -1)
 
-
+# -----------------------------
+# Time2Vec Embedding
+# -----------------------------
 @register_module("embedding", "time2vec")
 class Time2VecEmbedding(BaseEmbedding):
     """
-    Time2Vec positional embedding.
+    Time2Vec positional embedding: linear + periodic components.
     """
-
     def __init__(self, d_model: int):
         """
         Args:
-            d_model: d_model = 1 + periodic dimensions.
+            d_model: Output embedding dimension (>=2).
         """
         super().__init__(d_model)
         self.linear = nn.Linear(1, 1)
@@ -431,138 +571,180 @@ class Time2VecEmbedding(BaseEmbedding):
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
         """
+        Embed time steps via Time2Vec.
+
         Args:
             batch_size: Batch size.
             seq_len: Sequence length.
 
         Returns:
-            Tensor [1, seq_len, d_model].
+            Tensor [B, seq_len, d_model].
         """
         device = next(self.parameters()).device
         t = torch.arange(seq_len, device=device, dtype=torch.float32).unsqueeze(-1)
         lin = self.linear(t)
         per = torch.sin(self.periodic(t))
-        return torch.cat([lin, per], dim=-1).unsqueeze(0)
+        embeds = torch.cat([lin, per], dim=-1)
+        return embeds.unsqueeze(0).expand(batch_size, -1, -1)
 
-
+# -----------------------------
+# ALiBi Positional Bias
+# -----------------------------
 @register_module("embedding", "alibi")
 class ALiBiPositionalBias(BaseEmbedding):
     """
-    ALiBi positional bias for attention.
+    Attention with linear biases (ALiBi) instead of positional embeddings.
     """
-
-    def __init__(self, num_heads: int, max_seq_len: int = 2048):
+    def __init__(
+        self,
+        num_heads: int,
+        max_seq_len: int = 2048
+    ):
         """
         Args:
-            num_heads: Number of heads.
-            max_seq_len: Max sequence length.
+            num_heads: Number of attention heads.
+            max_seq_len: Max sequence length for slope calculation.
         """
-        super().__init__(num_heads)
-        self.max_seq_len = max_seq_len
+        super().__init__(d_model=num_heads)
         slopes = torch.Tensor(self._get_alibi_slopes(num_heads))
         self.register_buffer("slopes", slopes)
+        self.max_seq_len = max_seq_len
 
     @staticmethod
     def _get_alibi_slopes(n: int) -> List[float]:
         """
-        Compute ALiBi slopes for each head.
+        Compute ALiBi slopes for heads.
+
+        Args:
+            n: Number of heads.
+
+        Returns:
+            List of slopes of length n.
         """
-        def get_slopes_pow2(n):
-            start = 2 ** (-(2 ** -(math.log2(n) - 3)))
-            return [start * (start ** i) for i in range(n)]
-        if math.log2(n).is_integer():
-            return get_slopes_pow2(n)
+        def p2(v):
+            start = 2 ** (-(2 ** -(math.log2(v) - 3)))
+            ratio = start
+            return [start * ratio**i for i in range(v)]
+
+        if n & (n - 1) == 0:
+            return p2(n)
         m = 2 ** math.floor(math.log2(n))
-        return get_slopes_pow2(m) + get_slopes_pow2(2*m)[::2][: n-m]
+        return p2(m) + p2(2 * m)[0::2][: n - m]
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
         """
-        Compute ALiBi bias tensor [1, heads, seq_len, seq_len].
+        Generate ALiBi bias tensor for causal attention.
+
+        Args:
+            batch_size: Batch size.
+            seq_len: Sequence length.
+
+        Returns:
+            Tensor [1, num_heads, seq_len, seq_len].
         """
         device = self.slopes.device
-        slopes = self.slopes.view(1, -1, 1, 1)
+        slopes = self.slopes[None, :, None, None]
         pos = torch.arange(seq_len, device=device)
-        diff = (pos[None, :] - pos[:, None]).abs().view(1, 1, seq_len, seq_len)
-        return -diff * slopes
+        diff = pos[None, :] - pos[:, None]
+        abs_diff = diff.abs().unsqueeze(0).unsqueeze(0)
+        bias = -abs_diff * slopes
+        return bias
 
-
+# -----------------------------
+# Bucketed Relative Bias
+# -----------------------------
 @register_module("embedding", "bucketed")
 class BucketedRelativeBias(BaseEmbedding):
     """
-    Bucketed relative positional bias.
+    Bucketed relative positional biases.
     """
-
-    def __init__(self, num_heads: int, num_buckets: int = 32, max_distance: int = 128):
+    def __init__(
+        self,
+        num_heads: int,
+        num_buckets: int = 32,
+        max_distance: int = 128
+    ):
         """
         Args:
-            num_heads: Number of heads.
+            num_heads: Number of attention heads.
             num_buckets: Number of buckets.
-            max_distance: Clipping distance.
+            max_distance: Max distance to represent.
         """
-        super().__init__(num_heads)
+        super().__init__(d_model=num_heads)
         self.num_buckets = num_buckets
         self.max_distance = max_distance
         self.relative_buckets = nn.Embedding(num_buckets, num_heads)
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
         """
-        Compute bucketed bias [1, heads, seq_len, seq_len].
+        Compute bucketed relative bias.
+
+        Args:
+            batch_size: Batch size.
+            seq_len: Sequence length.
+
+        Returns:
+            Tensor [1, num_heads, seq_len, seq_len].
         """
         device = self.relative_buckets.weight.device
         pos = torch.arange(seq_len, device=device)
         diff = pos[None, :] - pos[:, None]
-        diff_clamped = diff.clamp(-self.max_distance, self.max_distance) + self.max_distance
-        bucket_size = (2*self.max_distance+1) / self.num_buckets
-        buckets = (diff_clamped / bucket_size).floor().long().clamp(0, self.num_buckets-1)
-        bias = self.relative_buckets(buckets)
-        return bias.permute(2,0,1).unsqueeze(0)
+        clipped = torch.clamp(diff, -self.max_distance, self.max_distance) + self.max_distance
+        bucket_size = (2 * self.max_distance + 1) / self.num_buckets
+        buckets = (clipped.float() / bucket_size).floor().long().clamp(0, self.num_buckets - 1)
+        biases = self.relative_buckets(buckets)
+        return biases.permute(2, 0, 1).unsqueeze(0)
 
-
+# -----------------------------
+# Convolutional Positional Embedding
+# -----------------------------
 @register_module("embedding", "conv_pos")
 class ConvolutionalPositionalEmbedding(BaseEmbedding):
     """
-    Learnable conv-based refinement of sinusoidal embeddings.
+    Convolutional enhancement of sinusoidal embeddings.
     """
-
     def __init__(self, d_model: int, kernel_size: int = 3, max_seq_len: int = 2048):
         """
         Args:
             d_model: Embedding dimension.
             kernel_size: Conv1d kernel size.
-            max_seq_len: Max seq len.
+            max_seq_len: Max sequence length for base emb.
         """
         super().__init__(d_model)
         base_cls = resolve("embedding", "sinusoidal")
         self.base = base_cls(d_model=d_model, max_seq_len=max_seq_len)
-        self.conv = nn.Conv1d(d_model, d_model, kernel_size, padding=kernel_size//2, groups=d_model)
+        self.conv = nn.Conv1d(d_model, d_model, kernel_size, padding=kernel_size // 2, groups=d_model)
 
     def forward(self, batch_size: int, seq_len: int, past_key_values_length: int = 0) -> torch.Tensor:
         """
+        Apply conv to base positional embeddings.
+
         Args:
             batch_size: Batch size.
-            seq_len: Seq length.
-            past_key_values_length: Offset.
+            seq_len: Sequence length.
+            past_key_values_length: Offset index.
 
         Returns:
-            Tensor [1, seq_len, d_model].
+            Tensor [B, seq_len, d_model].
         """
-        emb = self.base(batch_size=batch_size, seq_len=seq_len, past_key_values_length=past_key_values_length)
-        x = emb.permute(0,2,1)
+        emb = self.base(batch_size, seq_len, past_key_values_length)
+        x = emb.permute(0, 2, 1)
         x = self.conv(x)
-        return x.permute(0,2,1)
+        return x.permute(0, 2, 1)
 
-
+# -----------------------------
+# TimeDelta Embedding
+# -----------------------------
 @register_module("embedding", "timedelta")
 class TimeDeltaEmbedding(BaseEmbedding):
     """
-    Embedding based on time delta (position) via MLP.
+    Embedding for time delta features via an MLP.
     """
-
     def __init__(self, d_model: int, hidden_dim: int = 64):
         """
         Args:
-            d_model: Output dim.
-            hidden_dim: MLP hidden size.
+            d_model: Output dimension.
+            hidden_dim: Hidden layer size.
         """
         super().__init__(d_model)
         self.mlp = nn.Sequential(
@@ -573,65 +755,71 @@ class TimeDeltaEmbedding(BaseEmbedding):
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
         """
+        Embed relative time deltas.
+
         Args:
             batch_size: Batch size.
             seq_len: Sequence length.
 
         Returns:
-            Tensor [1, seq_len, d_model].
+            Tensor [B, seq_len, d_model].
         """
-        device = next(self.mlp.parameters(), torch.zeros(1)).device
+        device = next(self.mlp.parameters()).device if list(self.mlp.parameters()) else 'cpu'
         t = torch.arange(seq_len, device=device, dtype=torch.float32).unsqueeze(-1)
-        return self.mlp(t).unsqueeze(0)
+        feats = self.mlp(t)
+        return feats.unsqueeze(0).expand(batch_size, -1, -1)
 
-
+# -----------------------------
+# Stacked Positional Embedding
+# -----------------------------
 @register_module("embedding", "stacked_embedding")
 class StackedPositionalEmbedding(BaseEmbedding):
     """
-    Combine multiple embedding modules by summation.
+    Wrapper to stack multiple positional embeddings sequentially.
     """
-
-    def __init__(self, d_model: int, embedding_configs: List[Dict[str, Any]], builder: ModuleBuilder):
+    def __init__(
+        self,
+        d_model: int,
+        embedding_configs: List[Dict[str, Any]],
+        builder: ModuleBuilder
+    ):
         """
         Args:
-            d_model: Embedding dim.
-            embedding_configs: List of dicts with keys `type` and optional `args`.
-            builder: ModuleBuilder instance for constructing embeddings.
+            d_model: Embedding dimension.
+            embedding_configs: List of configs for sub-embeddings.
+            builder: ModuleBuilder to instantiate embeddings.
         """
         super().__init__(d_model)
         self.embeddings = nn.ModuleList()
-        for cfg in embedding_configs:
-            kind = cfg.get("type")
-            args = cfg.get("args", {}).copy()
-            if not kind:
+        for config in embedding_configs:
+            embed_type = config.get("type")
+            args = config.get("args", {}).copy()
+            if not embed_type:
                 raise ValueError("Each embedding config must have a 'type'.")
-            module = builder._build(kind="embedding", name=kind, base_kwargs={"hidden_size": d_model}, user_kwargs=args)
+            module = builder._build(
+                kind="embedding",
+                name=embed_type,
+                base_kwargs={"hidden_size": d_model},
+                user_kwargs=args
+            )
             self.embeddings.append(module)
-        if not self.embeddings:
-            print("Warning: No embeddings configured for StackedPositionalEmbedding.")
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
         """
-        Sum the outputs of all configured embeddings.
+        Sum outputs of configured embeddings.
 
         Args:
             batch_size: Batch size.
             seq_len: Sequence length.
-            **kwargs: Passed to each embedding.
+            **kwargs: Extra args for sub-embeddings.
 
         Returns:
-            Tensor [batch_size, seq_len, d_model].
+            Tensor [B, seq_len, d_model].
         """
-        if not self.embeddings:
-            device = kwargs.get('device', 'cpu')
-            return torch.zeros((batch_size, seq_len, self.d_model), device=device)
-        # Determine a device
-        device = next(self.embeddings[0].parameters(), next(self.embeddings[0].buffers())).device
-        combined = torch.zeros((batch_size, seq_len, self.d_model), device=device)
-        for mod in self.embeddings:
-            emb = mod(batch_size=batch_size, seq_len=seq_len, **kwargs)
-            if emb.shape == (batch_size, seq_len, self.d_model) or emb.shape[0] == 1:
-                combined = combined + emb
-            else:
-                print(f"Warning: Skipped embedding {type(mod).__name__} shape {emb.shape}.")
+        device = kwargs.get('device', next(self.embeddings[0].parameters()).device if self.embeddings else 'cpu')
+        combined = torch.zeros(batch_size, seq_len, self.d_model, device=device)
+        for module in self.embeddings:
+            out = module(batch_size=batch_size, seq_len=seq_len, **kwargs)
+            if out.shape[-2:] == (seq_len, self.d_model):
+                combined += out
         return combined
