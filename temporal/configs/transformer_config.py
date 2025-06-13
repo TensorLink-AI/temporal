@@ -545,6 +545,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         # feature_size is removed from here, will be handled via input_dim and kwargs
         autoregressive: Optional[bool] = None,
         is_decoder: Optional[bool] = None,
+        use_cache: bool = True,
         **kwargs: Any,
     ):
         if attention_blocks is not None:
@@ -594,6 +595,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.output_attentions = output_attentions
         self.output_hidden_states = output_hidden_states
         self.use_teacher_forcing = use_teacher_forcing
+        self.use_cache          = use_cache
 
         self.quantizer_config = quantizer_config
         self.vocab_size = vocab_size
