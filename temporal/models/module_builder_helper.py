@@ -121,10 +121,8 @@ class ModuleBuilder:
         except TypeError as e:
              passed_args_str = ", ".join(f"{k}={type(v).__name__}" for k,v in kwargs.items())
              raise TypeError(
-                 f"Failed to instantiate '{name}' ({cls.__name__}) for kind '{kind}'.
-"
-                 f"  > Provided args: {{{passed_args_str}}}
-"
+                 f"Failed to instantiate '{name}' ({cls.__name__}) for kind '{kind}'."
+                 f"  > Provided args: {{{passed_args_str}}}"
                  f"  > Original error: {e}"
              ) from e
 
