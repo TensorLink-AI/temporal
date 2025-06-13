@@ -57,13 +57,23 @@ class OutputHeadBuilder:
             "output_size": output_size,
             "num_quantiles": getattr(self.config, 'num_quantiles', None),
             "feature_size": getattr(self.config, 'feature_size', 1),
-            **(head_config.kwargs or {})
         }
+        
+        # Add all user-defined kwargs from the head_config
+        if head_config.kwargs:
+            init_args.update(head_config.kwargs)
+
 
         # Filter the arguments to only those accepted by the head's constructor.
         signature = inspect.signature(head_class.__init__)
         accepted_params = set(signature.parameters.keys())
-        final_args = {k: v for k, v in init_args.items() if k in accepted_params}
+        
+        # If the constructor accepts **kwargs, pass everything. Otherwise, filter.
+        if "kwargs" not in accepted_params:
+            final_args = {k: v for k, v in init_args.items() if k in accepted_params}
+        else:
+            final_args = init_args
+
 
         try:
             return head_class(**final_args)
