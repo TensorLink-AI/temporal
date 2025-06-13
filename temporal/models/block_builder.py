@@ -1,6 +1,7 @@
 from temporal.registry.core import resolve
 import inspect
 from typing import Type
+import torch.nn as nn
 
 class BlockBuilder:
     """A builder class for creating Transformer blocks based on configuration.
