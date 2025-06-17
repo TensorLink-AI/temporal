@@ -1,5 +1,5 @@
-modules package
-===============
+temporal.modules package
+========================
 
 Subpackages
 -----------
@@ -20,7 +20,7 @@ Subpackages
 Module contents
 ---------------
 
-.. automodule:: modules
+.. automodule:: temporal.modules
    :members:
    :show-inheritance:
    :undoc-members:

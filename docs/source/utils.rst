@@ -1,37 +1,37 @@
-utils package
-=============
+temporal.utils package
+======================
 
 Submodules
 ----------
 
-utils.ensemble module
----------------------
+temporal.utils.ensemble module
+------------------------------
 
-.. automodule:: utils.ensemble
+.. automodule:: temporal.utils.ensemble
    :members:
    :show-inheritance:
    :undoc-members:
 
-utils.hf\_accessors module
---------------------------
+temporal.utils.hf\_accessors module
+-----------------------------------
 
-.. automodule:: utils.hf_accessors
+.. automodule:: temporal.utils.hf_accessors
    :members:
    :show-inheritance:
    :undoc-members:
 
-utils.hf\_adapter module
-------------------------
+temporal.utils.hf\_adapter module
+---------------------------------
 
-.. automodule:: utils.hf_adapter
+.. automodule:: temporal.utils.hf_adapter
    :members:
    :show-inheritance:
    :undoc-members:
 
-utils.utils module
-------------------
+temporal.utils.utils module
+---------------------------
 
-.. automodule:: utils.utils
+.. automodule:: temporal.utils.utils
    :members:
    :show-inheritance:
    :undoc-members:
@@ -39,7 +39,7 @@ utils.utils module
 Module contents
 ---------------
 
-.. automodule:: utils
+.. automodule:: temporal.utils
    :members:
    :show-inheritance:
    :undoc-members:

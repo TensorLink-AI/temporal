@@ -1,13 +1,13 @@
-hf\_compat package
-==================
+temporal.hf\_compat package
+===========================
 
 Submodules
 ----------
 
-hf\_compat.config\_wrapper module
----------------------------------
+temporal.hf\_compat.config\_wrapper module
+------------------------------------------
 
-.. automodule:: hf_compat.config_wrapper
+.. automodule:: temporal.hf_compat.config_wrapper
    :members:
    :show-inheritance:
    :undoc-members:
@@ -15,7 +15,7 @@ hf\_compat.config\_wrapper module
 Module contents
 ---------------
 
-.. automodule:: hf_compat
+.. automodule:: temporal.hf_compat
    :members:
    :show-inheritance:
    :undoc-members:

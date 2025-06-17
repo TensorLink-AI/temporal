@@ -1,13 +1,13 @@
-modules.embedders package
-=========================
+temporal.modules.embedders package
+==================================
 
 Submodules
 ----------
 
-modules.embedders.embedding module
-----------------------------------
+temporal.modules.embedders.embedding module
+-------------------------------------------
 
-.. automodule:: modules.embedders.embedding
+.. automodule:: temporal.modules.embedders.embedding
    :members:
    :show-inheritance:
    :undoc-members:
@@ -15,7 +15,7 @@ modules.embedders.embedding module
 Module contents
 ---------------
 
-.. automodule:: modules.embedders
+.. automodule:: temporal.modules.embedders
    :members:
    :show-inheritance:
    :undoc-members:

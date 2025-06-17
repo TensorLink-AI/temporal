@@ -1,21 +1,21 @@
-modules.encoders package
-========================
+temporal.modules.encoders package
+=================================
 
 Submodules
 ----------
 
-modules.encoders.encoders module
---------------------------------
+temporal.modules.encoders.encoders module
+-----------------------------------------
 
-.. automodule:: modules.encoders.encoders
+.. automodule:: temporal.modules.encoders.encoders
    :members:
    :show-inheritance:
    :undoc-members:
 
-modules.encoders.transformer\_encoder\_layer module
----------------------------------------------------
+temporal.modules.encoders.transformer\_encoder\_layer module
+------------------------------------------------------------
 
-.. automodule:: modules.encoders.transformer_encoder_layer
+.. automodule:: temporal.modules.encoders.transformer_encoder_layer
    :members:
    :show-inheritance:
    :undoc-members:
@@ -23,7 +23,7 @@ modules.encoders.transformer\_encoder\_layer module
 Module contents
 ---------------
 
-.. automodule:: modules.encoders
+.. automodule:: temporal.modules.encoders
    :members:
    :show-inheritance:
    :undoc-members:

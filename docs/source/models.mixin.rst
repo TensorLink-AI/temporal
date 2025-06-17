@@ -1,21 +1,21 @@
-models.mixin package
-====================
+temporal.models.mixin package
+=============================
 
 Submodules
 ----------
 
-models.mixin.autoregressive module
-----------------------------------
+temporal.models.mixin.autoregressive module
+-------------------------------------------
 
-.. automodule:: models.mixin.autoregressive
+.. automodule:: temporal.models.mixin.autoregressive
    :members:
    :show-inheritance:
    :undoc-members:
 
-models.mixin.multistep module
------------------------------
+temporal.models.mixin.multistep module
+--------------------------------------
 
-.. automodule:: models.mixin.multistep
+.. automodule:: temporal.models.mixin.multistep
    :members:
    :show-inheritance:
    :undoc-members:
@@ -23,7 +23,7 @@ models.mixin.multistep module
 Module contents
 ---------------
 
-.. automodule:: models.mixin
+.. automodule:: temporal.models.mixin
    :members:
    :show-inheritance:
    :undoc-members:

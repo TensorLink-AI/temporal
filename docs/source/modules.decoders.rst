@@ -1,21 +1,21 @@
-modules.decoders package
-========================
+temporal.modules.decoders package
+=================================
 
 Submodules
 ----------
 
-modules.decoders.base\_decoder\_layer module
---------------------------------------------
+temporal.modules.decoders.base\_decoder\_layer module
+-----------------------------------------------------
 
-.. automodule:: modules.decoders.base_decoder_layer
+.. automodule:: temporal.modules.decoders.base_decoder_layer
    :members:
    :show-inheritance:
    :undoc-members:
 
-modules.decoders.decoders module
---------------------------------
+temporal.modules.decoders.decoders module
+-----------------------------------------
 
-.. automodule:: modules.decoders.decoders
+.. automodule:: temporal.modules.decoders.decoders
    :members:
    :show-inheritance:
    :undoc-members:
@@ -23,7 +23,7 @@ modules.decoders.decoders module
 Module contents
 ---------------
 
-.. automodule:: modules.decoders
+.. automodule:: temporal.modules.decoders
    :members:
    :show-inheritance:
    :undoc-members:

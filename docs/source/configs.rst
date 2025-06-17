@@ -1,21 +1,21 @@
-configs package
-===============
+temporal.configs package
+========================
 
 Submodules
 ----------
 
-configs.basetimeseriesconfig module
------------------------------------
+temporal.configs.basetimeseriesconfig module
+--------------------------------------------
 
-.. automodule:: configs.basetimeseriesconfig
+.. automodule:: temporal.configs.basetimeseriesconfig
    :members:
    :show-inheritance:
    :undoc-members:
 
-configs.transformer\_config module
-----------------------------------
+temporal.configs.transformer\_config module
+-------------------------------------------
 
-.. automodule:: configs.transformer_config
+.. automodule:: temporal.configs.transformer_config
    :members:
    :show-inheritance:
    :undoc-members:
@@ -23,7 +23,7 @@ configs.transformer\_config module
 Module contents
 ---------------
 
-.. automodule:: configs
+.. automodule:: temporal.configs
    :members:
    :show-inheritance:
    :undoc-members:

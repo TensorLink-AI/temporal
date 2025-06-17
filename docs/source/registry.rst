@@ -1,21 +1,21 @@
-registry package
-================
+temporal.registry package
+=========================
 
 Submodules
 ----------
 
-registry.core module
---------------------
+temporal.registry.core module
+-----------------------------
 
-.. automodule:: registry.core
+.. automodule:: temporal.registry.core
    :members:
    :show-inheritance:
    :undoc-members:
 
-registry.generate module
-------------------------
+temporal.registry.generate module
+---------------------------------
 
-.. automodule:: registry.generate
+.. automodule:: temporal.registry.generate
    :members:
    :show-inheritance:
    :undoc-members:
@@ -23,7 +23,7 @@ registry.generate module
 Module contents
 ---------------
 
-.. automodule:: registry
+.. automodule:: temporal.registry
    :members:
    :show-inheritance:
    :undoc-members:

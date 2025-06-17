@@ -1,21 +1,21 @@
-data package
-============
+temporal.data package
+=====================
 
 Submodules
 ----------
 
-data.hf\_streaming\_dataloader module
--------------------------------------
+temporal.data.hf\_streaming\_dataloader module
+----------------------------------------------
 
-.. automodule:: data.hf_streaming_dataloader
+.. automodule:: temporal.data.hf_streaming_dataloader
    :members:
    :show-inheritance:
    :undoc-members:
 
-data.transformations module
----------------------------
+temporal.data.transformations module
+------------------------------------
 
-.. automodule:: data.transformations
+.. automodule:: temporal.data.transformations
    :members:
    :show-inheritance:
    :undoc-members:
@@ -23,7 +23,7 @@ data.transformations module
 Module contents
 ---------------
 
-.. automodule:: data
+.. automodule:: temporal.data
    :members:
    :show-inheritance:
    :undoc-members:

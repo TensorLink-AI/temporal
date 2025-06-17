@@ -1,21 +1,21 @@
-modules.losses package
-======================
+temporal.modules.losses package
+===============================
 
 Submodules
 ----------
 
-modules.losses.loss\_functions module
--------------------------------------
+temporal.modules.losses.loss\_functions module
+----------------------------------------------
 
-.. automodule:: modules.losses.loss_functions
+.. automodule:: temporal.modules.losses.loss_functions
    :members:
    :show-inheritance:
    :undoc-members:
 
-modules.losses.losses module
-----------------------------
+temporal.modules.losses.losses module
+-------------------------------------
 
-.. automodule:: modules.losses.losses
+.. automodule:: temporal.modules.losses.losses
    :members:
    :show-inheritance:
    :undoc-members:
@@ -23,7 +23,7 @@ modules.losses.losses module
 Module contents
 ---------------
 
-.. automodule:: modules.losses
+.. automodule:: temporal.modules.losses
    :members:
    :show-inheritance:
    :undoc-members:

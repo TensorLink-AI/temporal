@@ -1,29 +1,29 @@
-modules.norm package
-====================
+temporal.modules.norm package
+=============================
 
 Submodules
 ----------
 
-modules.norm.layer\_norm module
--------------------------------
+temporal.modules.norm.layer\_norm module
+----------------------------------------
 
-.. automodule:: modules.norm.layer_norm
+.. automodule:: temporal.modules.norm.layer_norm
    :members:
    :show-inheritance:
    :undoc-members:
 
-modules.norm.rms\_norm module
------------------------------
+temporal.modules.norm.rms\_norm module
+--------------------------------------
 
-.. automodule:: modules.norm.rms_norm
+.. automodule:: temporal.modules.norm.rms_norm
    :members:
    :show-inheritance:
    :undoc-members:
 
-modules.norm.scale\_norm module
--------------------------------
+temporal.modules.norm.scale\_norm module
+----------------------------------------
 
-.. automodule:: modules.norm.scale_norm
+.. automodule:: temporal.modules.norm.scale_norm
    :members:
    :show-inheritance:
    :undoc-members:
@@ -31,7 +31,7 @@ modules.norm.scale\_norm module
 Module contents
 ---------------
 
-.. automodule:: modules.norm
+.. automodule:: temporal.modules.norm
    :members:
    :show-inheritance:
    :undoc-members:

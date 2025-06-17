@@ -1,21 +1,21 @@
-modules.heads package
-=====================
+temporal.modules.heads package
+==============================
 
 Submodules
 ----------
 
-modules.heads.base\_output\_head module
----------------------------------------
+temporal.modules.heads.base\_output\_head module
+------------------------------------------------
 
-.. automodule:: modules.heads.base_output_head
+.. automodule:: temporal.modules.heads.base_output_head
    :members:
    :show-inheritance:
    :undoc-members:
 
-modules.heads.output\_heads module
-----------------------------------
+temporal.modules.heads.output\_heads module
+-------------------------------------------
 
-.. automodule:: modules.heads.output_heads
+.. automodule:: temporal.modules.heads.output_heads
    :members:
    :show-inheritance:
    :undoc-members:
@@ -23,7 +23,7 @@ modules.heads.output\_heads module
 Module contents
 ---------------
 
-.. automodule:: modules.heads
+.. automodule:: temporal.modules.heads
    :members:
    :show-inheritance:
    :undoc-members:

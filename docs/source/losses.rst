@@ -1,13 +1,13 @@
-losses package
-==============
+temporal.losses package
+=======================
 
 Submodules
 ----------
 
-losses.crps\_loss\_ensemble module
-----------------------------------
+temporal.losses.crps\_loss\_ensemble module
+-------------------------------------------
 
-.. automodule:: losses.crps_loss_ensemble
+.. automodule:: temporal.losses.crps_loss_ensemble
    :members:
    :show-inheritance:
    :undoc-members:
@@ -15,7 +15,7 @@ losses.crps\_loss\_ensemble module
 Module contents
 ---------------
 
-.. automodule:: losses
+.. automodule:: temporal.losses
    :members:
    :show-inheritance:
    :undoc-members:

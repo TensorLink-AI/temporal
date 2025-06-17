@@ -1,21 +1,21 @@
-modules.feedforward package
-===========================
+temporal.modules.feedforward package
+====================================
 
 Submodules
 ----------
 
-modules.feedforward.moe module
-------------------------------
+temporal.modules.feedforward.moe module
+---------------------------------------
 
-.. automodule:: modules.feedforward.moe
+.. automodule:: temporal.modules.feedforward.moe
    :members:
    :show-inheritance:
    :undoc-members:
 
-modules.feedforward.standard module
------------------------------------
+temporal.modules.feedforward.standard module
+--------------------------------------------
 
-.. automodule:: modules.feedforward.standard
+.. automodule:: temporal.modules.feedforward.standard
    :members:
    :show-inheritance:
    :undoc-members:
@@ -23,7 +23,7 @@ modules.feedforward.standard module
 Module contents
 ---------------
 
-.. automodule:: modules.feedforward
+.. automodule:: temporal.modules.feedforward
    :members:
    :show-inheritance:
    :undoc-members:

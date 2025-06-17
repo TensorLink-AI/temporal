@@ -1,5 +1,5 @@
-models package
-==============
+temporal.models package
+=======================
 
 Subpackages
 -----------
@@ -12,50 +12,50 @@ Subpackages
 Submodules
 ----------
 
-models.base\_model module
--------------------------
+temporal.models.base\_model module
+----------------------------------
 
-.. automodule:: models.base_model
+.. automodule:: temporal.models.base_model
    :members:
    :show-inheritance:
    :undoc-members:
 
-models.block\_builder module
-----------------------------
-
-.. automodule:: models.block_builder
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-models.builder module
----------------------
-
-.. automodule:: models.builder
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
-models.module\_builder\_helper module
+temporal.models.block\_builder module
 -------------------------------------
 
-.. automodule:: models.module_builder_helper
+.. automodule:: temporal.models.block_builder
    :members:
    :show-inheritance:
    :undoc-members:
 
-models.output\_head\_builder module
------------------------------------
+temporal.models.builder module
+------------------------------
 
-.. automodule:: models.output_head_builder
+.. automodule:: temporal.models.builder
    :members:
    :show-inheritance:
    :undoc-members:
 
-models.transformer\_model module
---------------------------------
+temporal.models.module\_builder\_helper module
+----------------------------------------------
 
-.. automodule:: models.transformer_model
+.. automodule:: temporal.models.module_builder_helper
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+temporal.models.output\_head\_builder module
+--------------------------------------------
+
+.. automodule:: temporal.models.output_head_builder
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+temporal.models.transformer\_model module
+-----------------------------------------
+
+.. automodule:: temporal.models.transformer_model
    :members:
    :show-inheritance:
    :undoc-members:
@@ -63,7 +63,7 @@ models.transformer\_model module
 Module contents
 ---------------
 
-.. automodule:: models
+.. automodule:: temporal.models
    :members:
    :show-inheritance:
    :undoc-members:
