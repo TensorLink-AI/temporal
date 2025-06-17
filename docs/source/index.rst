@@ -6,12 +6,25 @@
 Temporal documentation
 ======================
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
-
-
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
 
+   configs
+   data
+   hf_compat
+   losses
+   models.mixin
+   models
+   modules.attentions
+   modules.blocks
+   modules.decoders
+   modules.embedders
+   modules.encoders
+   modules.feedforward
+   modules.heads
+   modules.losses
+   modules.norm
+   modules
+   registry
+   utils
