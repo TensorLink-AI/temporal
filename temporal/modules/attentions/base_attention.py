@@ -31,6 +31,7 @@ class BaseMultiHeadAttention(nn.Module):
     implement the core attention logic in the `forward` method.
 
     Attributes:
+
         embed_dim (int): The embedding dimension of the model.
         num_heads (int): The number of attention heads.
         dropout (float): The dropout rate.
@@ -56,6 +57,7 @@ class BaseMultiHeadAttention(nn.Module):
         """Initializes the BaseMultiHeadAttention module.
 
         Args:
+
             embed_dim (int): The embedding dimension of the model.
             num_heads (int): The number of attention heads.
             dropout (float): The dropout rate.
@@ -89,10 +91,12 @@ class BaseMultiHeadAttention(nn.Module):
         """Computes the attention scores.
 
         Args:
+
             q (torch.Tensor): The query tensor.
             k (torch.Tensor): The key tensor.
 
         Returns:
+
             torch.Tensor: The attention scores.
         """
         attn_scores = torch.matmul(q * self.scaling, k.transpose(-1, -2))
@@ -116,6 +120,7 @@ class BaseMultiHeadAttention(nn.Module):
         """Performs the forward pass of the attention layer.
 
         Args:
+
             hidden_states (torch.Tensor): The input hidden states.
             key_value_states (Optional[torch.Tensor]): The key and value states for
                 cross-attention. Defaults to None.
@@ -137,6 +142,7 @@ class BaseMultiHeadAttention(nn.Module):
                 Defaults to None.
 
         Returns:
+        
             Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
                 A tuple containing the attention output, the attention probabilities
                 (if output_attentions is True), and the updated key and value states
@@ -261,6 +267,7 @@ class FullAttention(BaseMultiHeadAttention):
     Positional Embeddings (RoPE) and ALiBi positional embeddings.
 
     Attributes:
+
         use_rope (bool): Whether to use RoPE.
         use_alibi (bool): Whether to use ALiBi.
         rotary_proj (Optional[RotaryPositionalEmbedding]): The RoPE module.
@@ -286,6 +293,7 @@ class FullAttention(BaseMultiHeadAttention):
         """Initializes the FullAttention module.
 
         Args:
+
             embed_dim (int): The embedding dimension of the model.
             num_heads (int): The number of attention heads.
             dropout (float): The dropout rate.
@@ -340,6 +348,7 @@ class FullAttention(BaseMultiHeadAttention):
         class, passing the RoPE and ALiBi modules if they are enabled.
 
         Args:
+
             hidden_states (torch.Tensor): The input hidden states.
             key_value_states (Optional[torch.Tensor]): The key and value states for
                 cross-attention. Defaults to None.
@@ -357,6 +366,7 @@ class FullAttention(BaseMultiHeadAttention):
                 Defaults to None.
 
         Returns:
+        
             Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
                 A tuple containing the attention output, the attention probabilities
                 (if output_attentions is True), and the updated key and value states
@@ -384,6 +394,7 @@ class FlashAttention(BaseMultiHeadAttention):
     which provides a more efficient implementation of attention.
 
     Attributes:
+
         softmax_scale (Optional[float]): The softmax scale.
         causal (bool): Whether to use causal attention.
     """
@@ -402,6 +413,7 @@ class FlashAttention(BaseMultiHeadAttention):
         """Initializes the FlashAttention module.
 
         Args:
+
             embed_dim (int): The embedding dimension of the model.
             num_heads (int): The number of attention heads.
             dropout (float): The dropout rate.
@@ -438,6 +450,7 @@ class FlashAttention(BaseMultiHeadAttention):
         features of the `BaseMultiHeadAttention` class, such as RoPE and ALiBi.
 
         Args:
+
             hidden_states (torch.Tensor): The input hidden states.
             key_value_states (Optional[torch.Tensor]): The key and value states for
                 cross-attention. Defaults to None.
@@ -451,6 +464,7 @@ class FlashAttention(BaseMultiHeadAttention):
             alibi_bias_generator: Ignored.
 
         Returns:
+        
             Tuple[torch.Tensor, None, None]: A tuple containing the attention
                 output, None for the attention probabilities, and None for the
                 key and value states.

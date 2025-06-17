@@ -20,6 +20,7 @@ class MultiScaleBlock(nn.Module):
     fusion method ('add', 'concat', or 'gate').
 
     Attributes:
+
         fine_attn (nn.Module): The attention module for the fine scale.
         coarse_attn (nn.Module): The attention module for the coarse scale.
         downsample_factor (int): The factor by which to downsample the sequence
@@ -41,6 +42,7 @@ class MultiScaleBlock(nn.Module):
         """Initializes the MultiScaleBlock.
 
         Args:
+
             fine_attn (nn.Module): The attention module for the fine-scale processing.
             coarse_attn (nn.Module): The attention module for the coarse-scale processing.
             downsample_factor (int): The factor by which to downsample the sequence.
@@ -80,6 +82,7 @@ class MultiScaleBlock(nn.Module):
         """Performs the forward pass of the MultiScaleBlock.
 
         Args:
+
             hidden_states (torch.Tensor): The input tensor of shape `[B, L, D]`.
             attention_mask (Optional[torch.Tensor]): The attention mask for the
                 fine-scale attention. Defaults to None.
@@ -88,6 +91,7 @@ class MultiScaleBlock(nn.Module):
             **kwargs: Additional keyword arguments to be passed to the attention modules.
 
         Returns:
+        
             Tuple[torch.Tensor, Optional[Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]]]:
                 - The fused output tensor of shape `[B, L, D]`.
                 - A tuple containing the attention weights from the fine and coarse

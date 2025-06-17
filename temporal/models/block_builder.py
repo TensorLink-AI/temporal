@@ -13,6 +13,7 @@ class BlockBuilder:
     or pre-built sub-modules.
 
     Attributes:
+
         config: The global configuration object for the entire model.
         builder (ModuleBuilder): A reference to the main `ModuleBuilder` which
             can construct primitive components like attention or feed-forward layers.
@@ -44,6 +45,7 @@ class BlockBuilder:
         5.  Instantiates and returns the block.
 
         Args:
+        
             block_cfg: An instance of `TransformerBlockConfig` that defines the
                 specific block to be built.
 

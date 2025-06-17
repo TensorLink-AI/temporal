@@ -22,6 +22,7 @@ class HybridAttention(nn.Module):
     or a more complex, learnable aggregation module.
 
     Attributes:
+
         embed_dim (int): The total embedding dimension.
         num_heads (int): The total number of attention heads.
         head_dim (int): The dimension of each individual attention head.
@@ -56,6 +57,7 @@ class HybridAttention(nn.Module):
         """Initializes the HybridAttention module.
 
         Args:
+
             embed_dim (int): The total embedding dimension.
             num_heads (int): The total number of attention heads.
             dropout (float): The dropout rate for the attention kernels.
@@ -152,11 +154,13 @@ class HybridAttention(nn.Module):
         """Fuses head outputs by concatenation and a linear projection.
 
         Args:
+        
             head_outputs (List[torch.Tensor]): A list of output tensors from each
                 attention group. Each tensor has the shape
                 `[batch, group_heads, seq_len, head_dim]`.
 
         Returns:
+        
             torch.Tensor: The fused output tensor of shape `[batch, seq_len, embed_dim]`.
         """
         all_heads = torch.cat(head_outputs, dim=1)  # [B, H, T, D_head]
@@ -172,11 +176,13 @@ class HybridAttention(nn.Module):
         """Fuses head outputs using a registered head aggregation module.
 
         Args:
+        
             head_outputs (List[torch.Tensor]): A list of output tensors from each
                 attention group. Each tensor has the shape
                 `[batch, group_heads, seq_len, head_dim]`.
 
         Returns:
+        
             torch.Tensor: The fused output tensor. The shape depends on the
                 aggregator implementation but is typically
                 `[batch, seq_len, embed_dim]`.
@@ -199,6 +205,7 @@ class HybridAttention(nn.Module):
         """Performs the forward pass for the HybridAttention module.
 
         Args:
+        
             hidden_states (torch.Tensor): The query tensor of shape `[B, T, D]`.
             key_value_states (Optional[torch.Tensor]): The key/value source tensor
                 for cross-attention, shape `[B, S, D]`. If None, self-attention is performed.
@@ -214,6 +221,7 @@ class HybridAttention(nn.Module):
             use_cache (bool): If True, returns the updated key-value states for caching.
 
         Returns:
+        
             Tuple[torch.Tensor, Optional[List[Optional[torch.Tensor]]], Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]]]:
                 - The final fused attention output tensor of shape `[B, T, D]`.
                 - A list of attention probabilities from each group (if `output_attentions`).

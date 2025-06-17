@@ -23,6 +23,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
     dynamically built based on the provided configuration.
 
     Attributes:
+
         config (TransformerBlockConfig): The configuration for this specific block.
         self_attn (nn.Module): The self-attention module.
         ffn (nn.Module): The feed-forward network.
@@ -34,6 +35,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         """Initializes the TimeSeriesTransformerEncoderLayer.
 
         Args:
+
             config (TransformerBlockConfig): The configuration specific to this encoder
                 layer, defining the types of attention and FFN to be used.
             builder (ModuleBuilder): A helper class that constructs the sub-modules
@@ -83,6 +85,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         """Performs the forward pass of the encoder layer.
 
         Args:
+
             hidden_states (torch.Tensor): The input to the layer of shape
                 `(batch, seq_len, embed_dim)`.
             attention_mask (Optional[torch.Tensor]): A mask to prevent attention
@@ -91,6 +94,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
                 probabilities.
 
         Returns:
+        
              Tuple[torch.Tensor, Optional[torch.Tensor]]: A tuple containing:
                 - The output hidden states of the layer.
                 - The attention probabilities, if `output_attentions` is True;

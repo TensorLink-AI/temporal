@@ -24,6 +24,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
     - Handling the Key-Value (KV) cache for efficient autoregressive generation.
 
     Attributes:
+
         config: The main configuration object for the model.
         dropout (nn.Dropout): Dropout layer applied after embeddings.
         layernorm_embedding (nn.Module): Layer normalization applied to the embeddings.
@@ -41,6 +42,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
         """Initializes the TimeSeriesTransformerDecoder.
 
         Args:
+
             config: The main model configuration object.
             builder (ModuleBuilder): A helper class that constructs the various
                 sub-modules (embeddings, normalization, etc.) based on the config.
@@ -66,10 +68,12 @@ class TimeSeriesTransformerDecoder(nn.Module):
         """Safely determines the sequence length from a Key-Value cache.
 
         Args:
+
             past_key_values (Optional[List[Tuple]]): The KV cache, which is a
                 list of tuples, one for each layer.
 
         Returns:
+        
             int: The length of the cached sequences, or 0 if the cache is empty.
         """
         if past_key_values is None or not past_key_values:
@@ -108,6 +112,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
         """Performs the forward pass of the Transformer decoder.
 
         Args:
+
             input_ids (torch.Tensor): The raw input features for the decoder,
                 shape `[B, T, F]`.
             encoder_hidden_states (Optional[torch.Tensor]): The output from the
@@ -124,6 +129,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
             return_dict (bool): Whether to return a structured model output.
 
         Returns:
+        
             Union[BaseModelOutputWithPastAndCrossAttentions, Tuple]: The decoder's
             output, either as a structured object or a tuple.
         """

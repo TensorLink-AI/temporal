@@ -16,6 +16,7 @@ class BaseTemporalModel(nn.Module):
     `temporal.utils.hf_adapter.TimeSeriesTransformerModel` wrapper.
 
     Attributes:
+    
         config: The configuration object containing model hyperparameters.
         encoder (nn.Module or None): The encoder module of the model.
         decoder (nn.Module or None): The decoder module of the model.

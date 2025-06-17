@@ -25,6 +25,7 @@ class BinaryAttentionBias(nn.Module):
     training.
 
     Attributes:
+
         num_heads (int): The number of attention heads.
         num_buckets (int): The number of buckets to group relative positions into.
         max_distance (int): The maximum relative distance to consider.
@@ -35,6 +36,7 @@ class BinaryAttentionBias(nn.Module):
         """Initializes the BinaryAttentionBias module.
 
         Args:
+
             num_heads (int): The number of attention heads.
             num_buckets (int): The number of buckets for relative position bias.
             max_distance (int): The maximum distance for relative position bias.
@@ -51,9 +53,11 @@ class BinaryAttentionBias(nn.Module):
         """Calculates the relative position bucket for each relative position.
 
         Args:
+        
             relative_position (torch.Tensor): A tensor of relative positions.
 
         Returns:
+        
             torch.Tensor: A tensor of bucket indices.
         """
         bucket_indices = 0
@@ -89,11 +93,13 @@ class BinaryAttentionBias(nn.Module):
         """Computes the relative position bias tensor.
 
         Args:
+        
             query_length (int): The length of the query sequence.
             key_length (int): The length of the key sequence.
             device (Optional[torch.device]): The device to create the tensor on.
 
         Returns:
+        
             torch.Tensor: The relative position bias tensor.
         """
         relative_position = torch.arange(key_length, device=device)[None, :] - torch.arange(query_length, device=device)[:, None]
@@ -106,9 +112,11 @@ class BinaryAttentionBias(nn.Module):
         """Applies the relative position bias to the attention scores.
 
         Args:
+        
             attn_scores (torch.Tensor): The attention scores.
 
         Returns:
+        
             torch.Tensor: The attention scores with the bias applied.
         """
         batch_size, num_heads, query_length, key_length = attn_scores.shape
@@ -125,6 +133,7 @@ class TimeAttention(BaseMultiHeadAttention):
     cosine and sine positional embeddings and BinaryAttentionBias for the bias.
 
     Attributes:
+    
         rotary_embed (RotaryPositionalEmbedding): The RoPE generator.
         rel_pos_bias (BinaryAttentionBias): The relative position bias module.
     """
@@ -145,6 +154,7 @@ class TimeAttention(BaseMultiHeadAttention):
         """Initializes the TimeAttention module.
 
         Args:
+        
             embed_dim (int): The embedding dimension of the model.
             num_heads (int): The number of attention heads.
             dropout (float): The dropout rate.
@@ -190,6 +200,7 @@ class TimeAttention(BaseMultiHeadAttention):
         """Performs the forward pass of the attention layer.
 
         Args:
+        
             hidden_states (torch.Tensor): The input hidden states.
             key_value_states (Optional[torch.Tensor]): The key and value states for
                 cross-attention. Defaults to None.
@@ -207,6 +218,7 @@ class TimeAttention(BaseMultiHeadAttention):
                 Defaults to None.
 
         Returns:
+        
             Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
                 A tuple containing the attention output, the attention probabilities
                 (if output_attentions is True), and the updated key and value states

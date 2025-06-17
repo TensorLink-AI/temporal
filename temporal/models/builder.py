@@ -30,6 +30,7 @@ def build_time_series_transformer(
         and instantiating it with all the built components.
 
     Args:
+    
         config (TransformerTimeSeriesConfig): The complete configuration object
             that defines the model's architecture, layers, and components.
         generate_strategy (Optional[str]): If provided, this string overrides the
@@ -37,9 +38,11 @@ def build_time_series_transformer(
             from the `generate_registry`.
 
     Returns:
+    
         BaseTemporalModel: An instantiated and fully constructed time series model.
 
     Raises:
+    
         ValueError: If the configuration is invalid or missing required sections
             (e.g., `encoder_blocks` for an encoder-based architecture).
         RuntimeError: If the loss function cannot be built from the configuration.

@@ -22,6 +22,7 @@ class MultiStepMixin:
         Predicts the entire `prediction_length` horizon simultaneously.
 
         Args:
+
             input_ids: Inputs. Shape depends on architecture:
                        - Encoder-Decoder: Encoder input sequence [B, Seq_Enc, Feat_Enc].
                        - Decoder-Only: Known history sequence [B, Seq_Hist, Feat_Hist].
@@ -35,6 +36,7 @@ class MultiStepMixin:
             **kwargs: Additional arguments passed to encoder/decoder.
 
         Returns:
+        
             Tensor of predicted sequence, shape [B, prediction_length, Feat_Dec].
         """
         if use_cache:

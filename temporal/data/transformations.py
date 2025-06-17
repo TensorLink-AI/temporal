@@ -188,6 +188,7 @@ class TimeSeriesIterableDataset(IterableDataset):
 def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     """
     Collate streamed samples into a single batch with padding for:
+    
       - input_ids
       - labels
       - (optional) decoder_input_ids (for multi-step teacher forcing)

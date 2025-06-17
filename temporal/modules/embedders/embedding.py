@@ -26,9 +26,11 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     before the first half, effectively rotating the vector.
 
     Args:
+    
         x: Input tensor of shape [..., dim]
 
     Returns:
+    
         Rotated tensor of same shape as input.
     """
     x1 = x[..., : x.shape[-1] // 2]
@@ -47,6 +49,7 @@ def apply_rotary_pos_emb(
     Apply Rotary Positional Embedding to query and key tensors.
 
     Args:
+    
         q: Query tensor of shape [batch_size, num_heads, seq_len, head_dim].
         k: Key tensor of shape [batch_size, num_heads, seq_len, head_dim].
         cos: Cosine frequencies tensor, either of shape [seq_len, dim]
@@ -56,6 +59,7 @@ def apply_rotary_pos_emb(
             indexing cached cos/sin embeddings.
 
     Returns:
+    
         Tuple of (q_embed, k_embed), each with same shape as inputs q and k.
     """
     # Expand cos/sin to match q/k if needed
@@ -85,9 +89,10 @@ class BaseEmbedding(nn.Module):
         Initialize BaseEmbedding.
 
         Args:
+        
             d_model: Dimension of the embedding output.
         """
-        super().__init__()
+        super().__init__(d_model)
         self.d_model = d_model
 
     def forward(self, *args, **kwargs):
@@ -114,6 +119,7 @@ class TimeSeriesValueEmbedding(BaseEmbedding):
         Initialize TimeSeriesValueEmbedding.
 
         Args:
+        
             feature_size: Number of input features at each time step.
             d_model: Dimension of the output embedding.
             use_value_norm: If True, apply LayerNorm after projection.
@@ -127,9 +133,11 @@ class TimeSeriesValueEmbedding(BaseEmbedding):
         Project input values and optionally normalize.
 
         Args:
+        
             x: Input tensor of shape [batch_size, seq_len, feature_size].
 
         Returns:
+        
             Tensor of shape [batch_size, seq_len, d_model].
         """
         proj = self.value_projection(x)
@@ -155,6 +163,7 @@ class FlexibleValueEmbedding(BaseEmbedding):
         Initialize FlexibleValueEmbedding.
 
         Args:
+        
             d_model: Output embedding size.
             input_dims: Either an int or list/tuple of ints for multiple feature blocks.
             proj_builder: Factory function (in_dim, out_dim, extra_kwargs) → nn.Module.
@@ -186,9 +195,11 @@ class FlexibleValueEmbedding(BaseEmbedding):
         Embed input tensor, handling single or multiple blocks, then optionally normalize.
 
         Args:
+        
             x: Tensor of shape [B, T, sum(input_dims)] or [B, T, input_dim].
 
         Returns:
+        
             Tensor of shape [B, T, d_model].
         """
         if isinstance(self.projections, nn.ModuleList):
@@ -214,6 +225,7 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         Initialize SinusoidalPositionalEmbedding.
 
         Args:
+        
             d_model: Dimension of the embeddings.
             max_seq_len: Maximum sequence length supported.
         """
@@ -227,6 +239,7 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         Create sinusoidal positional encoding table.
 
         Returns:
+        
             Tensor of shape [max_seq_len, d_model].
         """
         position_enc = np.array([
@@ -250,14 +263,17 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         Retrieve positional embeddings for a batch.
 
         Args:
+        
             batch_size: Batch size B.
             seq_len: Number of new positions to embed.
             past_key_values_length: Offset for position indices.
 
         Returns:
+        
             Tensor of shape [B, seq_len, d_model].
 
         Raises:
+        
             IndexError: If requested positions exceed max_seq_len.
         """
         start = past_key_values_length
@@ -288,6 +304,7 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
     ):
         """
         Args:
+        
             patch_size: Length of each patch.
             feature_size: Number of input channels F.
             d_model: Output embedding dimension.
@@ -304,12 +321,15 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
+        
             x: Tensor of shape [B, L, F].
 
         Returns:
+        
             Tensor of shape [B, num_patches, d_model].
 
         Raises:
+        
             ValueError: If input feature dimension mismatches feature_size.
         """
         B, L, F = x.shape
@@ -343,6 +363,7 @@ class TimeSeriesGlobalEmbedding(BaseEmbedding):
     def __init__(self, seq_len: int, feature_size: int, d_model: int):
         """
         Args:
+        
             seq_len: Sequence length L.
             feature_size: Number of channels F.
             d_model: Output embedding dimension.
@@ -355,12 +376,15 @@ class TimeSeriesGlobalEmbedding(BaseEmbedding):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
+        
             x: Tensor of shape [B, L, F].
 
         Returns:
+        
             Tensor of shape [B, 1, d_model].
 
         Raises:
+        
             ValueError: If input dims mismatch configured seq_len or feature_size.
         """
         B, L, F = x.shape
@@ -383,6 +407,7 @@ class RotaryPositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, max_seq_len: int = 2048, base: int = 10000):
         """
         Args:
+        
             d_model: Embedding dimension (must be even).
             max_seq_len: Maximum sequence length for cache.
             base: Base for frequency calculation.
@@ -402,6 +427,7 @@ class RotaryPositionalEmbedding(BaseEmbedding):
         Build cos and sin caches for sequence positions.
 
         Args:
+        
             seq_len: Length to build cache for.
         """
         t = torch.arange(seq_len, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
@@ -420,10 +446,12 @@ class RotaryPositionalEmbedding(BaseEmbedding):
         Return cos and sin caches for requested seq_len.
 
         Args:
+        
             x: Dummy tensor to infer device and dtype.
             seq_len: Number of positions needed.
 
         Returns:
+        
             Tuple of (cos, sin), each of shape [seq_len, d_model].
         """
         if seq_len > self.max_seq_len_cached or self.cos_cached.device != x.device:
@@ -441,6 +469,7 @@ class LearnedAbsolutePositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, max_seq_len: int = 2048):
         """
         Args:
+        
             d_model: Embedding dimension.
             max_seq_len: Maximum positions.
         """
@@ -456,14 +485,17 @@ class LearnedAbsolutePositionalEmbedding(BaseEmbedding):
     ) -> torch.Tensor:
         """
         Args:
+        
             batch_size: Batch size B.
             seq_len: Number of positions.
             past_key_values_length: Offset index.
 
         Returns:
+        
             Tensor of shape [B, seq_len, d_model].
 
         Raises:
+        
             IndexError: If requested position exceeds max_seq_len.
         """
         start = past_key_values_length
@@ -487,6 +519,7 @@ class ShawRelativePositionalBias(BaseEmbedding):
     def __init__(self, num_heads: int, max_distance: int = 128):
         """
         Args:
+        
             num_heads: Number of attention heads.
             max_distance: Maximum relative distance.
         """
@@ -499,10 +532,12 @@ class ShawRelativePositionalBias(BaseEmbedding):
         Compute relative bias tensor for attention scores.
 
         Args:
+        
             batch_size: Batch size.
             seq_len: Sequence length.
 
         Returns:
+        
             Tensor of shape [1, num_heads, seq_len, seq_len].
         """
         device = self.relative_bias.weight.device
@@ -523,6 +558,7 @@ class FourierFeatureEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, num_features: int = 16):
         """
         Args:
+        
             d_model: Output embedding dimension.
             num_features: Number of Fourier features.
         """
@@ -539,10 +575,12 @@ class FourierFeatureEmbedding(BaseEmbedding):
         Embed positions into Fourier feature space.
 
         Args:
+        
             batch_size: Batch size.
             seq_len: Sequence length.
 
         Returns:
+        
             Tensor of shape [B, seq_len, d_model].
         """
         device = self.proj.weight.device
@@ -563,6 +601,7 @@ class Time2VecEmbedding(BaseEmbedding):
     def __init__(self, d_model: int):
         """
         Args:
+        
             d_model: Output embedding dimension (>=2).
         """
         super().__init__(d_model)
@@ -574,10 +613,12 @@ class Time2VecEmbedding(BaseEmbedding):
         Embed time steps via Time2Vec.
 
         Args:
+        
             batch_size: Batch size.
             seq_len: Sequence length.
 
         Returns:
+        
             Tensor [B, seq_len, d_model].
         """
         device = next(self.parameters()).device
@@ -602,6 +643,7 @@ class ALiBiPositionalBias(BaseEmbedding):
     ):
         """
         Args:
+        
             num_heads: Number of attention heads.
             max_seq_len: Max sequence length for slope calculation.
         """
@@ -616,9 +658,11 @@ class ALiBiPositionalBias(BaseEmbedding):
         Compute ALiBi slopes for heads.
 
         Args:
+        
             n: Number of heads.
 
         Returns:
+        
             List of slopes of length n.
         """
         def p2(v):
@@ -636,10 +680,12 @@ class ALiBiPositionalBias(BaseEmbedding):
         Generate ALiBi bias tensor for causal attention.
 
         Args:
+        
             batch_size: Batch size.
             seq_len: Sequence length.
 
         Returns:
+        
             Tensor [1, num_heads, seq_len, seq_len].
         """
         device = self.slopes.device
@@ -666,6 +712,7 @@ class BucketedRelativeBias(BaseEmbedding):
     ):
         """
         Args:
+        
             num_heads: Number of attention heads.
             num_buckets: Number of buckets.
             max_distance: Max distance to represent.
@@ -680,10 +727,12 @@ class BucketedRelativeBias(BaseEmbedding):
         Compute bucketed relative bias.
 
         Args:
+        
             batch_size: Batch size.
             seq_len: Sequence length.
 
         Returns:
+        
             Tensor [1, num_heads, seq_len, seq_len].
         """
         device = self.relative_buckets.weight.device
@@ -706,6 +755,7 @@ class ConvolutionalPositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, kernel_size: int = 3, max_seq_len: int = 2048):
         """
         Args:
+        
             d_model: Embedding dimension.
             kernel_size: Conv1d kernel size.
             max_seq_len: Max sequence length for base emb.
@@ -720,11 +770,13 @@ class ConvolutionalPositionalEmbedding(BaseEmbedding):
         Apply conv to base positional embeddings.
 
         Args:
+        
             batch_size: Batch size.
             seq_len: Sequence length.
             past_key_values_length: Offset index.
 
         Returns:
+        
             Tensor [B, seq_len, d_model].
         """
         emb = self.base(batch_size, seq_len, past_key_values_length)
@@ -743,6 +795,7 @@ class TimeDeltaEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, hidden_dim: int = 64):
         """
         Args:
+        
             d_model: Output dimension.
             hidden_dim: Hidden layer size.
         """
@@ -758,10 +811,12 @@ class TimeDeltaEmbedding(BaseEmbedding):
         Embed relative time deltas.
 
         Args:
+        
             batch_size: Batch size.
             seq_len: Sequence length.
 
         Returns:
+        
             Tensor [B, seq_len, d_model].
         """
         device = next(self.mlp.parameters()).device if list(self.mlp.parameters()) else 'cpu'
@@ -785,6 +840,7 @@ class StackedPositionalEmbedding(BaseEmbedding):
     ):
         """
         Args:
+        
             d_model: Embedding dimension.
             embedding_configs: List of configs for sub-embeddings.
             builder: ModuleBuilder to instantiate embeddings.
@@ -809,11 +865,13 @@ class StackedPositionalEmbedding(BaseEmbedding):
         Sum outputs of configured embeddings.
 
         Args:
+        
             batch_size: Batch size.
             seq_len: Sequence length.
             **kwargs: Extra args for sub-embeddings.
 
         Returns:
+        
             Tensor [B, seq_len, d_model].
         """
         device = kwargs.get('device', next(self.embeddings[0].parameters()).device if self.embeddings else 'cpu')

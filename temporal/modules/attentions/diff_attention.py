@@ -16,9 +16,11 @@ def lambda_init_fn(depth: int) -> float:
     value, which is used in the gating mechanism of the DifferentialAttention.
 
     Args:
+    
         depth (int): The depth or index of the attention layer.
 
     Returns:
+    
         float: The initial lambda value.
     """
     return 0.8 - 0.6 * math.exp(-0.3 * depth)
@@ -31,12 +33,14 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     heads, a core component of Grouped-Query Attention (GQA).
 
     Args:
+    
         x (torch.Tensor): The key or value tensor of shape
             `[batch_size, num_kv_heads, seq_len, head_dim]`.
         n_rep (int): The repetition factor, which is the ratio of
             `num_query_heads` to `num_kv_heads`.
 
     Returns:
+    
         torch.Tensor: The expanded tensor of shape
             `[batch_size, num_query_heads, seq_len, head_dim]`.
     """
@@ -57,10 +61,12 @@ def reshape_for_heads(x: torch.Tensor, num_heads: int) -> torch.Tensor:
     `[batch_size, num_heads, seq_len, head_dim]`.
 
     Args:
+    
         x (torch.Tensor): The input tensor.
         num_heads (int): The number of attention heads.
 
     Returns:
+    
         torch.Tensor: The reshaped tensor.
     """
     B, T, D = x.shape
@@ -72,12 +78,14 @@ def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> t
     """Applies rotary positional embedding to a query or key tensor.
 
     Args:
+    
         x (torch.Tensor): The input tensor of shape
             `[batch_size, num_heads, seq_len, head_dim]`.
         cos (torch.Tensor): The cosine component of the rotary embeddings.
         sin (torch.Tensor): The sine component of the rotary embeddings.
 
     Returns:
+    
         torch.Tensor: The tensor with rotary embeddings applied, having the same
             shape as the input `x`.
     """
@@ -104,6 +112,7 @@ class DifferentialAttention(BaseMultiHeadAttention):
     designed for efficient and effective sequence modeling.
 
     Attributes:
+    
         depth (int): The depth of the layer, used for lambda initialization.
         num_kv_heads (int): The number of key/value heads for grouped-query attention.
         n_rep (int): The repetition factor for key/value heads.
@@ -129,6 +138,7 @@ class DifferentialAttention(BaseMultiHeadAttention):
         """Initializes the DifferentialAttention module.
 
         Args:
+        
             embed_dim (int): The embedding dimension.
             num_heads (int): The number of query heads.
             dropout (float): The dropout rate.
@@ -178,6 +188,7 @@ class DifferentialAttention(BaseMultiHeadAttention):
         """Performs the forward pass of the DifferentialAttention layer.
 
         Args:
+        
             hidden_states (torch.Tensor): The input hidden states of shape
                 `[batch_size, seq_len, embed_dim]`.
             rel_pos (Tuple[torch.Tensor, torch.Tensor]): A tuple containing the
@@ -191,6 +202,7 @@ class DifferentialAttention(BaseMultiHeadAttention):
                 Defaults to False.
 
         Returns:
+        
             Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
                 A tuple containing:
                 - The attention output tensor of shape

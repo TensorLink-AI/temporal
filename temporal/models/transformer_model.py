@@ -19,6 +19,7 @@ class TransformerOutput:
     Transformers library.
 
     Attributes:
+
         logits (torch.FloatTensor): The final model predictions.
         loss (Optional[torch.FloatTensor]): The loss, computed if targets are provided.
         past_key_values (Optional[Tuple[Tuple[torch.Tensor]]]): The KV cache for
@@ -174,6 +175,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         """Performs a forward pass through the entire transformer model.
 
         Args:
+
             encoder_inputs (Optional[torch.Tensor]): Inputs for the encoder,
                 shape `[B, L_enc, F_enc]`.
             decoder_inputs (Optional[torch.Tensor]): Inputs for the decoder,
@@ -193,6 +195,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
                 from all layers.
 
         Returns:
+        
             TransformerOutput: A structured object containing the model's outputs.
         """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
