@@ -11,7 +11,8 @@ from temporal.models.mixin.multistep import MultiStepMixin
 
 @dataclass
 class TransformerOutput:
-    """A structured output class for the transformer model.
+    """
+    A structured output class for the transformer model.
 
     This dataclass holds all the potential outputs of the `TransformerTemporalModel`,
     making them accessible by attribute. It provides a consistent and predictable
@@ -19,7 +20,6 @@ class TransformerOutput:
     Transformers library.
 
     Attributes:
-
         logits (torch.FloatTensor): The final model predictions.
         loss (Optional[torch.FloatTensor]): The loss, computed if targets are provided.
         past_key_values (Optional[Tuple[Tuple[torch.Tensor]]]): The KV cache for
@@ -172,10 +172,10 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
     ) -> TransformerOutput:
-        """Performs a forward pass through the entire transformer model.
+        """
+        Performs a forward pass through the entire transformer model.
 
         Args:
-
             encoder_inputs (Optional[torch.Tensor]): Inputs for the encoder,
                 shape `[B, L_enc, F_enc]`.
             decoder_inputs (Optional[torch.Tensor]): Inputs for the decoder,
@@ -195,7 +195,6 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
                 from all layers.
 
         Returns:
-        
             TransformerOutput: A structured object containing the model's outputs.
         """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions

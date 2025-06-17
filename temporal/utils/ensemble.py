@@ -3,7 +3,8 @@ import torch.nn as nn
 from typing import Any
 
 class EnsembleSampler:
-    """A utility for generating Monte Carlo dropout-based ensembles from a model.
+    """
+    A utility for generating Monte Carlo dropout-based ensembles from a model.
 
     This class provides a convenient context for generating an ensemble of
     predictions by running a model multiple times with dropout enabled during
@@ -40,7 +41,8 @@ class EnsembleSampler:
                 module.train(mode=enable)
 
     def generate(self, ensemble_size: int, **generate_kwargs: Any) -> torch.Tensor:
-        """Generates an ensemble of forecasts by running the model multiple times.
+        """
+        Generates an ensemble of forecasts by running the model multiple times.
 
         If dropout is enabled, this method will temporarily switch the model's
         dropout layers to training mode for the duration of the generation process.

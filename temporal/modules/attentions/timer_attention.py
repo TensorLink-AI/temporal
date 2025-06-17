@@ -82,6 +82,24 @@ class TimerAttention(BaseMultiHeadAttention):
         output_attentions: bool = False,
         position_ids: Optional[torch.Tensor] = None,
     ):
+        """
+        Performs the forward pass of the attention layer.
+
+        Args:
+            hidden_states (torch.Tensor): The input hidden states.
+            key_value_states (Optional[torch.Tensor]): The key and value states for
+                cross-attention. Defaults to None.
+            past_key_value (Optional[Tuple[torch.Tensor, torch.Tensor]]): The cached
+                key and value states from previous steps. Defaults to None.
+            attention_mask (Optional[torch.Tensor]): The attention mask.
+                Defaults to None.
+            head_mask (Optional[torch.Tensor]): The mask for attention heads.
+                Defaults to None.
+            output_attentions (bool): Whether to output attention probabilities.
+                Defaults to False.
+            position_ids (Optional[torch.LongTensor]): The position IDs for RoPE.
+                Defaults to None.
+        """
         B, T, _ = hidden_states.shape
         device = hidden_states.device
         position_ids = position_ids if position_ids is not None else torch.arange(T, device=device).unsqueeze(0)

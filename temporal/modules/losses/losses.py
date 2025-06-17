@@ -18,7 +18,8 @@ from temporal.registry.core import register_module
 from typing import Optional, Tuple
 
 class BaseLoss(nn.Module):
-    """An abstract base class for time series loss functions.
+    """
+    An abstract base class for time series loss functions.
 
     This class provides a common interface for all loss modules, including
     standardized handling of reduction ('mean', 'sum', 'none') and optional
@@ -28,7 +29,8 @@ class BaseLoss(nn.Module):
         reduction (str): The type of reduction to apply to the loss.
     """
     def __init__(self, reduction: str = "mean"):
-        """Initializes the BaseLoss.
+        """
+        Initializes the BaseLoss.
 
         Args:
             reduction (str): The reduction method. Must be one of
@@ -44,7 +46,8 @@ class BaseLoss(nn.Module):
         raise NotImplementedError("Subclasses must implement the forward method")
 
     def _apply_reduction(self, loss: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
-        """Applies masking and reduction to a calculated loss tensor.
+        """
+        Applies masking and reduction to a calculated loss tensor.
 
         Args:
             loss (torch.Tensor): The raw, unreduced loss tensor.
@@ -83,7 +86,8 @@ class BaseLoss(nn.Module):
 
 @register_module("loss", "timeseries_generic")
 class TimeSeriesLoss(BaseLoss):
-    """A generic wrapper for various standard time series loss functions.
+    """
+    A generic wrapper for various standard time series loss functions.
 
     This module acts as a factory and wrapper, allowing for the selection of
     common loss functions like MSE, MAE, and Quantile Loss via a configuration
@@ -100,7 +104,8 @@ class TimeSeriesLoss(BaseLoss):
         reduction: str = "mean",
         **kwargs
     ):
-        """Initializes the TimeSeriesLoss.
+        """
+        Initializes the TimeSeriesLoss.
 
         Args:
             loss_type (str): The type of loss to use (e.g., 'mse', 'mae', 'mq').
@@ -140,7 +145,8 @@ class TimeSeriesLoss(BaseLoss):
             raise ValueError(f"Unsupported loss_type: {loss_type}")
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
-        """Calculates the loss for the given predictions and targets.
+        """
+        Calculates the loss for the given predictions and targets.
 
         Args:
             preds (torch.Tensor): The model's predictions.
@@ -189,7 +195,8 @@ class TimeSeriesLoss(BaseLoss):
 
 @register_module("loss", "crps")
 class CRPSLoss(BaseLoss):
-    """Computes the Continuous Ranked Probability Score (CRPS).
+    """
+    Computes the Continuous Ranked Probability Score (CRPS).
 
     CRPS is a proper scoring rule that generalizes the Mean Absolute Error (MAE)
     to probabilistic forecasts. It measures the difference between the predicted
@@ -220,7 +227,8 @@ class CRPSLoss(BaseLoss):
         spread_target_spread: float = 0.0,
         **kwargs
     ):
-        """Initializes the CRPSLoss module.
+        """
+        Initializes the CRPSLoss module.
 
         Args:
             reduction (str): The final reduction method for the loss.
@@ -269,7 +277,8 @@ class CRPSLoss(BaseLoss):
         targets: torch.Tensor,
         loss_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        """Calculates the CRPS loss.
+        """
+        Calculates the CRPS loss.
 
         Args:
             preds (torch.Tensor): The predicted ensemble/quantiles, shape
@@ -316,7 +325,8 @@ class CRPSLoss(BaseLoss):
 
 @register_module("loss", "mixture")
 class RegisteredMixtureLoss(BaseLoss):
-    """A registered wrapper for the `MixtureLoss` function.
+    """
+    A registered wrapper for the `MixtureLoss` function.
 
     This module serves as a bridge between the model's configuration system
     and the `MixtureLoss` implementation. It allows `MixtureLoss` to be
@@ -328,7 +338,8 @@ class RegisteredMixtureLoss(BaseLoss):
         loss_fn (MixtureLoss): The instantiated `MixtureLoss` object.
     """
     def __init__(self, reduction: str = "mean", min_df: float = 2.0, fixed_sigma: float = 1e-3, **kwargs):
-        """Initializes the RegisteredMixtureLoss wrapper.
+        """
+        Initializes the RegisteredMixtureLoss wrapper.
 
         Args:
             reduction (str): Specifies the reduction for MixtureLoss: 'none', 'mean', 'sum'.
@@ -344,7 +355,8 @@ class RegisteredMixtureLoss(BaseLoss):
         )
 
     def forward(self, preds: dict, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
-        """Calculates the Mixture Negative Log-Likelihood loss.
+        """
+        Calculates the Mixture Negative Log-Likelihood loss.
 
         Args:
             preds (dict): A dictionary of predictions from the `MixtureOutputHead`.

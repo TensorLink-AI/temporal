@@ -8,7 +8,8 @@ from temporal.utils.utils import expand_mask  # Corrected import path
 
 @register_module("block", "effitime")
 class EffiTimeBlockHybridConvFirst(nn.Module):
-    """An efficient time-series block combining convolutions and attention.
+    """
+    An efficient time-series block combining convolutions and attention.
 
     This block implements the EffiTime architecture, which is designed for
     efficient and effective time-series forecasting. It integrates several
@@ -25,7 +26,6 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         training and effective feature combination.
 
     Attributes:
-
         attn (nn.Module): The injected attention module.
         d_model (int): The embedding dimension.
         dw_conv (nn.Conv1d): The depthwise convolution layer.
@@ -47,10 +47,10 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         reduction_ratio: int = 4, # Reduction ratio for SE blocks
         **kwargs,                 # To absorb any other args from builder
     ):
-        """Initializes the EffiTimeBlockHybridConvFirst module.
+        """
+        Initializes the EffiTimeBlockHybridConvFirst module.
 
         Args:
-
             attention (nn.Module): An instantiated attention module, injected
                 from the registry.
             embed_dim (int): The embedding dimension of the input and output.
@@ -98,10 +98,10 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        """Performs the forward pass of the EffiTime block.
+        """
+        Performs the forward pass of the EffiTime block.
 
         Args:
-
             hidden_states (torch.Tensor): The input tensor of shape `[B, L, D]`.
             attention_mask (Optional[torch.Tensor]): An optional mask for the
                 attention module.
@@ -110,7 +110,6 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
             output_attentions (bool): Whether to return attention probabilities.
 
         Returns:
-        
             Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
                 - The output tensor of shape `[B, L, D]`.
                 - The attention probabilities from the attention module, if requested.

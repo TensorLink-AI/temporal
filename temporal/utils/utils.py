@@ -7,7 +7,8 @@ from typing import Optional, Tuple
 def expand_mask(
     attention_mask: torch.Tensor, tgt_len: int, dtype: torch.dtype
 ) -> torch.Tensor:
-    """Expands a 2D attention mask to a 4D attention mask for self-attention.
+    """
+    Expands a 2D attention mask to a 4D attention mask for self-attention.
 
     This utility function converts a 2D attention mask of shape `[batch_size, seq_len]`
     into a 4D mask of shape `[batch_size, 1, tgt_len, src_len]`, which is the format

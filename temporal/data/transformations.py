@@ -194,7 +194,8 @@ def timeseries_collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, torch.Tens
       - (optional) decoder_input_ids (for multi-step teacher forcing)
       - dynamic features in/out
       - static cat features
-      etc.
+      - etc.
+
     """
 
     # 1) Filter out empty or invalid samples

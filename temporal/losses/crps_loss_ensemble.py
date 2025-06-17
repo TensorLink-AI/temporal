@@ -40,8 +40,10 @@ def crps_ensemble(
     torch.Tensor
         Either a scalar CRPS value (reduce=True) or per-element CRPS values (reduce=False).
 
-    Raises:
-        ValueError: If estimator is invalid or shapes are incompatible.
+    Raises
+    ------
+    ValueError
+        If estimator is invalid or shapes are incompatible.
 
     Example
     -------
@@ -208,4 +210,3 @@ def _crps_ensemble_pwm(obs: torch.Tensor, fct: torch.Tensor) -> torch.Tensor:
 
     # Eq 13 from DistPred paper: C = E[|Y^ - y|] + E[Y^] - (2/(K(K-1))) * sum(y_k * (k-1))
     return expected_diff + beta_0 - term3
-

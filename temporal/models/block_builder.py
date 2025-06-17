@@ -4,7 +4,8 @@ from typing import Type
 import torch.nn as nn
 
 class BlockBuilder:
-    """A builder class for creating Transformer blocks based on configuration.
+    """
+    A builder class for creating Transformer blocks based on configuration.
 
     This class uses the central registry to resolve block classes (e.g., an
     encoder layer, a decoder layer, or a custom block) and intelligently
@@ -13,7 +14,6 @@ class BlockBuilder:
     or pre-built sub-modules.
 
     Attributes:
-
         config: The global configuration object for the entire model.
         builder (ModuleBuilder): A reference to the main `ModuleBuilder` which
             can construct primitive components like attention or feed-forward layers.
@@ -30,7 +30,8 @@ class BlockBuilder:
         self.builder = builder
 
     def build_block(self, block_cfg) -> Type[nn.Module]:
-        """Instantiates a single Transformer block from its specific configuration.
+        """
+        Instantiates a single Transformer block from its specific configuration.
 
         This method performs the following steps:
         1.  Resolves the `block_type` from the block's configuration using the
@@ -45,7 +46,6 @@ class BlockBuilder:
         5.  Instantiates and returns the block.
 
         Args:
-        
             block_cfg: An instance of `TransformerBlockConfig` that defines the
                 specific block to be built.
 

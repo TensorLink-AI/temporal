@@ -40,10 +40,10 @@ class AutoregressiveMixin:
         output_attentions: bool = False,
         **kwargs,
     ) -> torch.Tensor:
-        """Autoregressive generation, supporting encoder-decoder and decoder-only.
+        """
+        Autoregressive generation, supporting encoder-decoder and decoder-only.
 
         Args:
-
             input_ids: Inputs. Shape depends on architecture:
                        - Encoder-Decoder: Encoder input sequence [B, Seq_Enc, Feat_Enc].
                        - Decoder-Only: Initial decoder input sequence [B, Seq_Dec, Feat_Dec].
@@ -58,7 +58,6 @@ class AutoregressiveMixin:
             **kwargs: Additional arguments passed to encoder/decoder.
 
         Returns:
-        
             Tensor of generated sequence, shape [B, prediction_length, Feat_Dec].
         """
         batch_size = input_ids.shape[0]

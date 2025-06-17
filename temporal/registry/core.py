@@ -14,7 +14,8 @@ MODULE_REGISTRY: Dict[str, Dict[str, Type]] = {
 }
 
 def register_module(kind: str, name: str) -> Callable:
-    """A decorator to register a module class in the global registry.
+    """
+    A decorator to register a module class in the global registry.
 
     This decorator is the primary mechanism for adding new components (like
     attention mechanisms, feed-forward networks, etc.) to the framework's
@@ -44,7 +45,8 @@ def register_module(kind: str, name: str) -> Callable:
     return wrapper
 
 def resolve(kind: str, name: str) -> Type:
-    """Retrieves a registered module class from the registry.
+    """
+    Retrieves a registered module class from the registry.
 
     This function is used by the model builders to look up and instantiate the
     appropriate class based on a name provided in a configuration.
@@ -68,7 +70,8 @@ def resolve(kind: str, name: str) -> Type:
     return MODULE_REGISTRY[kind][name]
 
 def list_registered(kind: str) -> List[str]:
-    """Lists all registered module names for a given kind.
+    """
+    Lists all registered module names for a given kind.
 
     This is a helper function useful for debugging and introspection, allowing
     a user to see what modules are available for a particular category.

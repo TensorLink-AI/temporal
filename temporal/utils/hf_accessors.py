@@ -37,7 +37,8 @@ def save_hf(
     token: Optional[str] = None,
     push_to_hub: bool = False
 ):
-    """Saves a model and its configuration to a directory, with optional Hub upload.
+    """
+    Saves a model and its configuration to a directory, with optional Hub upload.
 
     This function saves a model's state dictionary and its configuration file
     in a format that is compatible with the Hugging Face ecosystem. It can
@@ -142,7 +143,8 @@ def load_hf(
     token: Optional[str] = None,
     **model_kwargs
 ):
-    """Loads a model and configuration from a local path or the Hugging Face Hub.
+    """
+    Loads a model and configuration from a local path or the Hugging Face Hub.
 
     This function can load models saved with `save_hf`. It automatically handles
     downloading files from the Hub if the `model_name_or_path` is a repository ID.

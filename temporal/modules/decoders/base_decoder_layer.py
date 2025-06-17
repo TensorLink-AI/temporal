@@ -10,7 +10,8 @@ import copy # Import copy for deepcopy
 
 @register_module("block", "default_decoder")
 class TimeSeriesTransformerDecoderLayer(nn.Module):
-    """A standard Transformer decoder layer for time series.
+    """
+    A standard Transformer decoder layer for time series.
 
     This module implements a single layer of a Transformer decoder, which is
     a fundamental building block for sequence-to-sequence models in time series
@@ -24,7 +25,6 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
     dynamically built based on the provided configuration.
 
     Attributes:
-
         config (TransformerBlockConfig): The configuration for this specific block.
         is_encoder_decoder (bool): Flag indicating if this layer is part of an
             encoder-decoder architecture, which determines if cross-attention is built.
@@ -37,10 +37,10 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         dropout (nn.Dropout): Dropout layer.
     """
     def __init__(self, config: TransformerBlockConfig, builder: ModuleBuilder):
-        """Initializes the TimeSeriesTransformerDecoderLayer.
+        """
+        Initializes the TimeSeriesTransformerDecoderLayer.
 
         Args:
-
             config (TransformerBlockConfig): The configuration specific to this decoder
                 layer, defining the types of attention and FFN to be used.
             builder (ModuleBuilder): A helper class that constructs the sub-modules
@@ -137,10 +137,10 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False, # Standard HF argument
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[Tuple[Tuple, Tuple]]]:
-        """Performs the forward pass of the decoder layer.
+        """
+        Performs the forward pass of the decoder layer.
 
         Args:
-
             hidden_states (torch.Tensor): The input to the layer, shape `[B, T_dec, D]`.
             encoder_hidden_states (Optional[torch.Tensor]): The sequence from the
                 encoder's output, shape `[B, T_enc, D]`. Required for cross-attention.
@@ -156,7 +156,6 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
                 states for future decoding steps.
 
         Returns:
-        
             Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[Tuple[Tuple, Tuple]]]:
                 - The output hidden states of the layer, shape `[B, T_dec, D]`.
                 - The self-attention probabilities (if `output_attentions` is True).

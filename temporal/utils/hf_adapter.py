@@ -5,7 +5,8 @@ from temporal.configs.transformer_config import TransformerTimeSeriesConfig
 from temporal.models.builder import build_time_series_transformer
 
 class TimeSeriesTransformerModel(PreTrainedModel):
-    """A Hugging Face-compatible wrapper for the custom TimeSeriesTransformer.
+    """
+    A Hugging Face-compatible wrapper for the custom TimeSeriesTransformer.
 
     This class acts as an adapter, allowing a `TimeSeriesTransformer` model to be
     used seamlessly within the Hugging Face ecosystem. By inheriting from
@@ -25,7 +26,8 @@ g    `transformers.PreTrainedModel` and defining the `config_class`, this wrappe
     base_model_prefix = "time_series_transformer"
 
     def __init__(self, config: TransformerTimeSeriesConfig):
-        """Initializes the TimeSeriesTransformerModel wrapper.
+        """
+        Initializes the TimeSeriesTransformerModel wrapper.
 
         Args:
             config (TransformerTimeSeriesConfig): The configuration object for the model.
@@ -40,7 +42,8 @@ g    `transformers.PreTrainedModel` and defining the `config_class`, this wrappe
         attention_mask: Optional[torch.Tensor] = None,
         **kwargs: Any
     ) -> Any:
-        """Delegates the forward pass to the underlying temporal model.
+        """
+        Delegates the forward pass to the underlying temporal model.
 
         Args:
             input_values (torch.Tensor): The input tensor for the model.
@@ -63,7 +66,8 @@ g    `transformers.PreTrainedModel` and defining the `config_class`, this wrappe
         prediction_length: Optional[int] = None,
         **kwargs: Any
     ) -> Any:
-        """Delegates the generation task to the underlying temporal model.
+        """
+        Delegates the generation task to the underlying temporal model.
 
         This allows the model to be used for autoregressive forecasting tasks.
 

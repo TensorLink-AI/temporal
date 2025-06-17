@@ -6,7 +6,8 @@ from torch.distributions import StudentT, LogNormal, NegativeBinomial, Normal
 import math
 
 class MQLoss(nn.Module):
-    """Computes the Multi-Quantile Loss (MQL) for probabilistic forecasting.
+    """
+    Computes the Multi-Quantile Loss (MQL) for probabilistic forecasting.
 
     This loss function computes the average pinball loss over a set of specified
     quantiles. It is a common metric for evaluating the accuracy of quantile
@@ -18,7 +19,8 @@ class MQLoss(nn.Module):
         use_crps (bool): If True, adds a penalty term to approximate the CRPS.
     """
     def __init__(self, quantiles: list, reduction: str = "mean", use_crps: bool = False):
-        """Initializes the MQLoss module.
+        """
+        Initializes the MQLoss module.
 
         Args:
             quantiles (list): A list of quantiles to evaluate (e.g., [0.1, 0.5, 0.9]).
@@ -31,7 +33,8 @@ class MQLoss(nn.Module):
         self.use_crps = use_crps
 
     def forward(self, preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Calculates the Multi-Quantile Loss.
+        """
+        Calculates the Multi-Quantile Loss.
 
         Args:
             preds (torch.Tensor): The predicted quantiles, shape `(B, T, Q)`.
@@ -63,7 +66,8 @@ class MQLoss(nn.Module):
 
 
 class WeightedQuantileLoss(nn.Module):
-    """Computes the Weighted Quantile Loss (wQL).
+    """
+    Computes the Weighted Quantile Loss (wQL).
 
     wQL is a variant of the quantile loss that is normalized by the sum of the
     absolute target values. This can be useful for stabilizing training when
@@ -75,7 +79,8 @@ class WeightedQuantileLoss(nn.Module):
         reduction (str): The reduction method.
     """
     def __init__(self, quantiles: tuple = (0.1, 0.5, 0.9), epsilon: float = 1e-8, reduction: str = 'mean'):
-        """Initializes the WeightedQuantileLoss module.
+        """
+        Initializes the WeightedQuantileLoss module.
 
         Args:
             quantiles (tuple): The quantile levels (τ) to evaluate, between 0 and 1.
@@ -88,7 +93,8 @@ class WeightedQuantileLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, preds: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Calculates the Weighted Quantile Loss.
+        """
+        Calculates the Weighted Quantile Loss.
 
         Args:
             preds (torch.Tensor): Predicted quantiles, shape `(B, T, Q)`.
@@ -121,7 +127,8 @@ class WeightedQuantileLoss(nn.Module):
 
 
 class QuantileLoss(nn.Module):
-    """Computes the Quantile Loss (also known as Pinball Loss).
+    """
+    Computes the Quantile Loss (also known as Pinball Loss).
 
     This loss function is used for quantile regression. It asymmetrically
     penalizes over- and under-prediction to encourage the model to output a
@@ -132,7 +139,8 @@ class QuantileLoss(nn.Module):
         reduction (str): The reduction method.
     """
     def __init__(self, quantile: float, reduction: str = "mean"):
-        """Initializes the QuantileLoss module.
+        """
+        Initializes the QuantileLoss module.
         """
         super().__init__()
         if not 0 < quantile < 1:
@@ -141,7 +149,8 @@ class QuantileLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, predictions: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        """Calculates the Quantile Loss.
+        """
+        Calculates the Quantile Loss.
         """
         errors = labels - predictions
         loss = torch.max(
@@ -156,20 +165,23 @@ class QuantileLoss(nn.Module):
 
 
 class KernelEnergyLoss(nn.Module):
-    """Computes a kernel-based energy distance loss for probabilistic forecasts.
+    """
+    Computes a kernel-based energy distance loss for probabilistic forecasts.
 
     This loss function is a proper scoring rule that encourages the distribution
     of predicted samples to match the distribution of the true data. It is
     based on the energy distance between the two distributions.
     """
     def __init__(self, reduction: str = "mean"):
-        """Initializes the KernelEnergyLoss module.
+        """
+        Initializes the KernelEnergyLoss module.
         """
         super().__init__()
         self.reduction = reduction
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Calculates the kernel-based energy loss.
+        """
+        Calculates the kernel-based energy loss.
 
         Args:
             preds (torch.Tensor): A tensor of predicted samples, shape `(B, T, N)`.
@@ -197,7 +209,8 @@ class KernelEnergyLoss(nn.Module):
 
 
 class EnergyDistanceLoss(nn.Module):
-    """Computes the Energy Distance loss.
+    """
+    Computes the Energy Distance loss.
 
     This is another implementation of the energy distance, often used for
     evaluating the similarity of two distributions.
@@ -207,7 +220,8 @@ class EnergyDistanceLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, samples: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Calculates the Energy Distance.
+        """
+        Calculates the Energy Distance.
         """
         B, S, T = samples.shape
         ed1 = torch.norm(samples - target.unsqueeze(1), dim=-1).mean(dim=1)
@@ -218,20 +232,23 @@ class EnergyDistanceLoss(nn.Module):
 
 
 class SpectralLoss(nn.Module):
-    """Computes a loss in the frequency domain.
+    """
+    Computes a loss in the frequency domain.
 
     This loss function calculates the L2 distance between the Fast Fourier
     Transforms (FFTs) of the predictions and the targets. It encourages the
     model to match the frequency components of the target sequence.
     """
     def __init__(self, reduction: str = "mean"):
-        """Initializes the SpectralLoss module.
+        """
+        Initializes the SpectralLoss module.
         """
         super().__init__()
         self.reduction = reduction
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Calculates the spectral loss.
+        """
+        Calculates the spectral loss.
         """
         fft_pred = torch.fft.rfft(preds, dim=1)
         fft_target = torch.fft.rfft(targets, dim=1)
@@ -245,7 +262,8 @@ class SpectralLoss(nn.Module):
 
 
 class FastSoftDTWLoss(nn.Module):
-    """Computes a differentiable approximation of Dynamic Time Warping (DTW).
+    """
+    Computes a differentiable approximation of Dynamic Time Warping (DTW).
 
     Soft-DTW is a differentiable loss function that measures the alignment
     between two time series. It can be useful for tasks where the sequences
@@ -256,14 +274,16 @@ class FastSoftDTWLoss(nn.Module):
             closer to the non-differentiable DTW.
     """
     def __init__(self, gamma: float = 1.0, reduction: str = "mean"):
-        """Initializes the FastSoftDTWLoss module.
+        """
+        Initializes the FastSoftDTWLoss module.
         """
         super().__init__()
         self.gamma = gamma
         self.reduction = reduction
 
     def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Calculates the Soft-DTW loss.
+        """
+        Calculates the Soft-DTW loss.
         """
         B, T = preds.shape
         preds = preds.unsqueeze(2)
@@ -289,7 +309,8 @@ class FastSoftDTWLoss(nn.Module):
 
 
 class SpreadPenalty(nn.Module):
-    """Computes a penalty on the spread of predicted quantiles.
+    """
+    Computes a penalty on the spread of predicted quantiles.
 
     This module is used to regularize the uncertainty of a probabilistic
     forecast. It can penalize excessively wide or narrow quantile ranges.
@@ -301,7 +322,8 @@ class SpreadPenalty(nn.Module):
         reduction: str = 'mean',
         target_spread: float = 0.0,
     ):
-        """Initializes the SpreadPenalty module.
+        """
+        Initializes the SpreadPenalty module.
 
         Args:
             penalty_type (str): The type of penalty function to use ('log', 'inverse', 'symmetric_log').
@@ -322,7 +344,8 @@ class SpreadPenalty(nn.Module):
         self.target_spread = target_spread
 
     def forward(self, preds: torch.Tensor) -> torch.Tensor:
-        """Calculates the spread penalty.
+        """
+        Calculates the spread penalty.
 
         Args:
             preds (torch.Tensor): A tensor of quantile predictions, assumed to be
@@ -356,7 +379,8 @@ class SpreadPenalty(nn.Module):
 
 
 class MixtureLoss(nn.Module):
-    """Computes the Negative Log-Likelihood for a Mixture Density Network.
+    """
+    Computes the Negative Log-Likelihood for a Mixture Density Network.
 
     This loss function is designed to work with the output of a
     `MixtureOutputHead`. It calculates the likelihood of the target values
@@ -369,7 +393,8 @@ class MixtureLoss(nn.Module):
             if its sigma is not predicted.
     """
     def __init__(self, reduction="mean", min_df=2.0, fixed_sigma=1e-3):
-        """Initializes the MixtureLoss module.
+        """
+        Initializes the MixtureLoss module.
 
         Args:
             reduction (str): The reduction method for the final loss.
@@ -384,7 +409,8 @@ class MixtureLoss(nn.Module):
         self.fixed_sigma = fixed_sigma
 
     def forward(self, preds: dict, targets: torch.Tensor, loss_mask: torch.Tensor = None):
-        """Calculates the mixture loss.
+        """
+        Calculates the mixture loss.
 
         Args:
             preds (dict): A dictionary of predicted parameters from a `MixtureOutputHead`.

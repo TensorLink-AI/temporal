@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 
 class BaseTemporalModel(nn.Module):
-    """Base class for all full time series model architectures.
+    """
+    Base class for all full time series model architectures.
 
     This class defines the interface for temporal models, enforcing the
     implementation of core `forward` and `generate` methods. It also holds
@@ -16,7 +17,6 @@ class BaseTemporalModel(nn.Module):
     `temporal.utils.hf_adapter.TimeSeriesTransformerModel` wrapper.
 
     Attributes:
-    
         config: The configuration object containing model hyperparameters.
         encoder (nn.Module or None): The encoder module of the model.
         decoder (nn.Module or None): The decoder module of the model.

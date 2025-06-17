@@ -7,7 +7,8 @@ from typing import Optional, Tuple
 
 @register_module("block", "multiscale")
 class MultiScaleBlock(nn.Module):
-    """A multi-scale attention block that processes sequences at two resolutions.
+    """
+    A multi-scale attention block that processes sequences at two resolutions.
 
     This block applies attention at two different scales:
     1.  **Fine Scale:** The input sequence is processed at its original,
@@ -20,7 +21,6 @@ class MultiScaleBlock(nn.Module):
     fusion method ('add', 'concat', or 'gate').
 
     Attributes:
-
         fine_attn (nn.Module): The attention module for the fine scale.
         coarse_attn (nn.Module): The attention module for the coarse scale.
         downsample_factor (int): The factor by which to downsample the sequence
@@ -39,10 +39,10 @@ class MultiScaleBlock(nn.Module):
         hidden_size: int = 128,           # The hidden dimension size
         **kwargs,                         # For any other arguments
     ):
-        """Initializes the MultiScaleBlock.
+        """
+        Initializes the MultiScaleBlock.
 
         Args:
-
             fine_attn (nn.Module): The attention module for the fine-scale processing.
             coarse_attn (nn.Module): The attention module for the coarse-scale processing.
             downsample_factor (int): The factor by which to downsample the sequence.
@@ -79,10 +79,10 @@ class MultiScaleBlock(nn.Module):
         output_attentions: Optional[bool] = False, # Whether to return attention weights
         **kwargs, # Pass-through arguments for attention modules
     ) -> Tuple[torch.Tensor, Optional[Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]]]:
-        """Performs the forward pass of the MultiScaleBlock.
+        """
+        Performs the forward pass of the MultiScaleBlock.
 
         Args:
-
             hidden_states (torch.Tensor): The input tensor of shape `[B, L, D]`.
             attention_mask (Optional[torch.Tensor]): The attention mask for the
                 fine-scale attention. Defaults to None.
@@ -91,7 +91,6 @@ class MultiScaleBlock(nn.Module):
             **kwargs: Additional keyword arguments to be passed to the attention modules.
 
         Returns:
-        
             Tuple[torch.Tensor, Optional[Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]]]:
                 - The fused output tensor of shape `[B, L, D]`.
                 - A tuple containing the attention weights from the fine and coarse

@@ -11,7 +11,8 @@ from temporal.configs.transformer_config import TransformerBlockConfig
 
 
 class TimeSeriesTransformerEncoder(nn.Module):
-    """A flexible Transformer encoder built from a list of block configurations.
+    """
+    A flexible Transformer encoder built from a list of block configurations.
 
     This module serves as the main encoder component in a Transformer-based
     time series model. It dynamically constructs a stack of encoder layers
@@ -24,7 +25,6 @@ class TimeSeriesTransformerEncoder(nn.Module):
       create a rich contextual representation.
 
     Attributes:
-
         config: The main configuration object for the model.
         dropout (nn.Dropout): Dropout layer applied after embeddings.
         layernorm_embedding (nn.Module): Layer normalization applied to the embeddings.
@@ -33,10 +33,10 @@ class TimeSeriesTransformerEncoder(nn.Module):
         layers (nn.ModuleList): The stack of encoder layers.
     """
     def __init__(self, config, builder: ModuleBuilder, block_configs: List[TransformerBlockConfig]):
-        """Initializes the TimeSeriesTransformerEncoder.
+        """
+        Initializes the TimeSeriesTransformerEncoder.
 
         Args:
-
             config: The main model configuration object.
             builder (ModuleBuilder): A helper class that constructs the various
                 sub-modules (embeddings, normalization, etc.) based on the config.
@@ -57,15 +57,14 @@ class TimeSeriesTransformerEncoder(nn.Module):
         ])
 
     def _get_tensor_dim_as_int(self, tensor: torch.Tensor, dim: int) -> int:
-        """Safely extracts a tensor dimension size as an integer.
+        """
+        Safely extracts a tensor dimension size as an integer.
 
         Args:
-
             tensor (torch.Tensor): The tensor to inspect.
             dim (int): The dimension index.
 
         Returns:
-        
             int: The size of the specified dimension.
         """
         try:
@@ -83,10 +82,10 @@ class TimeSeriesTransformerEncoder(nn.Module):
         output_hidden_states: bool = False,
         return_dict: bool = True,
     ) -> Union[BaseModelOutput, Tuple]:
-        """Performs the forward pass of the Transformer encoder.
+        """
+        Performs the forward pass of the Transformer encoder.
 
         Args:
-
             input_values (torch.FloatTensor): The raw input features for the encoder,
                 shape `[B, L, F]`.
             attention_mask (Optional[torch.Tensor]): A mask to prevent attention
@@ -96,7 +95,6 @@ class TimeSeriesTransformerEncoder(nn.Module):
             return_dict (bool): Whether to return a structured model output.
 
         Returns:
-        
             Union[BaseModelOutput, Tuple]: The encoder's output, either as a
             structured object or a tuple.
         """

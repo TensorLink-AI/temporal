@@ -14,7 +14,8 @@ from temporal.modules.losses.loss_functions import QuantileLoss
 
 @register_module("output_head", "linear")
 class LinearOutputHead(BaseOutputHead):
-    """A simple linear projection head for point forecasts.
+    """
+    A simple linear projection head for point forecasts.
 
     This head applies a single linear layer to the final hidden state of the
     model to produce a point forecast for each time step.
@@ -23,7 +24,8 @@ class LinearOutputHead(BaseOutputHead):
         proj (nn.Linear): The linear projection layer.
     """
     def __init__(self, hidden_size: int, output_size: int = 1, **kwargs):
-        """Initializes the LinearOutputHead.
+        """
+        Initializes the LinearOutputHead.
 
         Args:
             hidden_size (int): The dimension of the input hidden state.
@@ -34,7 +36,8 @@ class LinearOutputHead(BaseOutputHead):
         self.proj = nn.Linear(hidden_size, output_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Projects the hidden state to the output forecast.
+        """
+        Projects the hidden state to the output forecast.
 
         Args:
             x (torch.Tensor): The input hidden state of shape `[B, T, hidden_size]`.
@@ -51,7 +54,8 @@ class LinearOutputHead(BaseOutputHead):
 
 @register_module("output_head", "gaussian")
 class GaussianHead(BaseOutputHead):
-    """An output head for predicting parameters of a Gaussian distribution.
+    """
+    An output head for predicting parameters of a Gaussian distribution.
 
     This head projects the final hidden state into a mean (mu) and a
     standard deviation (sigma) for each feature, allowing for probabilistic
@@ -63,7 +67,8 @@ class GaussianHead(BaseOutputHead):
             the distribution parameters (mu and log_sigma for each feature).
     """
     def __init__(self, hidden_size: int, output_size: int = 1, **kwargs):
-        """Initializes the GaussianHead.
+        """
+        Initializes the GaussianHead.
 
         Args:
             hidden_size (int): The dimension of the input hidden state.
@@ -77,7 +82,8 @@ class GaussianHead(BaseOutputHead):
         self.proj = nn.Linear(hidden_size, self.feature_size * 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Projects the hidden state to the Gaussian distribution parameters.
+        """
+        Projects the hidden state to the Gaussian distribution parameters.
 
         Args:
             x (torch.Tensor): The input hidden state of shape `[B, T, hidden_size]`.
@@ -95,7 +101,8 @@ class GaussianHead(BaseOutputHead):
 
 @register_module("output_head", "quantile_regression")
 class QuantileRegressionOutputHead(BaseOutputHead):
-    """An output head for multi-quantile regression.
+    """
+    An output head for multi-quantile regression.
 
     This head projects the final hidden state to a set of predicted quantiles
     for each feature, enabling probabilistic forecasting without assuming a
@@ -107,7 +114,8 @@ class QuantileRegressionOutputHead(BaseOutputHead):
         proj (nn.Linear): The linear layer that projects to the quantile forecasts.
     """
     def __init__(self, hidden_size: int, output_size: int, num_quantiles: int, feature_size: int = 1, **kwargs):
-        """Initializes the QuantileRegressionOutputHead.
+        """
+        Initializes the QuantileRegressionOutputHead.
 
         Args:
             hidden_size (int): The dimension of the input hidden state.
@@ -129,7 +137,8 @@ class QuantileRegressionOutputHead(BaseOutputHead):
         self.proj = nn.Linear(hidden_size, output_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Projects the hidden state to the quantile forecasts.
+        """
+        Projects the hidden state to the quantile forecasts.
 
         Args:
             x (torch.Tensor): The input tensor of shape `[B, T, hidden_size]`.
@@ -152,7 +161,8 @@ class QuantileRegressionOutputHead(BaseOutputHead):
 
 @register_module("output_head", "distpred")
 class DistPredHead(BaseOutputHead):
-    """An output head for the Distribution Prediction (DistPred) approach.
+    """
+    An output head for the Distribution Prediction (DistPred) approach.
 
     This head is designed for models that use CRPS loss. It outputs a specified
     number of values per feature, which are treated as an ensemble or a set of
@@ -164,7 +174,8 @@ class DistPredHead(BaseOutputHead):
         proj (nn.Linear): The linear projection layer.
     """
     def __init__(self, hidden_size: int, output_size: int, **kwargs):
-        """Initializes the DistPredHead.
+        """
+        Initializes the DistPredHead.
 
         Args:
             hidden_size (int): The dimension of the input hidden state.
@@ -191,7 +202,8 @@ class DistPredHead(BaseOutputHead):
         self.proj = nn.Linear(hidden_size, output_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Projects the hidden state to the ensemble predictions.
+        """
+        Projects the hidden state to the ensemble predictions.
 
         Args:
             x (torch.Tensor): Input tensor of shape `[B, T, hidden_size]`.
@@ -207,7 +219,8 @@ class DistPredHead(BaseOutputHead):
             return projected_output
 
     def predict(self, x: torch.Tensor) -> torch.Tensor:
-        """Reduces the ensemble output to a single point forecast for autoregression.
+        """
+        Reduces the ensemble output to a single point forecast for autoregression.
 
         This method selects the median prediction from the ensemble to serve as
         the input for the next decoding step.
@@ -238,7 +251,8 @@ class DistPredHead(BaseOutputHead):
 
 @register_module("output_head", "mixture")
 class MixtureOutputHead(BaseOutputHead):
-    """An output head for Mixture Density Networks (MDNs).
+    """
+    An output head for Mixture Density Networks (MDNs).
 
     This head predicts the parameters for a mixture of several probability
     distributions (e.g., a mix of Student's T and Log-Normal). It outputs a
@@ -266,7 +280,8 @@ class MixtureOutputHead(BaseOutputHead):
     }
 
     def __init__(self, hidden_size: int, components: List[str], **kwargs):
-        """Initializes the MixtureOutputHead.
+        """
+        Initializes the MixtureOutputHead.
 
         Args:
             hidden_size (int): The dimension of the input hidden state.
@@ -313,7 +328,8 @@ class MixtureOutputHead(BaseOutputHead):
             )
 
     def forward(self, x: torch.Tensor) -> Dict[str, Union[torch.Tensor, List[str]]]:
-        """Projects the hidden state to the mixture distribution parameters.
+        """
+        Projects the hidden state to the mixture distribution parameters.
 
         Args:
             x (torch.Tensor): Input tensor of shape `[B, T, hidden_size]`.
