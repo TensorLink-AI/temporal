@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 
 from temporal.registry.core import register_module
-from temporal.modules.attentions.base_attention import BaseMultiHeadAttention
+from temporal.modules.attentions.base_attention import BaseMultiHeadAttention, apply_rotary_pos_emb
 from temporal.modules.embedders.embedding import RotaryPositionalEmbedding
 from temporal.modules.norm.rms_norm import RMSNorm
 
@@ -53,34 +53,6 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
-def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    """
-    Applies rotary positional embedding to a query or key tensor.
-
-    Args:
-        x (torch.Tensor): The input tensor of shape
-            `[batch_size, num_heads, seq_len, head_dim]`.
-        cos (torch.Tensor): The cosine component of the rotary embeddings.
-        sin (torch.Tensor): The sine component of the rotary embeddings.
-
-    Returns:
-        torch.Tensor: The tensor with rotary embeddings applied, having the same
-            shape as the input `x`.
-    """
-    if x.shape[-1] % 2 != 0:
-        raise ValueError(f"Rotary embedding requires even dimension, got {x.shape[-1]}")
-
-    D = x.shape[-1]
-    half = D // 2
-    x1 = x[..., :half]
-    x2 = x[..., half:]
-
-    cos = cos[..., :half]
-    sin = sin[..., :half]
-
-    return torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
-
-
 @register_module("attention", "diffwist")
 class DifferentialAttention(BaseMultiHeadAttention):
     """
@@ -118,6 +90,20 @@ class DifferentialAttention(BaseMultiHeadAttention):
     ):
         """
         Initializes the DifferentialAttention module.
+
+        Args:
+            embed_dim (int): The embedding dimension.
+            num_heads (int): The number of query heads.
+            dropout (float): The dropout rate.
+            is_decoder (bool): Whether the module is used in a decoder.
+            is_cross_attention (bool): Whether the module is used for cross-attention.
+            depth (int): The layer depth, used for initializing the gating parameter.
+            num_kv_heads (Optional[int]): The number of key/value heads. If None,
+                it defaults to `num_heads`.
+            use_rope (bool): Whether to use RoPE.
+            max_position_embeddings (int): The maximum sequence length for RoPE.
+            rope_base (int): The base for RoPE frequencies.
+            **kwargs: Additional keyword arguments.
         """
         super().__init__(
             embed_dim=embed_dim,
@@ -126,35 +112,36 @@ class DifferentialAttention(BaseMultiHeadAttention):
             is_decoder=is_decoder,
             is_cross_attention=is_cross_attention,
             bias=False,
-            **kwargs
+            **kwargs,
         )
 
         self.depth = depth
         self.num_kv_heads = num_kv_heads or num_heads
         self.n_rep = num_heads // self.num_kv_heads
-        self.head_dim = embed_dim // num_heads // 2
+        self.head_dim = embed_dim // num_heads
 
         # Redefine projections with modified dims for DiffWist
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.k_proj = nn.Linear(embed_dim, embed_dim // self.n_rep, bias=False)
-        self.v_proj = nn.Linear(embed_dim, embed_dim // self.n_rep, bias=False)
+        self.k_proj = nn.Linear(embed_dim, self.num_kv_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(embed_dim, self.num_kv_heads * self.head_dim, bias=False)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
 
         self.lambda_init = lambda_init_fn(depth)
-        self.lambda_q1 = nn.Parameter(torch.randn(self.head_dim) * 0.1)
-        self.lambda_k1 = nn.Parameter(torch.randn(self.head_dim) * 0.1)
-        self.lambda_q2 = nn.Parameter(torch.randn(self.head_dim) * 0.1)
-        self.lambda_k2 = nn.Parameter(torch.randn(self.head_dim) * 0.1)
+        self.lambda_q1 = nn.Parameter(torch.randn(self.head_dim // 2) * 0.1)
+        self.lambda_k1 = nn.Parameter(torch.randn(self.head_dim // 2) * 0.1)
+        self.lambda_q2 = nn.Parameter(torch.randn(self.head_dim // 2) * 0.1)
+        self.lambda_k2 = nn.Parameter(torch.randn(self.head_dim // 2) * 0.1)
         
         self.use_rope = use_rope
+        self.rotary_proj = None
         if self.use_rope:
              self.rotary_proj = RotaryPositionalEmbedding(
-                 d_model=2*self.head_dim, # RoPE is applied to the full head dim before splitting
+                 d_model=self.head_dim,
                  max_seq_len=max_position_embeddings,
                  base=rope_base,
              )
 
-        self.subln = RMSNorm(self.embed_dim, eps=1e-5)
+        self.subln = RMSNorm(embed_dim, eps=1e-5)
 
     def forward(
         self,
@@ -170,6 +157,33 @@ class DifferentialAttention(BaseMultiHeadAttention):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
         Performs the forward pass of the DifferentialAttention layer.
+
+        Args:
+            hidden_states (torch.Tensor): The input hidden states of shape
+                `[batch_size, seq_len, embed_dim]`.
+            key_value_states (Optional[torch.Tensor]): The key and value states for
+                cross-attention. Defaults to None.
+            past_key_value (Optional[Tuple[torch.Tensor, torch.Tensor]]): The cached
+                key and value states from previous steps. Defaults to None.
+            attention_mask (Optional[torch.Tensor]): The attention mask.
+                Defaults to None.
+            head_mask (Optional[torch.Tensor]): The mask for attention heads.
+                Defaults to None.
+            output_attentions (bool): Whether to output attention probabilities.
+                Defaults to False.
+            use_cache (bool): Whether to use caching for the key and value states.
+                Defaults to False.
+            position_ids (Optional[torch.LongTensor]): The position IDs for RoPE.
+                Defaults to None.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+                A tuple containing:
+                - The attention output tensor of shape
+                  `[batch_size, seq_len, embed_dim]`.
+                - The gated attention weights (if `output_attentions` is True).
+                - The updated key-value cache (`present_key_value`).
         """
         B, T, _ = hidden_states.shape
         
@@ -177,133 +191,79 @@ class DifferentialAttention(BaseMultiHeadAttention):
         kv_source = key_value_states if is_cross_attn else hidden_states
         
         # Project and reshape
-        q = self.q_proj(hidden_states).view(B, T, 2 * self.num_heads, self.head_dim)
-        k = self.k_proj(kv_source).view(B, T, 2 * self.num_kv_heads, self.head_dim)
-        v = self.v_proj(kv_source).view(B, T, self.num_kv_heads, 2 * self.head_dim)
+        q = self.q_proj(hidden_states).view(B, T, self.num_heads, self.head_dim)
+        k = self.k_proj(kv_source).view(B, T, self.num_kv_heads, self.head_dim)
+        v = self.v_proj(kv_source).view(B, T, self.num_kv_heads, self.head_dim)
+        
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         # Apply rotary embeddings if enabled
         if self.use_rope:
             if self.rotary_proj is None:
                 raise ValueError("`rotary_proj` is not initialized. Pass `use_rope=True` to the constructor.")
             
-            kv_seq_len = k.size(1)
+            kv_seq_len = k.size(-2)
             cos, sin = self.rotary_proj(v, seq_len=kv_seq_len)
             
-            # Apply RoPE to q and k
-            q = apply_rotary_emb(q, cos, sin)
-            if not is_cross_attn:
-                k = apply_rotary_emb(k, cos, sin)
+            q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids)
 
-        # Transpose for attention and repeat for GQA
-        q = q.transpose(1, 2)                         # [B, 2H, T, D]
-        k = repeat_kv(k.transpose(1, 2), self.n_rep)  # [B, 2H, T, D]
-        v = repeat_kv(v.transpose(1, 2), self.n_rep)  # [B, H, T, 2D] --> This needs to be checked
+        # Repeat K,V for GQA
+        k = repeat_kv(k, self.n_rep)
+        v = repeat_kv(v, self.n_rep)
 
         # Handle KV caching
         present_key_value = None
         if use_cache:
             if past_key_value is not None:
                 pk, pv = past_key_value
-                k = torch.cat([pk, k], dim=2)
-                v = torch.cat([pv, v], dim=2)
+                k = torch.cat([pk, k], dim=-2)
+                v = torch.cat([pv, v], dim=-2)
             present_key_value = (k, v)
+        
+        # Split heads for gating
+        q1, q2 = q.chunk(2, dim=-1)
+        k1, k2 = k.chunk(2, dim=-1)
+        v1, v2 = v.chunk(2, dim=-1)
 
         # Compute attention scores
-        q = q * (self.head_dim ** -0.5)
-        attn_weights = torch.matmul(q, k.transpose(-1, -2))  # [B, 2H, T, T_k]
+        attn_weights1 = torch.matmul(q1, k1.transpose(-1, -2)) * (self.head_dim ** -0.5)
+        attn_weights2 = torch.matmul(q2, k2.transpose(-1, -2)) * (self.head_dim ** -0.5)
 
         if attention_mask is not None:
-            attn_weights = attn_weights + attention_mask
+            attn_weights1 = attn_weights1 + attention_mask
+            attn_weights2 = attn_weights2 + attention_mask
 
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        attn_weights = torch.nan_to_num(attn_weights, nan=0.0, posinf=1.0, neginf=0.0)
+        attn_weights1 = F.softmax(attn_weights1, dim=-1)
+        attn_weights2 = F.softmax(attn_weights2, dim=-1)
         
         if head_mask is not None:
-            print("Warning: head_mask is not implemented for DifferentialAttention.")
+            # This is a simple way to apply head mask, more complex logic might be needed
+            # depending on the shape of the head_mask
+            attn_weights1 = attn_weights1 * head_mask
+            attn_weights2 = attn_weights2 * head_mask
+
 
         # Apply learnable gating
-        attn_weights = attn_weights.view(B, self.num_heads, 2, T, -1)
         lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1))
         lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2))
-        gated_weights = attn_weights[:, :, 0] - (lambda_1 - lambda_2 + self.lambda_init) * attn_weights[:, :, 1]
-
-        # Compute weighted sum with value tensor
-        # The value tensor was shaped for grouped query attention, now we need to match it for the gated sum.
-        # Original v shape: [B, H_kv, T, 2*D] -> repeated to [B, H_q, T, 2*D]
-        # We need to split the last dimension to match the gating logic.
-        v = v.view(B, self.num_heads, T, 2, self.head_dim).permute(0,1,3,2,4) # [B, H, 2, T, D]
         
-        attn_output = torch.einsum("bhts,bhstd->bhtd", gated_weights, v) # [B, H, T, D]
+        output1 = torch.matmul(attn_weights1, v1)
+        output2 = torch.matmul(attn_weights2, v2)
+
+        gated_output = output1 - (lambda_1 - lambda_2 + self.lambda_init) * output2
+        
+        attn_output = torch.cat([gated_output, gated_output], dim=-1)
 
         # Post-processing
-        # The subln was originally on a reshaped output. Let's adjust.
-        # Original output shape before subln was [B, H, T, 2*D], now it's [B, H, T, D]
-        # This seems wrong. Let's re-check the einsum and shapes.
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, T, self.embed_dim)
         
-        # The value tensor `v` has shape [B, H_q, T, 2*D].
-        # Gated weights `gated_weights` has shape [B, H_q, T, T_k].
-        # The einsum should be `bhts,bhsd -> bhtd`
-        
-        # Let's trace the v shape again.
-        # v_proj output: [B, T, embed_dim // n_rep]
-        # after view: [B, T, num_kv_heads, 2*head_dim]
-        # after repeat_kv: [B, num_heads, T, 2*head_dim]
-        
-        # So v is [B, H_q, T, 2*D]
-        # Gated weights is [B, H_q, T, T_k]
-        # The original code did `einsum("bhts,bhstd->bhtd", gated_weights, v)` where v was split.
-        # That implies v should have 5 dimensions. Let's re-split v.
-        
-        v = v.view(B, self.num_heads, T, 2, self.head_dim).permute(0,1,3,2,4) # [B, H, 2, T, D]
-        
-        # The einsum `bhts,bhstd->bhtd` seems to have a typo (`s` vs `t`).
-        # It should probably be `bhtk,bhkt d -> bhtd` (k=sequence, t=time)
-        # Let's assume the original einsum was correct and the logic was to combine the two `v` components.
-        # gated_weights: [B, H, T, T_k]
-        # v (split): [B, H, 2, T_k, D]
-        # einsum `bhtk,bhkt d -> bhtd` doesn't match `bhstd`
-        # Let's assume `s` in `bhstd` is sequence length, so `t` in `bhts` is query_len and `s` is key_len
-        # So `bhtk, bhkvd -> bhtvd` where v is the gated dimension.
-        # attn_weights[:, :, 0] has shape [B, H, T, T_k]
-        # attn_weights[:, :, 1] has shape [B, H, T, T_k]
-        # v[:, :, 0] has shape [B, H, T_k, D]
-        # v[:, :, 1] has shape [B, H, T_k, D]
-        
-        v_0 = v[:,:,0,:,:] # [B, H, T_k, D]
-        v_1 = v[:,:,1,:,:] # [B, H, T_k, D]
-        
-        output_0 = torch.matmul(attn_weights[:,:,0], v_0) # [B, H, T, D]
-        output_1 = torch.matmul(attn_weights[:,:,1], v_1) # [B, H, T, D]
-        
-        attn_output = output_0 - (lambda_1 - lambda_2 + self.lambda_init) * output_1
-
-        attn_output = self.subln(attn_output.view(B, T, self.num_heads * self.head_dim))
+        attn_output = self.subln(attn_output)
         attn_output = attn_output * (1 - self.lambda_init)
         
-        attn_output = attn_output.transpose(1, 2).reshape(B, T, self.embed_dim) # This reshape is likely wrong.
-        
-        # Let's fix the output pipeline
-        # attn_output from gating is [B, H, T, D]. head_dim is embed_dim // num_heads // 2
-        # So total feature dimension is num_heads * head_dim = embed_dim / 2
-        
-        # The original code's reshape implies `subln` input is [B, T, H * 2*D] which is embed_dim
-        # My current `attn_output` is [B, H, T, D]. After transpose and reshape it is [B, T, H*D]
-        # That's half the embed_dim. There is a dimensionality mismatch.
-        
-        # The original code:
-        # attn_output = torch.einsum("bhts,bhstd->bhtd", gated_weights, v)
-        # This has to be a typo in the letters. Let's assume the logic is:
-        # gated_weights is [B,H,T,S]. v is [B,H,S,2D] after repeat_kv.
-        # attn_output = torch.matmul(gated_weights, v) # [B, H, T, 2D]
-        
-        # Let's re-implement based on this assumption.
-        v_reshaped_for_matmul = v.view(B, self.num_heads, T, 2*self.head_dim)
-        attn_output_matmul = torch.matmul(gated_weights, v_reshaped_for_matmul) # [B, H, T, 2*D]
-
-        # Now the dimensions match the original implementation's subln expectation
-        attn_output = self.subln(attn_output_matmul.transpose(1, 2).reshape(B, T, self.embed_dim))
-        attn_output = attn_output * (1 - self.lambda_init)
         attn_output = self.out_proj(attn_output)
+        
+        gated_weights = (attn_weights1, attn_weights2) if output_attentions else None
 
-        return attn_output, gated_weights if output_attentions else None, present_key_value
-
+        return attn_output, gated_weights, present_key_value

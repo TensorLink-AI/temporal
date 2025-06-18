@@ -75,9 +75,13 @@ class MultiScaleBlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None, # Mask for fine-grained attention
-        output_attentions: Optional[bool] = False, # Whether to return attention weights
-        **kwargs, # Pass-through arguments for attention modules
+        attention_mask: Optional[torch.Tensor] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        head_mask: Optional[torch.Tensor] = None,
+        **kwargs,
     ) -> Tuple[torch.Tensor, Optional[Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]]]:
         """
         Performs the forward pass of the MultiScaleBlock.
@@ -86,8 +90,14 @@ class MultiScaleBlock(nn.Module):
             hidden_states (torch.Tensor): The input tensor of shape `[B, L, D]`.
             attention_mask (Optional[torch.Tensor]): The attention mask for the
                 fine-scale attention. Defaults to None.
+            encoder_hidden_states (Optional[torch.Tensor]): Hidden states from an
+                encoder, used for cross-attention.
+            past_key_value (Optional[Tuple[torch.Tensor, torch.Tensor]]): Cached
+                key-value states for autoregressive decoding.
             output_attentions (Optional[bool]): If True, returns the attention
                 weights from both scales. Defaults to False.
+            use_cache (bool): Whether to use caching for the key and value states.
+            head_mask (Optional[torch.Tensor]): The mask for attention heads.
             **kwargs: Additional keyword arguments to be passed to the attention modules.
 
         Returns:
@@ -103,7 +113,11 @@ class MultiScaleBlock(nn.Module):
         fine_output, fine_attention_weights, _ = self.fine_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
+            key_value_states=encoder_hidden_states,
+            past_key_value=past_key_value,
             output_attentions=output_attentions,
+            use_cache=use_cache,
+            head_mask=head_mask,
             **kwargs
         )
 
@@ -120,7 +134,7 @@ class MultiScaleBlock(nn.Module):
         # === Step 3: Coarse attention ===
         coarse_output, coarse_attention_weights, _ = self.coarse_attn(
             hidden_states=coarse_scale_input,
-            attention_mask=None,  # No mask needed for the downsampled sequence
+            attention_mask=None,
             output_attentions=output_attentions,
             **kwargs
         )

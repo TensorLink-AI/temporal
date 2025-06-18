@@ -95,8 +95,11 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         output_attentions: bool = False,
+        use_cache: bool = False,
+        head_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
         Performs the forward pass of the EffiTime block.
@@ -105,9 +108,13 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
             hidden_states (torch.Tensor): The input tensor of shape `[B, L, D]`.
             attention_mask (Optional[torch.Tensor]): An optional mask for the
                 attention module.
+            encoder_hidden_states (Optional[torch.Tensor]): Hidden states from an
+                encoder, used for cross-attention.
             past_key_value (Optional[Tuple[torch.Tensor, torch.Tensor]]): Cached
                 key-value states for autoregressive decoding.
             output_attentions (bool): Whether to return attention probabilities.
+            use_cache (bool): Whether to use caching for the key and value states.
+            head_mask (Optional[torch.Tensor]): The mask for attention heads.
 
         Returns:
             Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
@@ -147,8 +154,11 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         attention_output, attention_probs, present_key_value = self.attn(
             hidden_states=modulated_output,
             attention_mask=attention_mask,
+            key_value_states=encoder_hidden_states,
             past_key_value=past_key_value,
-            output_attentions=output_attentions
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            head_mask=head_mask,
         )
 
         # Step 6: Final Feedback Modulation and Normalization
