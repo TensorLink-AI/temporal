@@ -4,19 +4,20 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 
 from temporal.registry.core import register_module
-from temporal.utils.utils import expand_mask  # Corrected import path
+from temporal.utils.utils import expand_mask
 
 @register_module("block", "effitime")
 class EffiTimeBlockHybridConvFirst(nn.Module):
     """
     An efficient time-series block combining convolutions and attention.
+    This version removes the sequence-length-dependent channel SE block
+    for robust handling of variable sequence lengths.
     """
 
     def __init__(
         self,
         attention: nn.Module,
         embed_dim: int,
-        seq_len: int,
         kernel_size: int = 7,
         dilation: int = 2,
         reduction_ratio: int = 4,
@@ -24,6 +25,14 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
     ):
         """
         Initializes the EffiTimeBlockHybridConvFirst module.
+
+        Args:
+            attention (nn.Module): An instantiated attention module.
+            embed_dim (int): The embedding dimension of the input and output.
+            kernel_size (int): The kernel size for the depthwise convolutions.
+            dilation (int): The dilation factor for the second depthwise convolution.
+            reduction_ratio (int): The reduction ratio for the SE block's hidden layer.
+            **kwargs: Additional keyword arguments.
         """
         super().__init__()
         self.attn = attention
@@ -44,14 +53,10 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         )
         self.pw_conv = nn.Conv1d(embed_dim, embed_dim, kernel_size=1)
 
-        # Correctly initialize SE blocks based on their respective input dimensions
-        temporal_se_hidden_dim = max(1, embed_dim // reduction_ratio)
-        self.temporal_fc1 = nn.Linear(embed_dim, temporal_se_hidden_dim)
-        self.temporal_fc2 = nn.Linear(temporal_se_hidden_dim, embed_dim)
-
-        channel_se_hidden_dim = max(1, seq_len // reduction_ratio)
-        self.channel_fc1 = nn.Linear(seq_len, channel_se_hidden_dim)
-        self.channel_fc2 = nn.Linear(channel_se_hidden_dim, seq_len)
+        # Squeeze-and-Excitation block for channel-wise attention
+        se_hidden_dim = max(1, embed_dim // reduction_ratio)
+        self.se_fc1 = nn.Linear(embed_dim, se_hidden_dim)
+        self.se_fc2 = nn.Linear(se_hidden_dim, embed_dim)
 
         self.norm_attn = nn.LayerNorm(embed_dim)
         self.relu = nn.ReLU()
@@ -81,13 +86,12 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         x_tldc = x_local + x_dilated
         x_pointwise = self.pw_conv(x_tldc)
 
-        temporal_pooled = F.adaptive_avg_pool1d(x_pointwise, 1).squeeze(-1)
-        temporal_attention = self.sigmoid(self.temporal_fc2(self.relu(self.temporal_fc1(temporal_pooled)))).unsqueeze(-1)
+        # Squeeze-and-Excitation
+        pooled = F.adaptive_avg_pool1d(x_pointwise, 1).squeeze(-1)
+        se_attention = self.sigmoid(self.se_fc2(self.relu(self.se_fc1(pooled)))).unsqueeze(-1)
 
-        channel_pooled = F.adaptive_avg_pool1d(x_pointwise.transpose(1, 2), 1).squeeze(-1)
-        channel_attention = self.sigmoid(self.channel_fc2(self.relu(self.channel_fc1(channel_pooled)))).unsqueeze(-1)
-
-        modulated_output = self.sigmoid(x_pointwise * temporal_attention * channel_attention.transpose(1,2)).transpose(1, 2)
+        # Apply SE and reshape back for attention
+        modulated_output = self.sigmoid(x_pointwise * se_attention).transpose(1, 2)
 
         attn_mask = encoder_attention_mask if is_cross_attention else attention_mask
         if attn_mask is not None and attn_mask.dim() == 2:
