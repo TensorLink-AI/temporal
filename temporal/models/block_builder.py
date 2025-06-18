@@ -1,4 +1,5 @@
 from temporal.registry.core import resolve
+from temporal.configs.transformer_config import AttentionConfig, FeedForwardConfig
 import inspect
 from typing import Type
 import torch.nn as nn
@@ -42,7 +43,8 @@ class BlockBuilder:
             objects. It can also build and pass primitive sub-modules (like
             attention or FFN) if the constructor is designed to accept them directly.
         4.  Passes any additional keyword arguments from the block configuration
-            that match the constructor's signature.
+            that match the constructor's signature, recursively building any nested
+            configuration objects (e.g., AttentionConfig).
         5.  Instantiates and returns the block.
 
         Args:
@@ -90,7 +92,14 @@ class BlockBuilder:
         if hasattr(block_cfg, 'kwargs') and block_cfg.kwargs:
             for key, value in block_cfg.kwargs.items():
                 if key in accepted_params:
-                    init_kwargs[key] = value
+                    # RECURSIVE BUILD STEP: If a kwarg's value is a config object, build it.
+                    if isinstance(value, AttentionConfig):
+                        init_kwargs[key] = self.builder.build_attention(value)
+                    elif isinstance(value, FeedForwardConfig):
+                         init_kwargs[key] = self.builder.build_feedforward(value)
+                    else:
+                        # Otherwise, pass the value directly (e.g., for strings, ints).
+                        init_kwargs[key] = value
 
         try:
             return block_cls(**init_kwargs)
