@@ -41,17 +41,6 @@ class MultiScaleBlock(nn.Module):
     ):
         """
         Initializes the MultiScaleBlock.
-
-        Args:
-            fine_attn (nn.Module): The attention module for the fine-scale processing.
-            coarse_attn (nn.Module): The attention module for the coarse-scale processing.
-            downsample_factor (int): The factor by which to downsample the sequence.
-            fusion_method (str): The method for fusing the fine and coarse outputs.
-                Supported methods are 'add', 'concat', and 'gate'.
-            hidden_size (int): The hidden dimension of the input and output tensors.
-                This is required for initializing projection layers for certain
-                fusion methods.
-            **kwargs: Additional keyword arguments (not directly used in this class).
         """
         super().__init__()
         self.fine_attn = fine_attn
@@ -77,6 +66,7 @@ class MultiScaleBlock(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         encoder_hidden_states: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
@@ -89,13 +79,15 @@ class MultiScaleBlock(nn.Module):
         Args:
             hidden_states (torch.Tensor): The input tensor of shape `[B, L, D]`.
             attention_mask (Optional[torch.Tensor]): The attention mask for the
-                fine-scale attention. Defaults to None.
+                fine-scale attention.
             encoder_hidden_states (Optional[torch.Tensor]): Hidden states from an
                 encoder, used for cross-attention.
+            encoder_attention_mask (Optional[torch.Tensor]): Mask for the encoder's
+                hidden states.
             past_key_value (Optional[Tuple[torch.Tensor, torch.Tensor]]): Cached
                 key-value states for autoregressive decoding.
             output_attentions (Optional[bool]): If True, returns the attention
-                weights from both scales. Defaults to False.
+                weights from both scales.
             use_cache (bool): Whether to use caching for the key and value states.
             head_mask (Optional[torch.Tensor]): The mask for attention heads.
             **kwargs: Additional keyword arguments to be passed to the attention modules.
@@ -108,11 +100,13 @@ class MultiScaleBlock(nn.Module):
         """
         B, L, D = hidden_states.shape
         scale_factor = self.downsample_factor
-
+        is_cross_attention = encoder_hidden_states is not None
+        
         # === Step 1: Fine-scale attention ===
+        fine_attn_mask = encoder_attention_mask if is_cross_attention else attention_mask
         fine_output, fine_attention_weights, _ = self.fine_attn(
             hidden_states=hidden_states,
-            attention_mask=attention_mask,
+            attention_mask=fine_attn_mask,
             key_value_states=encoder_hidden_states,
             past_key_value=past_key_value,
             output_attentions=output_attentions,

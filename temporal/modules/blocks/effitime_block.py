@@ -49,15 +49,6 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
     ):
         """
         Initializes the EffiTimeBlockHybridConvFirst module.
-
-        Args:
-            attention (nn.Module): An instantiated attention module, injected
-                from the registry.
-            embed_dim (int): The embedding dimension of the input and output.
-            kernel_size (int): The kernel size for the depthwise convolutions.
-            dilation (int): The dilation factor for the second depthwise convolution.
-            reduction_ratio (int): The reduction ratio for the SE blocks' hidden layer.
-            **kwargs: Additional keyword arguments (not used).
         """
         super().__init__()
         self.attn = attention
@@ -96,6 +87,7 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         encoder_hidden_states: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
@@ -110,6 +102,8 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
                 attention module.
             encoder_hidden_states (Optional[torch.Tensor]): Hidden states from an
                 encoder, used for cross-attention.
+            encoder_attention_mask (Optional[torch.Tensor]): Mask for the encoder's
+                hidden states.
             past_key_value (Optional[Tuple[torch.Tensor, torch.Tensor]]): Cached
                 key-value states for autoregressive decoding.
             output_attentions (bool): Whether to return attention probabilities.
@@ -124,7 +118,8 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         """
         B, L, D = hidden_states.shape
         residual = hidden_states
-
+        is_cross_attention = encoder_hidden_states is not None
+        
         # Reshape for 1D convolutions: [B, L, D] -> [B, D, L]
         x_conv = hidden_states.transpose(1, 2)
 
@@ -146,14 +141,15 @@ class EffiTimeBlockHybridConvFirst(nn.Module):
         # Apply SE and reshape back for attention: [B, D, L] -> [B, L, D]
         modulated_output = self.sigmoid(x_pointwise * temporal_attention * channel_attention.transpose(1,2)).transpose(1, 2)
 
-        # Step 4: Prepare attention mask if needed
-        if attention_mask is not None and attention_mask.dim() == 2:
-            attention_mask = expand_mask(attention_mask, tgt_len=L, dtype=modulated_output.dtype)
+        # Step 4: Prepare attention mask
+        attn_mask = encoder_attention_mask if is_cross_attention else attention_mask
+        if attn_mask is not None and attn_mask.dim() == 2:
+            attn_mask = expand_mask(attn_mask, tgt_len=L, dtype=modulated_output.dtype)
 
         # Step 5: Global Attention
         attention_output, attention_probs, present_key_value = self.attn(
             hidden_states=modulated_output,
-            attention_mask=attention_mask,
+            attention_mask=attn_mask,
             key_value_states=encoder_hidden_states,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
