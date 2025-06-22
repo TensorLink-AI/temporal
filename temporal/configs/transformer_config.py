@@ -407,30 +407,25 @@ class TransformerBlockConfig:
     Configuration for a generic transformer block.
 
     Args:
-        block_type (str): The type of transformer block (e.g., 'default_encoder', 'default_decoder').
+        block_type (str): The type of transformer block (e.g., 'transformer_encoder', 'adaptive_patch_transformer').
         attention_config (Optional[AttentionConfig]): Configuration for the self-attention mechanism.
-                                                    If None, defaults to AttentionConfig().
-        cross_attention_config (Optional[AttentionConfig]): Configuration for the cross-attention mechanism.
-                                                         Only used if the block_type supports cross-attention
-                                                         (e.g., in decoder blocks of an encoder-decoder architecture).
-                                                         If None, and cross-attention is needed, it may fall back
-                                                         to attention_config. Defaults to None.
+        cross_attention_config (Optional[AttentionConfig]): Configuration for cross-attention (for decoders).
         ffn_config (Optional[FeedForwardConfig]): Configuration for the feed-forward network.
-                                               If None, defaults to FeedForwardConfig().
         norm_config (Optional[NormalizationConfig]): Configuration for normalization layers.
-                                                  If None, defaults to NormalizationConfig().
         kwargs (Optional[dict]): Additional keyword arguments for the block implementation.
+                                 For 'adaptive_patch_transformer', this must contain 'expansion_factor'
+                                 and 'wrapped_block_type'.
     """
-    def __init__(self, 
-                 block_type: str ="default_encoder", 
-                 attention_config: Optional[AttentionConfig]=None, 
-                 cross_attention_config: Optional[AttentionConfig]=None, # ADDED
-                 ffn_config: Optional[FeedForwardConfig]=None, 
-                 norm_config: Optional[NormalizationConfig]=None, 
+    def __init__(self,
+                 block_type: str ="transformer_encoder",
+                 attention_config: Optional[AttentionConfig]=None,
+                 cross_attention_config: Optional[AttentionConfig]=None,
+                 ffn_config: Optional[FeedForwardConfig]=None,
+                 norm_config: Optional[NormalizationConfig]=None,
                  kwargs: Optional[Dict[str, Any]]=None):
         self.block_type = block_type
         self.attention_config = attention_config or AttentionConfig()
-        self.cross_attention_config = cross_attention_config # Defaults to None, decoder layer will handle fallback
+        self.cross_attention_config = cross_attention_config
         self.ffn_config = ffn_config or FeedForwardConfig()
         self.norm_config = norm_config or NormalizationConfig()
         self.kwargs = kwargs or {}
@@ -455,13 +450,33 @@ class TransformerBlockConfig:
         """
         cross_attn_cfg_dict = d.get("cross_attention_config")
         return cls(
-            block_type=d.get("block_type", "default_encoder"),
+            block_type=d.get("block_type", "transformer_encoder"),
             attention_config=AttentionConfig.from_dict(d.get("attention_config", {})),
             cross_attention_config=AttentionConfig.from_dict(cross_attn_cfg_dict) if cross_attn_cfg_dict else None,
             ffn_config=FeedForwardConfig.from_dict(d.get("ffn_config", {})),
             norm_config=NormalizationConfig.from_dict(d.get("norm_config", {})),
             kwargs=d.get("kwargs", {})
         )
+
+    def validate(self):
+        """
+        Validates the block configuration against its type-specific requirements.
+        """
+        if self.block_type == "adaptive_patch_transformer":
+            if "expansion_factor" not in self.kwargs:
+                raise ValueError(
+                    "The 'adaptive_patch_transformer' block requires 'expansion_factor' in its kwargs."
+                )
+            if "wrapped_block_type" not in self.kwargs:
+               raise ValueError(
+                    "The 'adaptive_patch_transformer' block requires 'wrapped_block_type' in its kwargs."
+                )
+          #  allowed_wrapped_types = ["transformer_encoder", "transformer_decoder"]
+          #  if self.kwargs["wrapped_block_type"] not in allowed_wrapped_types:
+          ##      raise ValueError(
+           #         f"The 'wrapped_block_type' for 'adaptive_patch_transformer' must be one of {allowed_wrapped_types}, "
+           ##         f"but got '{self.kwargs['wrapped_block_type']}'."
+            #    )
 
 class LossConfig:
     """

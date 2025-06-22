@@ -1,5 +1,6 @@
+
 from temporal.registry.core import resolve
-from temporal.configs.transformer_config import AttentionConfig, FeedForwardConfig
+from temporal.configs.transformer_config import AttentionConfig, FeedForwardConfig, TransformerBlockConfig
 import inspect
 from typing import Type
 import torch.nn as nn
@@ -30,7 +31,7 @@ class BlockBuilder:
         self.config = config
         self.builder = builder
 
-    def build_block(self, block_cfg) -> Type[nn.Module]:
+    def build_block(self, block_cfg: TransformerBlockConfig) -> Type[nn.Module]:
         """
         Instantiates a single Transformer block from its specific configuration.
 
@@ -57,6 +58,33 @@ class BlockBuilder:
         block_type = block_cfg.block_type
         block_cls = resolve("block", block_type)
 
+        # Special handling for "adaptive_patch_transformer"
+        if block_type == "adaptive_patch_transformer":
+            wrapped_block_type = block_cfg.kwargs.get("wrapped_block_type")
+            if not wrapped_block_type:
+                raise ValueError(
+                    "Configuration for 'adaptive_patch_transformer' must include 'wrapped_block_type' "
+                    "in its kwargs to specify whether to wrap an 'encoder' or 'decoder'."
+                )
+
+            # Define the configuration for the inner layer (encoder or decoder)
+            inner_layer_cfg = TransformerBlockConfig(
+                block_type=wrapped_block_type,
+                attention_config=block_cfg.attention_config,
+                ffn_config=block_cfg.ffn_config,
+                kwargs=block_cfg.kwargs
+            )
+            
+            # Recursively call this builder to construct the inner layer
+            inner_transformer_layer = self.build_block(inner_layer_cfg)
+
+            # Instantiate the adaptive patch block wrapper
+            return block_cls(
+                transformer_layer=inner_transformer_layer,
+                expansion_factor=block_cfg.kwargs.get("expansion_factor")
+            )
+
+
         # Inspect the block's constructor signature to see what it accepts.
         signature = inspect.signature(block_cls.__init__)
         accepted_params = set(signature.parameters.keys())
@@ -82,7 +110,7 @@ class BlockBuilder:
                 )
 
         # If the block accepts 'ffn' directly, build it.
-        if "ffn" in accepted_params and hasattr(block_cfg, 'ffn_config') and block_cfg.ffn_config:
+        if "ffn" in accepted_params and hasattr(_cfg, 'ffn_config') and block_cfg.ffn_config:
             init_kwargs["ffn"] = self.builder.build_feedforward(
                 block_cfg.ffn_config
             )
@@ -115,3 +143,4 @@ class BlockBuilder:
             if required_params:
                 print(f"  > Missing required arguments: {list(required_params)}")
             raise e
+

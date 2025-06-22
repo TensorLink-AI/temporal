@@ -1,10 +1,10 @@
-# ---- Transformer blocks -------------------------------------------
-from .block_multiscale import MultiScaleBlock
-from .effitime_block   import EffiTimeBlockHybridConvFirst
 
-# 👉 register your "standard" block here too, if that’s the one the config expects
+# temporal/modules/blocks/__init__.py
 
-__all__ = [
-    "MultiScaleBlock",
-    "EffiTimeBlockHybridConvFirst",
-]
+# Import all block modules here so that the @register_block decorator is triggered
+# and the block types are available in the central registry.
+
+from . import block_hierarchical
+from . import block_multiscale
+from . import effitime_block
+from . import block_adaptive # Add this line to register the new block
