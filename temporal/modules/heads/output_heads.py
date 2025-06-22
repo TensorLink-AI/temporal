@@ -94,6 +94,30 @@ class GaussianHead(BaseOutputHead):
         """
         return self.proj(x)
 
+    def predict(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Sample from the predicted Gaussian distribution during generation.
+
+        Args:
+            x: [B, 1, 2F] output from forward()
+
+        Returns:
+            Sampled features: [B, 1, F]
+        """
+        mu, log_sigma = x.chunk(2, dim=-1)
+        sigma = torch.exp(log_sigma)
+        eps = torch.randn_like(mu)
+        return mu + eps * sigma
+
+    def quantiles(self, x: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
+        mu, log_sigma = x.chunk(2, dim=-1)
+        sigma = torch.exp(log_sigma)
+        q_values = torch.tensor(quantile_levels, dtype=mu.dtype, device=mu.device)
+        z = torch.distributions.Normal(0, 1).icdf(q_values)  # [Q]
+        mu = mu.unsqueeze(-1)      # [B, 1, F, 1]
+        sigma = sigma.unsqueeze(-1)  # [B, 1, F, 1]
+        return mu + sigma * z      # [B, 1, F, Q]
+
     def get_loss_fn(self) -> Optional[Callable]:
         """Returns None, as loss is determined by the main training config."""
         return None

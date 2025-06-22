@@ -160,19 +160,39 @@ class AutoregressiveMixin:
             else:
                 next_pred_features = self.output_heads(last_hidden_contiguous) # Shape [B, 1, OutputFeatures]
             
+            # === Multi-Quantile Support ===
+            quantile_levels = kwargs.get("quantile_levels", [0.1, 0.5, 0.9])
+            feedback_quantile = kwargs.get("feedback_quantile", 0.5)
+            feedback_q_index = quantile_levels.index(feedback_quantile)
+
+            if hasattr(self.output_heads, "quantiles"):
+                quantile_out = self.output_heads.quantiles(next_pred_features, quantile_levels)  # [B, 1, F, Q]
+
+                # Store quantile outputs if collecting
+                if kwargs.get("collect_all_quantiles", True):
+                    if "quantile_predictions" not in locals():
+                        quantile_predictions = []
+                    quantile_predictions.append(quantile_out)
+
+                # Feedback input = selected quantile (e.g. median)
+                next_decoder_input_step = quantile_out[:, :, :, feedback_q_index]  # [B, 1, F]
+            else:
+                expected_input_features = getattr(self.config, "feature_size", 1)
+                next_decoder_input_step = next_pred_features[:, :, :expected_input_features].contiguous()
+
             predictions.append(next_pred_features)
 
             # Prepare input for the next step - Use the predicted features directly.
             # The decoder's value_embedding should handle projection from OutputFeatures to HiddenSize.
             # Use output head's internal logic to reduce to feedback input
-            if hasattr(self.output_heads, "predict"):
+            if hasattr(self.output_heads, "quantiles"):
+                # quantiles already handled above
+                pass
+            elif hasattr(self.output_heads, "predict"):
                 next_decoder_input_step = self.output_heads.predict(next_pred_features)
             else:
                 expected_input_features = getattr(self.config, "feature_size", 1)
                 next_decoder_input_step = next_pred_features[:, :, :expected_input_features].contiguous()
-
-            # NOTE: The previous logic assuming the input to the next step should be model_dim was likely incorrect.
-            # The standard flow is: predict features -> feed features back -> value_embedding projects features to model_dim.
 
             decoder_input_ids = torch.cat([decoder_input_ids, next_decoder_input_step], dim=1)
             current_seq_len += 1
