@@ -8,7 +8,7 @@ from typing import Optional, List, Tuple, Union
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.models.block_builder import BlockBuilder
 from temporal.configs.transformer_config import TransformerBlockConfig
-
+from temporal.models.outputs import EncoderLayerOutput
 
 class TimeSeriesTransformerEncoder(nn.Module):
     """
@@ -124,6 +124,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
         # --- Transformer Layers ---
         all_hidden_states_collector = () if output_hidden_states else None
         all_attentions_collector = () if output_attentions else None
+        total_aux_loss = None
 
         for layer in self.layers:
             # Support for layer dropping during training
@@ -133,17 +134,23 @@ class TimeSeriesTransformerEncoder(nn.Module):
             if output_hidden_states:
                 all_hidden_states_collector += (hidden_states,)
 
-            # Each layer is expected to return Tuple[torch.Tensor, Optional[torch.Tensor]]
-            layer_outputs = layer(
+            # Each layer now returns an EncoderLayerOutput object
+            layer_outputs: EncoderLayerOutput = layer(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
                 output_attentions=output_attentions,
             )
 
             # Unpack layer results
-            hidden_states = layer_outputs[0]
+            hidden_states = layer_outputs.hidden_states
+            if layer_outputs.aux_loss is not None:
+                if total_aux_loss is None:
+                    total_aux_loss = layer_outputs.aux_loss
+                else:
+                    total_aux_loss += layer_outputs.aux_loss
+            
             if output_attentions:
-                attention_probs = layer_outputs[1]
+                attention_probs = layer_outputs.attention_weights
                 if attention_probs is not None:
                     all_attentions_collector += (attention_probs,)
 
@@ -156,11 +163,13 @@ class TimeSeriesTransformerEncoder(nn.Module):
                  outputs += (all_hidden_states_collector,)
              if output_attentions:
                  outputs += (all_attentions_collector,)
-             # Filter None in case hidden states or attentions were not collected
              return tuple(output for output in outputs if output is not None)
-
-        return BaseModelOutput(
+        
+        output = BaseModelOutput(
             last_hidden_state=hidden_states,
             hidden_states=all_hidden_states_collector,
             attentions=all_attentions_collector,
         )
+        if total_aux_loss is not None:
+            output.aux_loss = total_aux_loss
+        return output

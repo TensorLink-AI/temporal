@@ -22,6 +22,7 @@ class TransformerOutput:
     Attributes:
         logits (torch.FloatTensor): The final model predictions.
         loss (Optional[torch.FloatTensor]): The loss, computed if targets are provided.
+        aux_loss (Optional[torch.FloatTensor]): The auxiliary loss, e.g. from MoE layers.
         past_key_values (Optional[Tuple[Tuple[torch.Tensor]]]): The KV cache for
             accelerated decoding.
         decoder_hidden_states (Optional[Tuple[torch.FloatTensor]]): Hidden states
@@ -39,6 +40,7 @@ class TransformerOutput:
     """
     logits: torch.FloatTensor = None
     loss: Optional[torch.FloatTensor] = None
+    aux_loss: Optional[torch.FloatTensor] = None
     past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None
     decoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     decoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
@@ -201,7 +203,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        use__cache = use_cache if use_cache is not None else self.config.use_cache
 
         # Step 1: Run the encoder if it exists.
         encoder_outputs = None
@@ -263,15 +265,27 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
 
         # Step 5: Calculate the loss if targets are provided.
         loss = None
+        total_aux_loss = None
+        if encoder_outputs and hasattr(encoder_outputs, 'aux_loss'):
+            total_aux_loss = encoder_outputs.aux_loss
+        if decoder_outputs and hasattr(decoder_outputs, 'aux_loss'):
+            if total_aux_loss is None:
+                total_aux_loss = decoder_outputs.aux_loss
+            else:
+                total_aux_loss += decoder_outputs.aux_loss
+
         if targets is not None:
             if self.loss_fn is None:
                 raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
             loss = self.loss_fn(logits, targets)
+            if total_aux_loss is not None:
+                loss += self.config.aux_loss_weight * total_aux_loss
 
         # Step 6: Construct and return the final output object.
         return TransformerOutput(
             loss=loss,
             logits=logits,
+            aux_loss=total_aux_loss,
             past_key_values=decoder_outputs.past_key_values if decoder_outputs else None,
             decoder_hidden_states=decoder_outputs.hidden_states if decoder_outputs else None,
             decoder_attentions=decoder_outputs.attentions if decoder_outputs else None,

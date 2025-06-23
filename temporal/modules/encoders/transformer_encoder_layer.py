@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 from temporal.configs.transformer_config import TransformerBlockConfig, AttentionConfig, FeedForwardConfig, TransformerTimeSeriesConfig
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.registry.core import register_module
+from temporal.models.outputs import EncoderLayerOutput
 
 @register_module("block", "default_encoder")
 class TimeSeriesTransformerEncoderLayer(nn.Module):
@@ -81,7 +82,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         output_attentions: Optional[bool] = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> EncoderLayerOutput:
         """Performs the forward pass of the encoder layer.
 
         Args:
@@ -95,15 +96,15 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
 
         Returns:
         
-             Tuple[torch.Tensor, Optional[torch.Tensor]]: A tuple containing:
-                - The output hidden states of the layer.
-                - The attention probabilities, if `output_attentions` is True;
-                  otherwise, None.
+             EncoderLayerOutput: An object containing the output hidden states,
+                optional attention weights, and optional auxiliary loss.
         """
         residual = hidden_states
-        attention_probabilities = None
+        attention_weights = None
+        aux_loss = None
 
         # --- Self-Attention Block ---
+        # The attention block itself may return an auxiliary loss (e.g. in MoE)
         attention_outputs = self.self_attn(
             hidden_states=hidden_states,
             key_value_states=None,      # Not used in self-attention
@@ -115,15 +116,22 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         attention_output = attention_outputs[0]
         # Capture attention probabilities if requested and returned
         if output_attentions and len(attention_outputs) > 1:
-             attention_probabilities = attention_outputs[1]
+             attention_weights = attention_outputs[1]
 
         hidden_states = self.norm1(residual + self.dropout(attention_output))
         # --- End Self-Attention Block ---
 
         # --- Feedforward Block ---
         residual = hidden_states
-        ffn_output = self.ffn(hidden_states)
-        hidden_states = self.norm2(residual + self.dropout(ffn_output))
+        # The FFN may return an auxiliary loss (e.g. in MoE)
+        ffn_outputs = self.ffn(hidden_states)
+        hidden_states = self.norm2(residual + self.dropout(ffn_outputs[0]))
+        if len(ffn_outputs) > 1 and ffn_outputs[1] is not None:
+            aux_loss = ffn_outputs[1]
         # --- End Feedforward Block ---
 
-        return (hidden_states, attention_probabilities)
+        return EncoderLayerOutput(
+            hidden_states=hidden_states,
+            attention_weights=attention_weights,
+            aux_loss=aux_loss
+        )

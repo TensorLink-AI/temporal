@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 from temporal.configs.transformer_config import TransformerBlockConfig, AttentionConfig, FeedForwardConfig, TransformerTimeSeriesConfig # Added main config
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.registry.core import register_module
+from temporal.models.outputs import DecoderLayerOutput
 import copy # Import copy for deepcopy
 
 @register_module("block", "default_decoder")
@@ -136,7 +137,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[Optional[Tuple], Optional[Tuple]]] = None, # ((past_self_k, past_self_v), (past_cross_k, past_cross_v))
         output_attentions: bool = False,
         use_cache: bool = False, # Standard HF argument
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[Tuple[Tuple, Tuple]]]:
+    ) -> DecoderLayerOutput:
         """
         Performs the forward pass of the decoder layer.
 
@@ -156,17 +157,16 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
                 states for future decoding steps.
 
         Returns:
-            Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[Tuple[Tuple, Tuple]]]:
-                - The output hidden states of the layer, shape `[B, T_dec, D]`.
-                - The self-attention probabilities (if `output_attentions` is True).
-                - The cross-attention probabilities (if `output_attentions` is True).
-                - The updated key-value cache (if `use_cache` is True).
+            DecoderLayerOutput: An object containing the output hidden states,
+                optional attention weights, optional auxiliary loss, and optional
+                past key value.
         """
         residual = hidden_states
-        self_attention_probabilities = None
-        cross_attention_probabilities = None
+        self_attention_weights = None
+        cross_attention_weights = None
         present_self_key_value = None
         present_cross_key_value = None
+        aux_loss = None
 
         # --- Self Attention ---
         self_attn_past_key_value = past_key_value[0] if past_key_value is not None else None
@@ -180,7 +180,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         )
         self_attention_output = self_attention_outputs[0]
         if output_attentions:
-            self_attention_probabilities = self_attention_outputs[1]
+            self_attention_weights = self_attention_outputs[1]
         if use_cache:
             present_self_key_value = self_attention_outputs[2] if len(self_attention_outputs) > 2 else None
         hidden_states = self.norm1(residual + self.dropout(self_attention_output))
@@ -200,7 +200,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
             )
             cross_attention_output = cross_attention_outputs[0]
             if output_attentions:
-                cross_attention_probabilities = cross_attention_outputs[1]
+                cross_attention_weights = cross_attention_outputs[1]
             if use_cache:
                 present_cross_key_value = cross_attention_outputs[2] if len(cross_attention_outputs) > 2 else None
             
@@ -212,10 +212,19 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
 
         # --- Feedforward ---
         residual = hidden_states
-        ffn_output = self.ffn(hidden_states)
-        hidden_states = self.norm3(residual + self.dropout(ffn_output))
+        ffn_outputs = self.ffn(hidden_states)
+        hidden_states = self.norm3(residual + self.dropout(ffn_outputs[0]))
+        if len(ffn_outputs) > 1 and ffn_outputs[1] is not None:
+            aux_loss = ffn_outputs[1]
+
         # --- End Feedforward ---
 
         present_key_value = (present_self_key_value, present_cross_key_value) if use_cache else None
 
-        return hidden_states, self_attention_probabilities, cross_attention_probabilities, present_key_value
+        return DecoderLayerOutput(
+            hidden_states=hidden_states,
+            self_attention_weights=self_attention_weights,
+            cross_attention_weights=cross_attention_weights,
+            past_key_value=present_key_value,
+            aux_loss=aux_loss
+        )

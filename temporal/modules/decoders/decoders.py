@@ -8,7 +8,7 @@ from typing import Optional, Tuple, List, Union
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.models.block_builder import BlockBuilder
 from temporal.configs.transformer_config import TransformerBlockConfig
-
+from temporal.models.outputs import DecoderLayerOutput
 
 class TimeSeriesTransformerDecoder(nn.Module):
     """
@@ -178,6 +178,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
         all_self_attentions_collector = () if output_attentions else None
         all_cross_attentions_collector = () if output_attentions else None
         next_decoder_cache = [] if use_cache else None
+        total_aux_loss = None
 
         for idx, layer in enumerate(self.layers):
             # Support for layer dropping during training
@@ -190,7 +191,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
             if output_hidden_states:
                 all_hidden_states_collector += (hidden_states,)
 
-            layer_outputs = layer(
+            layer_outputs: DecoderLayerOutput = layer(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
@@ -200,23 +201,22 @@ class TimeSeriesTransformerDecoder(nn.Module):
                 use_cache=use_cache,
             )
 
-            hidden_states = layer_outputs[0]
+            hidden_states = layer_outputs.hidden_states
 
             if use_cache:
-                 present_key_value = layer_outputs[-1] if len(layer_outputs) > 1 else None
-                 if not isinstance(present_key_value, tuple) and present_key_value is not None:
-                      if hasattr(present_key_value, 'past_key_value'):
-                           present_key_value = present_key_value.past_key_value
-                      else:
-                           print(f"Warning: Layer {idx} output structure unexpected when use_cache=True.")
-                           present_key_value = None
-                 next_decoder_cache.append(present_key_value)
+                 next_decoder_cache.append(layer_outputs.past_key_value)
 
             if output_attentions:
-                 self_attn_weights = layer_outputs[1] if len(layer_outputs) > 1 and layer_outputs[1] is not None else None
-                 cross_attn_weights = layer_outputs[2] if len(layer_outputs) > 2 and layer_outputs[2] is not None else None
-                 if self_attn_weights is not None: all_self_attentions_collector += (self_attn_weights,)
-                 if cross_attn_weights is not None and encoder_hidden_states is not None: all_cross_attentions_collector += (cross_attn_weights,)
+                 if layer_outputs.self_attention_weights is not None:
+                     all_self_attentions_collector += (layer_outputs.self_attention_weights,)
+                 if layer_outputs.cross_attention_weights is not None:
+                     all_cross_attentions_collector += (layer_outputs.cross_attention_weights,)
+
+            if layer_outputs.aux_loss is not None:
+                if total_aux_loss is None:
+                    total_aux_loss = layer_outputs.aux_loss
+                else:
+                    total_aux_loss += layer_outputs.aux_loss
 
         if output_hidden_states:
             all_hidden_states_collector += (hidden_states,)
@@ -228,10 +228,13 @@ class TimeSeriesTransformerDecoder(nn.Module):
                 hidden_states, all_hidden_states_collector, all_self_attentions_collector, all_cross_attentions_collector, next_cache
             ] if v is not None)
 
-        return BaseModelOutputWithPastAndCrossAttentions(
+        output = BaseModelOutputWithPastAndCrossAttentions(
             last_hidden_state=hidden_states,
             hidden_states=all_hidden_states_collector,
             attentions=all_self_attentions_collector,
             cross_attentions=all_cross_attentions_collector,
             past_key_values=next_cache,
         )
+        if total_aux_loss is not None:
+            output.aux_loss = total_aux_loss
+        return output
