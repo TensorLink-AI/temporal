@@ -66,7 +66,11 @@ class BlockBuilder:
                     "Configuration for 'adaptive_patch_transformer' must include 'wrapped_block_type' "
                     "in its kwargs to specify whether to wrap an 'encoder' or 'decoder'."
                 )
-
+            
+            expansion_factor = block_cfg.kwargs.get("expansion_factor")
+            original_d_model = self.config.d_model
+            self.config.d_model = original_d_model // expansion_factor
+            
             # Define the configuration for the inner layer (encoder or decoder)
             inner_layer_cfg = TransformerBlockConfig(
                 block_type=wrapped_block_type,
@@ -78,10 +82,12 @@ class BlockBuilder:
             # Recursively call this builder to construct the inner layer
             inner_transformer_layer = self.build_block(inner_layer_cfg)
 
+            self.config.d_model = original_d_model
+
             # Instantiate the adaptive patch block wrapper
             return block_cls(
                 transformer_layer=inner_transformer_layer,
-                expansion_factor=block_cfg.kwargs.get("expansion_factor")
+                expansion_factor=expansion_factor
             )
 
 
@@ -143,4 +149,3 @@ class BlockBuilder:
             if required_params:
                 print(f"  > Missing required arguments: {list(required_params)}")
             raise e
-
