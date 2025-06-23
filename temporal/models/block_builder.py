@@ -4,6 +4,8 @@ from temporal.configs.transformer_config import AttentionConfig, FeedForwardConf
 import inspect
 from typing import Type
 import torch.nn as nn
+import copy
+from temporal.models.module_builder_helper import ModuleBuilder
 
 class BlockBuilder:
     """
@@ -66,14 +68,19 @@ class BlockBuilder:
                     "Configuration for 'adaptive_patch_transformer' must include 'wrapped_block_type' "
                     "in its kwargs to specify whether to wrap an 'encoder' or 'decoder'."
                 )
-            
+
             expansion_factor = block_cfg.kwargs.get("expansion_factor")
-            original_d_model = self.config.d_model
-            self.config.d_model = original_d_model // expansion_factor
             
-            # Define the configuration for the inner layer (encoder or decoder)
-            # We set attention_config and ffn_config to None to force the builder
-            # to use the global config, which respects the temporary d_model change.
+            # Create a deep copy of the main config to create an isolated environment.
+            temp_config = copy.deepcopy(self.config)
+            # Adjust d_model for the inner, wrapped layer.
+            temp_config.d_model = self.config.d_model // expansion_factor
+            
+            # Create a new, temporary builder with the modified config.
+            temp_builder = ModuleBuilder(temp_config)
+
+            # Define the configuration for the inner layer. We set specific configs
+            # to None to force the temp_builder to use its own adjusted global config.
             inner_layer_cfg = TransformerBlockConfig(
                 block_type=wrapped_block_type,
                 attention_config=None,
@@ -81,12 +88,11 @@ class BlockBuilder:
                 kwargs=block_cfg.kwargs
             )
             
-            # Recursively call this builder to construct the inner layer
-            inner_transformer_layer = self.build_block(inner_layer_cfg)
+            # Create a temporary block builder to construct the inner layer in isolation.
+            temp_block_builder = BlockBuilder(temp_config, temp_builder)
+            inner_transformer_layer = temp_block_builder.build_block(inner_layer_cfg)
 
-            self.config.d_model = original_d_model
-
-            # Instantiate the adaptive patch block wrapper
+            # Instantiate the adaptive patch block wrapper with the correctly-sized inner layer.
             return block_cls(
                 transformer_layer=inner_transformer_layer,
                 expansion_factor=expansion_factor
