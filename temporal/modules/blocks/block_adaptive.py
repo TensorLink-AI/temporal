@@ -29,14 +29,14 @@ class AdaptivePatchTransformerBlock(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
+        hidden_states: torch.Tensor,
         attention_mask=None,
         past_key_value=None,
         **kwargs,
     ) -> torch.Tensor:
         """
         Args:
-            x (torch.Tensor): Input tensor of shape [B, N, D].
+            hidden_states (torch.Tensor): Input tensor of shape [B, N, D].
             attention_mask (torch.Tensor, optional): Attention mask of shape [B, 1, T_q, T_kv].
             past_key_value (tuple, optional): Past key-value state. Not supported.
             **kwargs: Additional keyword arguments to be passed to the inner transformer layer.
@@ -47,7 +47,7 @@ class AdaptivePatchTransformerBlock(nn.Module):
         if past_key_value is not None:
             raise NotImplementedError("KV caching not yet supported with adaptive patching.")
 
-        x_patched = self.adaptive_patching(x)
+        x_patched = self.adaptive_patching(hidden_states)
 
         if attention_mask is not None:
             # Expand both query and key/value length
@@ -56,7 +56,7 @@ class AdaptivePatchTransformerBlock(nn.Module):
 
         # Pass patched input and any other arguments to the wrapped layer
         layer_output = self.transformer_layer(
-            x_patched,
+            hidden_states=x_patched,
             attention_mask=attention_mask,
             past_key_value=None,
             **kwargs,
