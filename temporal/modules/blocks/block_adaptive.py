@@ -3,10 +3,10 @@ import torch
 import torch.nn as nn
 
 from temporal.models.mixin.adaptive_patching import AdaptivePatching, PatchMerging
-from temporal.registry import register_block
+from temporal.registry.core import register_module
 
 
-@register_block("adaptive_patch_transformer")
+@register_module("block", "adaptive_patch_transformer")
 class AdaptivePatchTransformerBlock(nn.Module):
     """
     An adaptive patch transformer block that applies adaptive patching before a transformer layer
