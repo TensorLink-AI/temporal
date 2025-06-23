@@ -72,10 +72,12 @@ class BlockBuilder:
             self.config.d_model = original_d_model // expansion_factor
             
             # Define the configuration for the inner layer (encoder or decoder)
+            # We set attention_config and ffn_config to None to force the builder
+            # to use the global config, which respects the temporary d_model change.
             inner_layer_cfg = TransformerBlockConfig(
                 block_type=wrapped_block_type,
-                attention_config=block_cfg.attention_config,
-                ffn_config=block_cfg.ffn_config,
+                attention_config=None,
+                ffn_config=None,
                 kwargs=block_cfg.kwargs
             )
             
@@ -116,7 +118,7 @@ class BlockBuilder:
                 )
 
         # If the block accepts 'ffn' directly, build it.
-        if "ffn" in accepted_params and hasattr(_cfg, 'ffn_config') and block_cfg.ffn_config:
+        if "ffn" in accepted_params and hasattr(block_cfg, 'ffn_config') and block_cfg.ffn_config:
             init_kwargs["ffn"] = self.builder.build_feedforward(
                 block_cfg.ffn_config
             )
