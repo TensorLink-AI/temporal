@@ -1,7 +1,7 @@
 
 import torch.nn as nn
 from temporal.models.mixin.adaptive_patching import AdaptivePatching, PatchMerging
-from temporal.modules.encoders.transformer_encoder_layer import TransformerEncoderLayer
+from temporal.modules.encoders.transformer_encoder_layer import TimeSeriesTransformerEncoderLayer
 from temporal.modules.decoders.base_decoder_layer import TimeSeriesTransformerDecoderLayer
 from typing import Optional, Tuple
 import torch
@@ -13,12 +13,12 @@ class HierarchicalTransformerEncoderBlock(nn.Module):
     patching and merging.
     """
 
-    def __init__(self, encoder_layer: TransformerEncoderLayer, expansion_factor: int):
+    def __init__(self, encoder_layer: TimeSeriesTransformerEncoderLayer, expansion_factor: int):
         super().__init__()
 
-        if not isinstance(encoder_layer, TransformerEncoderLayer):
+        if not isinstance(encoder_layer, TimeSeriesTransformerEncoderLayer):
             raise TypeError(
-                f"encoder_layer must be of type TransformerEncoderLayer, but got {type(encoder_layer)}"
+                f"encoder_layer must be of type TimeSeriesTransformerEncoderLayer, but got {type(encoder_layer)}"
             )
 
         self.encoder_layer = encoder_layer
