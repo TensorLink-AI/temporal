@@ -114,7 +114,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         self.patch_merger = None
         if config.value_embedding_config.type == "patch":
             patch_kwargs = config.value_embedding_config.kwargs
-            patch_length = patch_kwargs.get("patch_length")
+            patch_length = patch_kwargs.get("patch_size")
             patch_stride = patch_kwargs.get("stride")
 
             if patch_length is None or patch_stride is None:
