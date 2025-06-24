@@ -62,7 +62,7 @@ class StandardFeedForward(nn.Module):
         self.fc2 = nn.Linear(intermediate_size, hidden_size, bias=bias)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Performs the forward pass of the FFN.
 
         Args:
@@ -70,7 +70,9 @@ class StandardFeedForward(nn.Module):
                 `[..., seq_len, hidden_size]`.
 
         Returns:
-            torch.Tensor: The output tensor with the same shape as the input.
+            Tuple[torch.Tensor, Optional[torch.Tensor]]: A tuple containing:
+                - The output tensor with the same shape as the input.
+                - An auxiliary loss, which is `None` for this standard FFN.
         """
         hidden_states = self.fc1(hidden_states)
         hidden_states = self.activation_fn(hidden_states)
@@ -79,4 +81,4 @@ class StandardFeedForward(nn.Module):
         # Note: Dropout after the second linear layer is common in many implementations,
         # but is sometimes placed differently. We apply it before the final residual
         # connection in the main Transformer block.
-        return hidden_states
+        return hidden_states, None
