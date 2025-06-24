@@ -114,12 +114,12 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         self.patch_merger = None
         if config.value_embedding_config.type == "patch":
             patch_kwargs = config.value_embedding_config.kwargs
-            patch_length = patch_kwargs.get("patch_size")
-            patch_stride = patch_kwargs.get("stride")
+            patch_length = patch_kwargs.get("patch_size") # Corrected to patch_size
+            patch_stride = patch_kwargs.get("stride", patch_length) # Default stride to patch_length
 
-            if patch_length is None or patch_stride is None:
+            if patch_length is None:
                 raise ValueError(
-                    "Patch embedder config requires 'patch_length' and 'stride' in value_embedding_config.kwargs."
+                    "Patch embedder config requires 'patch_size' in value_embedding_config.kwargs."
                 )
 
             num_patches = (config.context_length - patch_length) // patch_stride + 1
@@ -240,16 +240,20 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         if targets is not None and self.config.architecture.layout == "decoder" and self.patch_merger is None:
             num_target_steps = targets.size(1)
             input_to_heads = input_to_heads[:, -num_target_steps:, :]
+
+        # CORRECTED Step 4: Apply patch merger BEFORE the output head.
+        if self.patch_merger is not None:
+            # Transpose to apply linear layer across the patch sequence dimension
+            merged_output = self.patch_merger(input_to_heads.transpose(1, 2))
+            # Transpose back to get [B, Prediction_Length, Hidden_Size]
+            input_to_heads = merged_output.transpose(1, 2)
         
-        # Step 4: Project the final hidden states through the output head(s).
+        # Step 5: Project the final hidden states through the output head(s).
         logits = self.output_heads(input_to_heads)
         if self.head_aggregator is not None:
             logits = self.head_aggregator(logits)
-        
-        if self.patch_merger is not None:
-            logits = self.patch_merger(logits.transpose(1,2)).transpose(1,2)
 
-        # Step 5: Calculate the loss if targets are provided.
+        # Step 6: Calculate the loss if targets are provided.
         loss = None
         total_aux_loss = None
         if encoder_outputs and hasattr(encoder_outputs, 'aux_loss') and encoder_outputs.aux_loss is not None:
@@ -270,7 +274,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
                 # Ensure aux loss is a scalar before adding
                 loss += self.config.aux_loss_weight * total_aux_loss.mean()
 
-        # Step 6: Construct and return the final output object.
+        # Step 7: Construct and return the final output object.
         return TransformerOutput(
             loss=loss,
             logits=logits,
