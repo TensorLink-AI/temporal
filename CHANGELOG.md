@@ -8,10 +8,8 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Core encoder-decoder Transformer with AR generation
 - Modular `HeadAggregator` with support for mean, gated, attention, fusion, stacked, weighted_mean
-- KernelSynth-based time series data generation
 - Hybrid loss support for stacking multiple loss types
 - Adaptive context length (configurable)
-- `from_pretrained_temporal()` model loader
 - Initial CLI and config validation
 
 ### Fixed

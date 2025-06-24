@@ -155,7 +155,9 @@ class InputPreprocessor(nn.Module):
         bsz, tgt_len = input_ids_shape
         mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
         mask_cond = torch.arange(mask.size(-1), device=device)
-        mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+        
+        # Use a standard and readable broadcasting approach to create the lower-triangular mask
+        mask.masked_fill_(mask_cond[None, :] <= mask_cond[:, None], 0)
         
         if past_key_values_length > 0:
             # If a KV cache is used, the mask needs to be extended to accommodate the cached tokens.
