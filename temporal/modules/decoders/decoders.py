@@ -19,16 +19,17 @@ class TimeSeriesTransformerDecoder(nn.Module):
     based on a list of `TransformerBlockConfig` objects.
 
     The decoder is responsible for:
-    - Embedding the input time series features.
-    - Adding positional information.
+    - Adding positional information to already embedded features.
     - Sequentially processing the embedded sequence through its layers.
     - Handling the Key-Value (KV) cache for efficient autoregressive generation.
 
     Attributes:
         config: The main configuration object for the model.
+        value_embedding (nn.Module): The module for embedding input features.
+            Note: This is not used in the `forward` pass, but is held here to be
+            used by the parent model.
         dropout (nn.Dropout): Dropout layer applied after embeddings.
         layernorm_embedding (nn.Module): Layer normalization applied to the embeddings.
-        value_embedding (nn.Module): The module for embedding input features.
         positional_embedding (nn.Module): The module for adding positional information.
         layers (nn.ModuleList): The stack of decoder layers.
     """
@@ -56,7 +57,6 @@ class TimeSeriesTransformerDecoder(nn.Module):
 
         self.layernorm_embedding = builder.build_normalization()
         self.value_embedding = builder.build_value_embedding()
-        # Positional embedding layer should now accept (batch_size, seq_len, past_len)
         self.positional_embedding = builder.build_positional_embedding()
 
         block_builder = BlockBuilder(config, builder)
@@ -98,7 +98,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.Tensor,  # [B, T, F] raw features
+        hidden_states: torch.Tensor,  # [B, T, D] embedded features
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None, # Decoder self-attention mask
         encoder_attention_mask: Optional[torch.Tensor] = None, # Cross-attention mask
@@ -112,12 +112,13 @@ class TimeSeriesTransformerDecoder(nn.Module):
         Performs the forward pass of the Transformer decoder.
 
         Args:
-            input_ids (torch.Tensor): The raw input features for the decoder,
-                shape `[B, T, F]`.
+            hidden_states (torch.Tensor): The embedded input features for the decoder,
+                shape `[B, T, D]`. The calling model is responsible for performing
+                value embedding (e.g., patching) before passing to this module.
             encoder_hidden_states (Optional[torch.Tensor]): The output from the
                 encoder, used for cross-attention. Shape `[B, T_enc, D]`.
             attention_mask (Optional[torch.Tensor]): The causal self-attention mask
-                for the decoder.
+                for the decoder. This mask must match the sequence dimension of `hidden_states`.
             encoder_attention_mask (Optional[torch.Tensor]): The padding mask for
                 the encoder hidden states.
             past_key_values (Optional[List[Tuple[Tuple, Tuple]]]): The KV cache
@@ -135,10 +136,8 @@ class TimeSeriesTransformerDecoder(nn.Module):
         # Determine past sequence length for positional embeddings if using cache
         past_key_values_length = self._get_past_key_values_length(past_key_values)
 
-        batch_size, current_seq_len, _ = input_ids.shape
-
-        # === Embedding ===
-        value_embeds = self.value_embedding(input_ids)  # [B, T, D]
+        value_embeds = hidden_states
+        batch_size, current_seq_len, _ = value_embeds.shape
 
         # Generate positional encoding using the new signature
         try:
@@ -152,7 +151,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
             if pos_embed.shape[0] != batch_size and pos_embed.shape[0] != 1:
                  raise ValueError(f"Positional embedding returned unexpected batch dim: {pos_embed.shape[0]}. Expected 1 or {batch_size}")
             if pos_embed.shape[1] != current_seq_len:
-                 raise ValueError(f"Positional embedding returned unexpected seq len dim: {pos_embed.shape[1]}. Expected {current_seq_len}")
+                 raise ValueError(f"Positional embedding returned unexpected seq len dim: {pos_embed.shape[1]}. Expected {current__seq_len}")
 
         except TypeError as e:
              if "positional_embedding()" in str(e) or "forward()" in str(e):

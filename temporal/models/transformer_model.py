@@ -8,6 +8,8 @@ from temporal.models.base_model import BaseTemporalModel
 from temporal.registry.generate import register_generate
 from temporal.models.mixin.autoregressive import AutoregressiveMixin
 from temporal.models.mixin.multistep import MultiStepMixin
+from temporal.models.preprocessor import InputPreprocessor
+from temporal.models.module_builder_helper import ModuleBuilder
 
 @dataclass
 class TransformerOutput:
@@ -65,72 +67,6 @@ class TransformerOutput:
         """Converts the dataclass to a dictionary."""
         return asdict(self)
 
-
-def _prepare_decoder_attention_mask(
-    attention_mask: Optional[torch.Tensor],
-    input_shape: Tuple[int, int],
-    inputs_embeds: torch.Tensor,
-    past_key_values_length: int
-) -> Optional[torch.Tensor]:
-    """Creates a 4D causal attention mask for a decoder.
-
-    This helper function combines a 2D padding mask with a causal mask to
-    ensure that the decoder only attends to past positions and non-padded tokens.
-    """
-    bsz, seq_len = input_shape
-    combined_attention_mask = None
-
-    if seq_len > 0:
-        causal_mask = _make_causal_mask(
-            (bsz, seq_len),
-            inputs_embeds.dtype,
-            device=inputs_embeds.device,
-            past_key_values_length=past_key_values_length,
-        )
-        combined_attention_mask = causal_mask
-
-    if attention_mask is not None:
-        expanded_padding_mask = _expand_mask(
-            attention_mask, inputs_embeds.dtype, tgt_len=seq_len
-        ).to(inputs_embeds.device)
-        if combined_attention_mask is not None:
-            combined_attention_mask = expanded_padding_mask + combined_attention_mask
-        else:
-            combined_attention_mask = expanded_padding_mask
-
-    return combined_attention_mask
-
-def _make_causal_mask(
-    input_ids_shape: torch.Size,
-    dtype: torch.dtype,
-    device: torch.device,
-    past_key_values_length: int = 0
-) -> torch.Tensor:
-    """Creates a causal mask for ensuring unidirectional attention."""
-    bsz, tgt_len = input_ids_shape
-    mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
-    mask_cond = torch.arange(mask.size(-1), device=device)
-    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
-    mask = mask.to(dtype)
-
-    if past_key_values_length > 0:
-        mask = torch.cat(
-            [torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1
-        )
-    return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
-
-def _expand_mask(
-    mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None
-) -> torch.Tensor:
-    """Expands a 2D padding mask to a 4D attention mask."""
-    bsz, src_len = mask.size()
-    tgt_len = tgt_len if tgt_len is not None else src_len
-
-    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
-    inverted_mask = 1.0 - expanded_mask
-    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
-
-
 @register_generate(name="transformer")
 class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporalModel):
     """A concrete implementation of a transformer-based temporal model.
@@ -148,7 +84,8 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         decoder: Optional[nn.Module] = None,
         output_heads: Optional[nn.Module] = None,
         head_aggregator: Optional[nn.Module] = None,
-        loss_fn: Optional[callable] = None
+        loss_fn: Optional[callable] = None,
+        builder: Optional[ModuleBuilder] = None,
     ):
         """Initializes the TransformerTemporalModel."""
         super().__init__(
@@ -159,6 +96,11 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
             head_aggregator=head_aggregator,
             loss_fn=loss_fn
         )
+
+        if builder is None:
+            builder = ModuleBuilder(config)
+
+        self.preprocessor = InputPreprocessor(config, builder)
         self._encoder_dtype = getattr(encoder, 'dtype', torch.float32) if encoder else torch.float32
         self._decoder_dtype = getattr(decoder, 'dtype', torch.float32) if decoder else torch.float32
 
@@ -173,6 +115,8 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
+        validate_shapes: bool = False,
+        verbose: bool = False,
     ) -> TransformerOutput:
         """
         Performs a forward pass through the entire transformer model.
@@ -195,6 +139,10 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
             output_attentions (Optional[bool]): If True, returns attention weights.
             output_hidden_states (Optional[bool]): If True, returns hidden states
                 from all layers.
+            validate_shapes (bool): If True, performs assertions inside the
+                preprocessor to check for shape consistency.
+            verbose (bool): If True, prints detailed shape information from
+                the preprocessor for debugging.
 
         Returns:
             TransformerOutput: A structured object containing the model's outputs.
@@ -203,16 +151,23 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use__cache = use_cache if use_cache is not None else self.config.use_cache
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         # Step 1: Run the encoder if it exists.
         encoder_outputs = None
         if self.encoder:
             if encoder_inputs is None:
                 raise ValueError("The model's encoder requires 'encoder_inputs'.")
-            encoder_outputs = self.encoder(
+            
+            processed_encoder = self.preprocessor.process(
                 input_values=encoder_inputs,
                 attention_mask=attention_mask,
+                validate_shapes=validate_shapes,
+                verbose=verbose,
+            )
+            encoder_outputs = self.encoder(
+                hidden_states=processed_encoder["hidden_states"],
+                attention_mask=processed_encoder["attention_mask"],
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=True,
@@ -224,20 +179,21 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         if self.decoder:
             if decoder_inputs is None:
                 raise ValueError("The model's decoder requires 'decoder_inputs'.")
-
-            # Prepare the decoder attention mask (causal + padding).
-            past_kv_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
-            decoder_mask = _prepare_decoder_attention_mask(
-                decoder_attention_mask, decoder_inputs.shape[:-1], decoder_inputs, past_kv_length
-            )
-            # Prepare the cross-attention mask.
-            cross_attention_mask = _expand_mask(attention_mask, self._decoder_dtype, tgt_len=decoder_inputs.shape[1]) if attention_mask is not None else None
             
+            past_kv_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+
+            processed_decoder = self.preprocessor.process(
+                input_values=decoder_inputs,
+                past_key_values_length=past_kv_length,
+                attention_mask=decoder_attention_mask,
+                validate_shapes=validate_shapes,
+                verbose=verbose,
+            )
+
             decoder_outputs = self.decoder(
-                input_ids=decoder_inputs,
-                attention_mask=decoder_mask,
+                hidden_states=processed_decoder["hidden_states"],
+                attention_mask=processed_decoder["attention_mask"],
                 encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=cross_attention_mask,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 output_attentions=output_attentions,
@@ -246,16 +202,14 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
             )
             input_to_heads = decoder_outputs.last_hidden_state
         else:
-            # If there's no decoder, the encoder output is fed to the head.
             if encoder_hidden_states is None:
                 raise ValueError("Model requires an encoder or decoder to produce output for the head.")
             input_to_heads = encoder_hidden_states
-            decoder_outputs = None # No decoder outputs to return
+            decoder_outputs = None
 
         # Step 3: Align head input with targets for loss calculation if needed.
         if targets is not None and self.config.architecture.layout == "decoder":
             num_target_steps = targets.size(1)
-            # Take the last `num_target_steps` from the head input to align with targets.
             input_to_heads = input_to_heads[:, -num_target_steps:, :]
         
         # Step 4: Project the final hidden states through the output head(s).

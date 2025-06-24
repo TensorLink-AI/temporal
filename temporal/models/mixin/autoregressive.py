@@ -1,231 +1,143 @@
+
 import torch
 import torch.nn as nn
-from typing import Optional, Union, Any # Added Union, Any
-
+import numpy as np
+from typing import Optional, List, Tuple, Union
 
 class AutoregressiveMixin:
+    """
+    A mixin for autoregressive sequence generation.
+
+    This class provides a `generate` method that can be used by any model
+    that inherits from it. The method performs autoregressive decoding, where
+    the model's prediction at each time step is fed back as input for the
+    next time step.
+
+    The mixin is designed to be flexible and supports:
+    - Probabilistic generation (sampling from the output distribution).
+    - Deterministic generation (taking the argmax or a specific quantile).
+    - Handling of encoder-decoder and decoder-only architectures.
+    - Use of a Key-Value (KV) cache for efficient decoding.
+
+    To use this mixin, a model must have a `self.preprocessor` attribute that
+    can process raw inputs into embeddings and masks.
+    """
+
     def enable_dropout(self):
-        """Enable dropout for MC sampling during autoregressive generation."""
+        """
+        Enables dropout layers during generation.
+
+        This is useful for techniques like Monte Carlo (MC) Dropout, where
+        model uncertainty is estimated by performing multiple forward passes
+        with dropout enabled.
+        """
         for m in self.modules():
             if isinstance(m, nn.Dropout):
                 m.train()
 
-    def _get_scalar_value(self, value: Union[torch.Tensor, float, int, Any], name: str) -> float:
-        """ Safely converts a potential tensor value to a float scalar. """
-        if torch.is_tensor(value):
-            temp_value = value
-            while temp_value.numel() > 1:
-                 print(f"Warning: {name} tensor had {temp_value.numel()} elements. Taking first element.")
-                 temp_value = temp_value[0]
-            if temp_value.numel() == 1:
-                 return float(temp_value.item())
-            else:
-                 raise ValueError(f"Could not reduce {name} tensor (original shape {value.shape}) to a scalar.")
-        try:
-            return float(value)
-        except (TypeError, ValueError) as e:
-            raise TypeError(f"Could not convert {name}={value} (type {type(value)}) to float scalar. Error: {e}")
-
-
-    def generate_autoregressive(
+    @torch.no_grad()
+    def generate(
         self,
-        input_ids: torch.Tensor,
-        prediction_length: int,
-        attention_mask: Optional[torch.Tensor] = None, # Mask for encoder input
-        decoder_attention_mask: Optional[torch.Tensor] = None, # Optional separate mask for decoder start
-        use_cache: bool = True,
-        decoder_start_token_id: Optional[Any] = None, # Allow Tensor or scalar
-        eos_token_id: Optional[Any] = None,           # Allow Tensor or scalar
-        early_stopping: bool = False,
-        output_attentions: bool = False,
+        context: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        prediction_length: Optional[int] = None,
         **kwargs,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        Autoregressive generation, supporting encoder-decoder and decoder-only.
+        Generates an autoregressive sequence.
 
         Args:
-            input_ids: Inputs. Shape depends on architecture:
-                       - Encoder-Decoder: Encoder input sequence [B, Seq_Enc, Feat_Enc].
-                       - Decoder-Only: Initial decoder input sequence [B, Seq_Dec, Feat_Dec].
-            prediction_length: Number of steps to generate.
-            attention_mask: Mask for encoder inputs (if encoder exists).
-            decoder_attention_mask: Mask for initial decoder inputs (if needed).
-            use_cache: Whether to use KV caching for the decoder.
-            decoder_start_token_id: Value (scalar or tensor) to initialize the first decoder step (optional).
-            eos_token_id: Value (scalar or tensor) indicating end of sequence (optional, for early stopping).
-            early_stopping: Stop generation if eos_token is predicted.
-            output_attentions: Whether to output attention weights.
-            **kwargs: Additional arguments passed to encoder/decoder.
+            context (torch.Tensor): The input sequence for the encoder
+                (or the initial context for a decoder-only model).
+                Shape: `(batch_size, context_length, feature_size)`.
+            attention_mask (Optional[torch.Tensor]): A mask to prevent attention
+                to padding tokens in the `context` tensor.
+                Shape: `(batch_size, context_length)`.
+            prediction_length (Optional[int]): The number of time steps to predict.
+                If not provided, it defaults to the model's configured
+                `prediction_length`.
+            **kwargs: Additional keyword arguments.
+                - `use_cache` (bool): Whether to use the KV cache. Defaults to True.
+                - `probabilistic` (bool): Whether to sample from the output
+                  distribution. Defaults to True.
+                - `feedback_quantile` (float): The quantile to use for feedback in
+                  deterministic generation. Defaults to 0.5.
+                - `return_full_sequence` (bool): If True, returns the context and
+                  the predictions concatenated. Defaults to False.
 
         Returns:
-            Tensor of generated sequence, shape [B, prediction_length, Feat_Dec].
+            Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+            - If `return_full_sequence` is False (default), returns the generated
+              sequence of shape `(batch_size, prediction_length, output_feature_size)`.
+            - If `return_full_sequence` is True, returns a tuple containing the
+              full sequence and the generated sequence.
         """
-        batch_size = input_ids.shape[0]
-        device = input_ids.device
+        self.eval()
 
-        # 1) Prepare Encoder Output
-        encoder_hidden_states = None
-        input_feature_size = input_ids.shape[-1] # Get feature size from input
-        if hasattr(self, 'encoder') and self.encoder is not None:
-            if input_ids is None: raise ValueError("Encoder exists but input_ids are None.")
-            encoder_outputs = self.encoder(
-                input_values=input_ids, attention_mask=attention_mask, output_attentions=output_attentions,
-                return_dict=True, **kwargs.get("encoder_kwargs", {}),
-            )
-            encoder_hidden_states = getattr(encoder_outputs, 'last_hidden_state', encoder_outputs)
+        pred_len = prediction_length if prediction_length is not None else self.config.prediction_length
+        use_cache = kwargs.get("use_cache", True)
+        probabilistic = kwargs.get("probabilistic", True)
+        return_full_sequence = kwargs.get("return_full_sequence", False)
 
-        # 2) Initialize Decoder Input Sequence
-        effective_start_token_id = decoder_start_token_id
-        if hasattr(self, 'encoder') and self.encoder is not None and effective_start_token_id is None:
-             effective_start_token_id = getattr(self.config, "decoder_start_token_id", None)
-             if effective_start_token_id is None: 
-                  raise ValueError("Encoder-decoder requires decoder_start_token_id via arg or config.")
+        if self.encoder:
+            encoder_inputs = context
+            decoder_inputs = context[:, -1:, :]
+        else:
+            encoder_inputs = None
+            decoder_inputs = context
 
-        if hasattr(self, 'encoder') and self.encoder is not None:
-             # Encoder-Decoder Path
-             if effective_start_token_id is None: raise ValueError("Start token ID is None unexpectedly.")
-             
-             # Use input_feature_size determined from the actual input tensor
-             model_feature_size = input_feature_size 
-
-             start_value_scalar = self._get_scalar_value(effective_start_token_id, "decoder_start_token_id")
-
-             # Initialize with the correct feature dimension
-             decoder_input_ids = torch.full(
-                 (batch_size, 1, model_feature_size), # Shape [B, 1, Feat_Enc]
-                 start_value_scalar, 
-                 dtype=encoder_hidden_states.dtype if encoder_hidden_states is not None else torch.float32,
-                 device=device,
-             )
-             current_seq_len = 1
-        
-        else: # Decoder-Only Path
-             decoder_input_ids = input_ids
-             current_seq_len = decoder_input_ids.shape[1]
-
-        predictions = []
+        full_sequence = [context] if self.encoder else [decoder_inputs]
+        generated_sequence = []
         past_key_values = None
-        internal_decoder_attention_mask = decoder_attention_mask
-        eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id") if early_stopping and eos_token_id is not None else None
 
-        # 3) Autoregressive Loop
-        for step in range(prediction_length):
-            # Use last *feature* step as input if using cache, otherwise full history
-            step_attention_mask = internal_decoder_attention_mask if not use_cache or past_key_values is None else None
-            step_inputs = decoder_input_ids[:, -1:, :] \
-                        if use_cache and past_key_values is not None \
-                        else decoder_input_ids
+        for i in range(pred_len):
+            current_seq_len = decoder_inputs.shape[1]
+            
+            # --- Preprocessing Step ---
+            processed_decoder = self.preprocessor.process(
+                input_values=decoder_inputs,
+                past_key_values_length=past_key_values[0][0].shape[2] if past_key_values else 0,
+            )
 
-            # decide how to call the decoder
-            feat_dim = self.config.feature_size
-            hidden_dim = self.config.d_model
-
-            if step_inputs.shape[-1] == feat_dim:
-                # raw features: let decoder apply its value_embedding
-                dec_call = {"input_ids": step_inputs}
-            elif step_inputs.shape[-1] == hidden_dim:
-                # already embedded: skip value_embedding
-                dec_call = {"inputs_embeds": step_inputs}
-            else:
-                raise ValueError(
-                    f"Step input last dim={step_inputs.shape[-1]} "
-                    f"but expected feature_size={feat_dim} or d_model={hidden_dim}"
-                )
-            if not hasattr(self, 'decoder') or self.decoder is None: raise AttributeError("Model missing decoder")
-
-            decoder_outputs = self.decoder(
-                **dec_call,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=attention_mask,
-                attention_mask=step_attention_mask,
+            # The forward pass now uses the preprocessed inputs
+            model_outputs = self.forward(
+                encoder_inputs=encoder_inputs,
+                decoder_inputs=decoder_inputs, # Pass raw inputs
+                attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
-                output_attentions=output_attentions,
-                return_dict=True,
-                **kwargs.get("decoder_kwargs", {}),
             )
-            # Check if decoder_outputs is a dataclass and extract hidden state
-            if hasattr(decoder_outputs, 'last_hidden_state'):
-                last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]
-            else:
-                # Fallback for tuple output
-                last_hidden = decoder_outputs[0][:, -1:, :]
-
-
-            # Pass through Output Heads 
-            if not hasattr(self, 'output_heads'): raise AttributeError("Model missing output_heads")
-            last_hidden_contiguous = last_hidden.contiguous()
-            if isinstance(self.output_heads, nn.ModuleList):
-                head_outputs = [head(last_hidden_contiguous) for head in self.output_heads]
-                if hasattr(self, 'head_aggregator') and self.head_aggregator:
-                    next_pred_features = self.head_aggregator(head_outputs)
-                elif head_outputs:
-                    next_pred_features = head_outputs[0]
-                else: raise ValueError("Output heads list empty")
-            else:
-                next_pred_features = self.output_heads(last_hidden_contiguous) # Shape [B, 1, OutputFeatures]
             
-            # === Multi-Quantile Support ===
-            quantile_levels = kwargs.get("quantile_levels", [0.1, 0.5, 0.9])
-            feedback_quantile = kwargs.get("feedback_quantile", 0.5)
-            feedback_q_index = quantile_levels.index(feedback_quantile)
+            # The model's forward pass handles patching, so we take the logit
+            # corresponding to the *actual* last token.
+            next_token_logits = model_outputs.logits[:, current_seq_len - 1, :]
+            past_key_values = model_outputs.past_key_values
 
-            if hasattr(self.output_heads, "quantiles"):
-                quantile_out = self.output_heads.quantiles(next_pred_features, quantile_levels)  # [B, 1, F, Q]
-
-                # Store quantile outputs if collecting
-                if kwargs.get("collect_all_quantiles", True):
-                    if "quantile_predictions" not in locals():
-                        quantile_predictions = []
-                    quantile_predictions.append(quantile_out)
-
-                # Feedback input = selected quantile (e.g. median)
-                next_decoder_input_step = quantile_out[:, :, :, feedback_q_index]  # [B, 1, F]
+            if probabilistic:
+                distr = torch.distributions.Normal(next_token_logits, 1.0)
+                next_token = distr.sample()
             else:
-                expected_input_features = getattr(self.config, "feature_size", 1)
-                next_decoder_input_step = next_pred_features[:, :, :expected_input_features].contiguous()
+                if self.config.num_quantiles > 1:
+                    quantile_levels = self.config.quantiles
+                    feedback_quantile = kwargs.get("feedback_quantile", 0.5)
+                    feedback_q_index = quantile_levels.index(feedback_quantile)
+                    next_token = next_token_logits[..., feedback_q_index]
+                else:
+                    next_token = next_token_logits
+            
+            if next_token.ndim == 2:
+                next_token = next_token.unsqueeze(1)
+            
+            generated_sequence.append(next_token)
+            decoder_inputs = torch.cat([decoder_inputs, next_token], dim=1)
 
-            predictions.append(next_pred_features)
+            if return_full_sequence:
+                full_sequence.append(next_token)
 
-            # Prepare input for the next step - Use the predicted features directly.
-            # The decoder's value_embedding should handle projection from OutputFeatures to HiddenSize.
-            # Use output head's internal logic to reduce to feedback input
-            if hasattr(self.output_heads, "quantiles"):
-                # quantiles already handled above
-                pass
-            elif hasattr(self.output_heads, "predict"):
-                next_decoder_input_step = self.output_heads.predict(next_pred_features)
-            else:
-                expected_input_features = getattr(self.config, "feature_size", 1)
-                next_decoder_input_step = next_pred_features[:, :, :expected_input_features].contiguous()
+        generated_sequence = torch.cat(generated_sequence, dim=1)
 
-            decoder_input_ids = torch.cat([decoder_input_ids, next_decoder_input_step], dim=1)
-            current_seq_len += 1
-
-            if internal_decoder_attention_mask is not None and not use_cache:
-                 try:
-                     # Simple mask update assuming [B, Seq] - needs adjustment if mask is 4D
-                     new_mask_column = torch.ones((batch_size, 1), dtype=internal_decoder_attention_mask.dtype, device=device)
-                     internal_decoder_attention_mask = torch.cat([internal_decoder_attention_mask, new_mask_column], dim=1)
-                 except Exception as e: print(f"Warning: Mask update failed: {e}")
-
-            if use_cache: past_key_values = decoder_outputs.past_key_values
-
-            if early_stopping and eos_value_scalar is not None:
-                try:
-                    if torch.isclose(next_pred_features[:, :, 0], torch.tensor(eos_value_scalar, device=device)).all(): break
-                except IndexError: print("Warning: EOS check failed (IndexError)")
-
-        if not predictions:
-             output_feature_size = 1 # Default
-             if hasattr(self, 'output_heads'):
-                 try:
-                     out_head = self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
-                     # Infer output feature size from head
-                     if hasattr(out_head, 'output_size'): output_feature_size = out_head.output_size
-                     elif hasattr(out_head, 'out_features'): output_feature_size = out_head.out_features
-                     elif hasattr(out_head, 'decoder') and hasattr(out_head.decoder, 'out_features'): output_feature_size = out_head.decoder.out_features
-                 except Exception: pass 
-             return torch.empty((batch_size, 0, output_feature_size), device=device)
-
-        return torch.cat(predictions, dim=1) # Shape [B, prediction_length, OutputFeatures]
+        if return_full_sequence:
+            full_sequence = torch.cat(full_sequence, dim=1)
+            return full_sequence, generated_sequence
+        
+        return generated_sequence

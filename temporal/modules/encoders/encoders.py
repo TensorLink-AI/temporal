@@ -19,8 +19,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
     based on a list of `TransformerBlockConfig` objects.
 
     The encoder is responsible for:
-    - Embedding the input time series features.
-    - Adding positional information.
+    - Adding positional information to already embedded features.
     - Sequentially processing the embedded sequence through its layers to
       create a rich contextual representation.
 
@@ -29,6 +28,8 @@ class TimeSeriesTransformerEncoder(nn.Module):
         dropout (nn.Dropout): Dropout layer applied after embeddings.
         layernorm_embedding (nn.Module): Layer normalization applied to the embeddings.
         value_embedding (nn.Module): The module for embedding input features.
+            Note: This is not used in the `forward` pass, but is held here to be
+            used by the parent model.
         positional_embedding (nn.Module): The module for adding positional information.
         layers (nn.ModuleList): The stack of encoder layers.
     """
@@ -76,7 +77,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
 
     def forward(
         self,
-        input_values: torch.FloatTensor,  # [B, L, F]
+        hidden_states: torch.FloatTensor,  # [B, L, D] embedded features
         attention_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
@@ -86,10 +87,11 @@ class TimeSeriesTransformerEncoder(nn.Module):
         Performs the forward pass of the Transformer encoder.
 
         Args:
-            input_values (torch.FloatTensor): The raw input features for the encoder,
-                shape `[B, L, F]`.
+            hidden_states (torch.FloatTensor): The embedded input features for the encoder,
+                shape `[B, L, D]`. The calling model is responsible for performing
+                value embedding (e.g., patching) before passing to this module.
             attention_mask (Optional[torch.Tensor]): A mask to prevent attention
-                to padding tokens.
+                to padding tokens. This mask must match the sequence dimension of `hidden_states`.
             output_attentions (bool): Whether to return attention weights.
             output_hidden_states (bool): Whether to return all hidden states.
             return_dict (bool): Whether to return a structured model output.
@@ -99,9 +101,9 @@ class TimeSeriesTransformerEncoder(nn.Module):
             structured object or a tuple.
         """
         # === Embedding Layer ===
-        value_embeds = self.value_embedding(input_values)
-        batch_size = self._get_tensor_dim_as_int(input_values, 0)
-        seq_len = self._get_tensor_dim_as_int(input_values, 1)
+        value_embeds = hidden_states
+        batch_size = self._get_tensor_dim_as_int(value_embeds, 0)
+        seq_len = self._get_tensor_dim_as_int(value_embeds, 1)
 
         try:
             pos_embed = self.positional_embedding(

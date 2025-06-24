@@ -3,7 +3,7 @@
 import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
-from temporal.configs.transformer_config import TransformerTimeSeriesConfig, TransformerBlockConfig
+from temporal.configs.transformer_config import TransformerTimeSeriesConfig, TransformerBlockConfig, EmbeddingConfig
 
 # --- Fixtures ---
 
@@ -17,11 +17,18 @@ def encoder_decoder_config():
         prediction_length=5,
         context_length=10,
         architecture={"layout": "encoder-decoder"},
-        decoder_start_token_id=0,  # Required for autoregressive generation
         encoder_blocks=[TransformerBlockConfig(block_type="default_encoder")],
         decoder_blocks=[TransformerBlockConfig(block_type="default_decoder")],
         loss_config={"type": "mse"}
     )
+
+@pytest.fixture(scope="module")
+def patched_config(encoder_decoder_config):
+    """Provides a config with patch embedding."""
+    from copy import deepcopy
+    cfg = deepcopy(encoder_decoder_config)
+    cfg.value_embedding_config = EmbeddingConfig(type="patch", kwargs={"patch_size": 2})
+    return cfg
 
 @pytest.fixture(scope="module")
 def decoder_only_config():
@@ -39,81 +46,81 @@ def decoder_only_config():
 
 @pytest.fixture(scope="module")
 def encoder_decoder_model(encoder_decoder_config):
-    """Builds an encoder-decoder model from the config."""
     return build_time_series_transformer(encoder_decoder_config)
 
 @pytest.fixture(scope="module")
+def patched_model(patched_config):
+    return build_time_series_transformer(patched_config)
+
+@pytest.fixture(scope="module")
 def decoder_only_model(decoder_only_config):
-    """Builds a decoder-only model from the config."""
     return build_time_series_transformer(decoder_only_config)
 
 # --- Autoregressive Generation Tests ---
 
 def test_generate_autoregressive_encoder_decoder(encoder_decoder_model):
-    """Tests autoregressive generation for an encoder-decoder model."""
     config = encoder_decoder_model.config
     batch_size = 2
-    encoder_inputs = torch.randn(batch_size, config.context_length, config.feature_size)
+    context = torch.randn(batch_size, config.context_length, config.feature_size)
 
     predictions = encoder_decoder_model.generate(
-        input_values=encoder_inputs,
+        context=context,
         prediction_length=config.prediction_length
     )
+    assert predictions.shape == (batch_size, config.prediction_length, config.feature_size)
 
+def test_generate_autoregressive_patched(patched_model):
+    """Ensures generation works with the padding logic in the preprocessor."""
+    config = patched_model.config
+    batch_size = 2
+    context_len = config.context_length + 1
+    context = torch.randn(batch_size, context_len, config.feature_size)
+
+    predictions = patched_model.generate(
+        context=context,
+        prediction_length=config.prediction_length
+    )
     assert predictions.shape == (batch_size, config.prediction_length, config.feature_size)
 
 def test_generate_autoregressive_decoder_only(decoder_only_model):
-    """Tests autoregressive generation for a decoder-only model."""
     config = decoder_only_model.config
     batch_size = 2
-    decoder_inputs = torch.randn(batch_size, config.context_length, config.feature_size)
+    context = torch.randn(batch_size, config.context_length, config.feature_size)
 
     predictions = decoder_only_model.generate(
-        input_values=decoder_inputs,
+        context=context,
         prediction_length=config.prediction_length
     )
-
-    assert predictions.shape == (batch_size, config.prediction_length, config.feature_size)
-
-def test_generate_autoregressive_no_cache(encoder_decoder_model):
-    """Tests that autoregressive generation works correctly with use_cache=False."""
-    config = encoder_decoder_model.config
-    batch_size = 2
-    encoder_inputs = torch.randn(batch_size, config.context_length, config.feature_size)
-
-    predictions = encoder_decoder_model.generate(
-        input_values=encoder_inputs,
-        prediction_length=config.prediction_length,
-        use_cache=False
-    )
-
     assert predictions.shape == (batch_size, config.prediction_length, config.feature_size)
 
 # --- Multi-Step Generation Tests ---
 
-def test_generate_multistep_encoder_decoder(encoder_decoder_model):
-    """Tests direct multi-step generation for an encoder-decoder model."""
+def test_generate_multistep(encoder_decoder_model):
+    """Tests iterative multi-step generation."""
     config = encoder_decoder_model.config
     batch_size = 2
-    encoder_inputs = torch.randn(batch_size, config.context_length, config.feature_size)
+    num_iterations = 3
+    context = torch.randn(batch_size, config.context_length, config.feature_size)
     
-    # We need to access the multistep mixin method directly for this test
-    predictions = encoder_decoder_model.generate_multistep(
-        input_ids=encoder_inputs,
-        prediction_length=config.prediction_length
+    predictions = encoder_decoder_model.generate(
+        context=context, # Using consistent argument name
+        num_iterations=num_iterations
     )
+    
+    expected_pred_len = num_iterations * config.prediction_length
+    assert predictions.shape == (batch_size, expected_pred_len, config.feature_size)
 
-    assert predictions.shape == (batch_size, config.prediction_length, config.feature_size)
-
-def test_generate_multistep_decoder_only(decoder_only_model):
-    """Tests direct multi-step generation for a decoder-only model."""
-    config = decoder_only_model.config
+def test_generate_multistep_patched(patched_model):
+    """Tests iterative multi-step generation with patch embeddings."""
+    config = patched_model.config
     batch_size = 2
-    decoder_inputs = torch.randn(batch_size, config.context_length, config.feature_size)
-
-    predictions = decoder_only_model.generate_multistep(
-        input_ids=decoder_inputs,
-        prediction_length=config.prediction_length
+    num_iterations = 2
+    context = torch.randn(batch_size, config.context_length, config.feature_size)
+    
+    predictions = patched_model.generate(
+        context=context, # Using consistent argument name
+        num_iterations=num_iterations
     )
-
-    assert predictions.shape == (batch_size, config.prediction_length, config.feature_size)
+    
+    expected_pred_len = num_iterations * config.prediction_length
+    assert predictions.shape == (batch_size, expected_pred_len, config.feature_size)
