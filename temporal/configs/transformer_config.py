@@ -606,7 +606,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.output_hidden_states = output_hidden_states
         self.use_teacher_forcing = use_teacher_forcing
         self.use_cache          = use_cache
-        self.aux_loss_weight = aux_loss_weight
+        self.aux_loss_weight = float(aux_loss_weight)
 
         self.quantizer_config = quantizer_config
         self.vocab_size = vocab_size
