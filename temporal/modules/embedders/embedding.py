@@ -804,13 +804,14 @@ class StackedPositionalEmbedding(BaseEmbedding):
             )
             self.embeddings.append(module)
 
-    def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
+    def forward(self, batch_size: int, seq_len: int, past_key_values_length: int = 0, **kwargs) -> torch.Tensor:
         """
         Sum outputs of configured embeddings.
 
         Args:
             batch_size: Batch size.
             seq_len: Sequence length.
+            past_key_values_length: Offset for position indices.
             **kwargs: Extra args for sub-embeddings.
 
         Returns:
@@ -819,7 +820,7 @@ class StackedPositionalEmbedding(BaseEmbedding):
         device = kwargs.get('device', next(self.embeddings[0].parameters()).device if self.embeddings else 'cpu')
         combined = torch.zeros(batch_size, seq_len, self.d_model, device=device)
         for module in self.embeddings:
-            out = module(batch_size=batch_size, seq_len=seq_len, **kwargs)
+            out = module(batch_size=batch_size, seq_len=seq_len, past_key_values_length=past_key_values_length, **kwargs)
             if out.shape[-2:] == (seq_len, self.d_model):
                 combined += out
         return combined

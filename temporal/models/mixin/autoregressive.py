@@ -69,7 +69,7 @@ class AutoregressiveMixin:
         if hasattr(self, 'encoder') and self.encoder is not None:
             if input_ids is None: raise ValueError("Encoder exists but input_ids are None.")
             encoder_outputs = self.encoder(
-                input_ids, attention_mask=attention_mask, output_attentions=output_attentions,
+                input_values=input_ids, attention_mask=attention_mask, output_attentions=output_attentions,
                 return_dict=True, **kwargs.get("encoder_kwargs", {}),
             )
             encoder_hidden_states = getattr(encoder_outputs, 'last_hidden_state', encoder_outputs)
@@ -144,8 +144,13 @@ class AutoregressiveMixin:
                 return_dict=True,
                 **kwargs.get("decoder_kwargs", {}),
             )
+            # Check if decoder_outputs is a dataclass and extract hidden state
+            if hasattr(decoder_outputs, 'last_hidden_state'):
+                last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]
+            else:
+                # Fallback for tuple output
+                last_hidden = decoder_outputs[0][:, -1:, :]
 
-            last_hidden = decoder_outputs.last_hidden_state[:, -1:, :] # Shape [B, 1, HiddenSize]
 
             # Pass through Output Heads 
             if not hasattr(self, 'output_heads'): raise AttributeError("Model missing output_heads")
