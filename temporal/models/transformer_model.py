@@ -112,12 +112,10 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         self.head_aggregator = head_aggregator
 
         self.patch_merger = None
-        if config.preprocessor.embedding_config.embedder_type == "patch":
-            self.patch_merger = nn.Linear(
-                in_features=None,  # fill in dynamically later
-                out_features=config.prediction_length
-            )
-
+        if config.value_embedding_config.type == "patch":
+             self.patch_merger = nn.Linear(
+                self.preprocessor.num_patches, config.prediction_length
+             )
         
         # 5. Loss function is not a module, but we assign it here.
         self.loss_fn = loss_fn
