@@ -791,36 +791,67 @@ class StackedPositionalEmbedding(BaseEmbedding):
         """
         super().__init__(d_model)
         self.embeddings = nn.ModuleList()
+        self._forward_signatures = []
         for config in embedding_configs:
             embed_type = config.get("type")
             args = config.get("args", {}).copy()
             if not embed_type:
                 raise ValueError("Each embedding config must have a 'type'.")
+            
+            # Note: The original builder call had a bug with `base_kwargs`.
+            # d_model is a primary argument, not a base_kwarg for most embeddings.
+            # Passing it in user_kwargs is more robust if the builder handles it.
+            args['d_model'] = d_model
+            
             module = builder._build(
                 kind="embedding",
                 name=embed_type,
-                base_kwargs={"hidden_size": d_model},
                 user_kwargs=args
             )
             self.embeddings.append(module)
+            # Store the names of the parameters for each module's forward method
+            self._forward_signatures.append(
+                {p.name for p in inspect.signature(module.forward).parameters.values()}
+            )
 
-    def forward(self, batch_size: int, seq_len: int, past_key_values_length: int = 0, **kwargs) -> torch.Tensor:
+    def forward(self, **kwargs) -> torch.Tensor:
         """
-        Sum outputs of configured embeddings.
+        Sum outputs of configured embeddings, intelligently passing only supported arguments.
 
         Args:
-            batch_size: Batch size.
-            seq_len: Sequence length.
-            past_key_values_length: Offset for position indices.
-            **kwargs: Extra args for sub-embeddings.
+            **kwargs: A dictionary of arguments that might be needed by any of the
+                      sub-embeddings. This can include `batch_size`, `seq_len`,
+                      `past_key_values_length`, `device`, etc.
 
         Returns:
             Tensor [B, seq_len, d_model].
         """
-        device = kwargs.get('device', next(self.embeddings[0].parameters()).device if self.embeddings else 'cpu')
+        batch_size = kwargs.get("batch_size")
+        seq_len = kwargs.get("seq_len")
+        if batch_size is None or seq_len is None:
+            raise ValueError("`batch_size` and `seq_len` must be provided in kwargs.")
+            
+        device = kwargs.get('device', next(self.parameters()).device if len(list(self.parameters())) > 0 else 'cpu')
         combined = torch.zeros(batch_size, seq_len, self.d_model, device=device)
-        for module in self.embeddings:
-            out = module(batch_size=batch_size, seq_len=seq_len, past_key_values_length=past_key_values_length, **kwargs)
+
+        for i, module in enumerate(self.embeddings):
+            # Get the supported parameter names for the current module
+            supported_params = self._forward_signatures[i]
+            
+            # Filter the kwargs to only include parameters supported by the current module
+            sub_kwargs = {
+                key: value for key, value in kwargs.items() if key in supported_params
+            }
+            
+            out = module(**sub_kwargs)
+            
+            # Ensure the output shape is correct before adding
             if out.shape[-2:] == (seq_len, self.d_model):
                 combined += out
+            elif out.dim() == 4 and out.shape[0] == 1 and out.shape[1] == self.d_model:
+                # Handle biases which might have shape [1, num_heads, seq_len, seq_len]
+                # This should not be added to the combined tensor.
+                # A more robust solution would be needed if biases are mixed with embeddings.
+                pass
+
         return combined
