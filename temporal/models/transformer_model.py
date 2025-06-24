@@ -112,18 +112,6 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         self.head_aggregator = head_aggregator
 
         self.patch_merger = None
-        if config.value_embedding_config.type == "patch":
-            patch_kwargs = config.value_embedding_config.kwargs
-            patch_length = patch_kwargs.get("patch_size") # Corrected to patch_size
-            patch_stride = patch_kwargs.get("stride", patch_length) # Default stride to patch_length
-
-            if patch_length is None:
-                raise ValueError(
-                    "Patch embedder config requires 'patch_size' in value_embedding_config.kwargs."
-                )
-
-            num_patches = (config.context_length - patch_length) // patch_stride + 1
-            self.patch_merger = nn.Linear(num_patches, config.prediction_length)
         
         # 5. Loss function is not a module, but we assign it here.
         self.loss_fn = loss_fn
@@ -237,17 +225,32 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
             decoder_outputs = None
 
         # Step 3: Align head input with targets for loss calculation if needed.
-        if targets is not None and self.config.architecture.layout == "decoder" and self.patch_merger is None:
+        if (
+            targets is not None and 
+            self.config.architecture.layout == "decoder" and 
+            self.config.value_embedding_config.type != "patch"
+        ):
             num_target_steps = targets.size(1)
             input_to_heads = input_to_heads[:, -num_target_steps:, :]
-
+        
         # CORRECTED Step 4: Apply patch merger BEFORE the output head.
-        if self.patch_merger is not None:
+        if self.config.value_embedding_config.type == "patch":
+            # Lazy initialization of the patch merger
+            if self.patch_merger is None:
+                num_patches = input_to_heads.shape[1]
+                self.patch_merger = nn.Linear(num_patches, self.config.prediction_length).to(input_to_heads.device)
+
             # Transpose to apply linear layer across the patch sequence dimension
             merged_output = self.patch_merger(input_to_heads.transpose(1, 2))
             # Transpose back to get [B, Prediction_Length, Hidden_Size]
             input_to_heads = merged_output.transpose(1, 2)
-        
+            
+            # Add assertion for shape correctness
+            assert input_to_heads.shape[1] == self.config.prediction_length, \
+                f"Patch merger output sequence length ({input_to_heads.shape[1]}) " \
+                f"does not match prediction_length ({self.config.prediction_length})"
+
+
         # Step 5: Project the final hidden states through the output head(s).
         logits = self.output_heads(input_to_heads)
         if self.head_aggregator is not None:
