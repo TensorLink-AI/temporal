@@ -772,10 +772,16 @@ class TimeDeltaEmbedding(BaseEmbedding):
 # -----------------------------
 # Stacked Positional Embedding
 # -----------------------------
+
+# -----------------------------
+# Stacked Positional Embedding
+# -----------------------------
 @register_module("embedding", "stacked_embedding")
 class StackedPositionalEmbedding(BaseEmbedding):
     """
-    Wrapper to stack multiple positional embeddings sequentially.
+    Wrapper to stack multiple positional embeddings sequentially by summing them.
+    This wrapper intelligently passes arguments to its sub-modules, preventing
+    errors when sub-modules have different forward signatures.
     """
     def __init__(
         self,
@@ -791,27 +797,29 @@ class StackedPositionalEmbedding(BaseEmbedding):
         """
         super().__init__(d_model)
         self.embeddings = nn.ModuleList()
-        self._forward_signatures = []
+        self._forward_param_names = []  # Store parameter names for each forward method
+
         for config in embedding_configs:
             embed_type = config.get("type")
             args = config.get("args", {}).copy()
             if not embed_type:
                 raise ValueError("Each embedding config must have a 'type'.")
+
+            # Ensure d_model is passed correctly to sub-embeddings if they need it
+            if 'd_model' not in args:
+                 args['d_model'] = d_model
             
-            # Note: The original builder call had a bug with `base_kwargs`.
-            # d_model is a primary argument, not a base_kwarg for most embeddings.
-            # Passing it in user_kwargs is more robust if the builder handles it.
-            args['d_model'] = d_model
-            
+            # Build the module using the provided builder
             module = builder._build(
                 kind="embedding",
                 name=embed_type,
                 user_kwargs=args
             )
             self.embeddings.append(module)
-            # Store the names of the parameters for each module's forward method
-            self._forward_signatures.append(
-                {p.name for p in inspect.signature(module.forward).parameters.values()}
+            
+            # Inspect and store the parameter names of the module's forward method
+            self._forward_param_names.append(
+                inspect.signature(module.forward).parameters.keys()
             )
 
     def forward(self, **kwargs) -> torch.Tensor:
@@ -821,37 +829,42 @@ class StackedPositionalEmbedding(BaseEmbedding):
         Args:
             **kwargs: A dictionary of arguments that might be needed by any of the
                       sub-embeddings. This can include `batch_size`, `seq_len`,
-                      `past_key_values_length`, `device`, etc.
+                      `past_key_values_length`, `x` (for RoPE), `device`, etc.
 
         Returns:
-            Tensor [B, seq_len, d_model].
+            Tensor of shape [B, seq_len, d_model] representing the summed embeddings.
         """
         batch_size = kwargs.get("batch_size")
         seq_len = kwargs.get("seq_len")
         if batch_size is None or seq_len is None:
-            raise ValueError("`batch_size` and `seq_len` must be provided in kwargs.")
+            raise ValueError("The `forward` method of StackedPositionalEmbedding requires "
+                             "`batch_size` and `seq_len` to be passed as keyword arguments.")
             
-        device = kwargs.get('device', next(self.parameters()).device if len(list(self.parameters())) > 0 else 'cpu')
-        combined = torch.zeros(batch_size, seq_len, self.d_model, device=device)
+        # Determine the device from parameters or kwargs
+        try:
+            device = next(self.parameters()).device
+        except StopIteration:
+            device = kwargs.get('device', 'cpu')
 
+        # Initialize the combined tensor
+        combined_embedding = torch.zeros(batch_size, seq_len, self.d_model, device=device)
+
+        # Iterate through each sub-embedding
         for i, module in enumerate(self.embeddings):
             # Get the supported parameter names for the current module
-            supported_params = self._forward_signatures[i]
+            supported_params = self._forward_param_names[i]
             
-            # Filter the kwargs to only include parameters supported by the current module
+            # Filter the provided kwargs to only include parameters supported by the module
             sub_kwargs = {
                 key: value for key, value in kwargs.items() if key in supported_params
             }
             
-            out = module(**sub_kwargs)
+            # Call the sub-embedding with only the arguments it can accept
+            output = module(**sub_kwargs)
             
-            # Ensure the output shape is correct before adding
-            if out.shape[-2:] == (seq_len, self.d_model):
-                combined += out
-            elif out.dim() == 4 and out.shape[0] == 1 and out.shape[1] == self.d_model:
-                # Handle biases which might have shape [1, num_heads, seq_len, seq_len]
-                # This should not be added to the combined tensor.
-                # A more robust solution would be needed if biases are mixed with embeddings.
-                pass
+            # Add the output to the combined embedding if its shape is correct.
+            # This handles both standard embeddings and ignores attention biases.
+            if isinstance(output, torch.Tensor) and output.shape[-2:] == (seq_len, self.d_model):
+                combined_embedding += output
 
-        return combined
+        return combined_embedding
