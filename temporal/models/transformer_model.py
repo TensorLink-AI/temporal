@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, Tuple, List
@@ -87,22 +86,38 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         loss_fn: Optional[callable] = None,
         builder: Optional[ModuleBuilder] = None,
     ):
-        """Initializes the TransformerTemporalModel."""
-        super().__init__(
-            config=config,
-            encoder=encoder,
-            decoder=decoder,
-            output_heads=output_heads,
-            head_aggregator=head_aggregator,
-            loss_fn=loss_fn
-        )
+        """
+        Initializes the TransformerTemporalModel in an order that matches the
+        forward pass for clearer model summaries.
+        """
+        # We manually initialize the base class and then assign modules in the
+        # desired order for printing.
+        super(BaseTemporalModel, self).__init__()
+        self.config = config
 
         if builder is None:
             builder = ModuleBuilder(config)
 
+        # 1. Preprocessor is the first step in the forward pass.
         self.preprocessor = InputPreprocessor(config, builder)
+
+        # 2. Encoder runs second.
+        self.encoder = encoder
+
+        # 3. Decoder runs third.
+        self.decoder = decoder
+
+        # 4. Output heads run last.
+        self.output_heads = output_heads
+        self.head_aggregator = head_aggregator
+        
+        # 5. Loss function is not a module, but we assign it here.
+        self.loss_fn = loss_fn
+
+        # Store dtypes for casting if necessary
         self._encoder_dtype = getattr(encoder, 'dtype', torch.float32) if encoder else torch.float32
         self._decoder_dtype = getattr(decoder, 'dtype', torch.float32) if decoder else torch.float32
+
 
     def forward(
         self,
