@@ -144,7 +144,8 @@ class InputPreprocessor(nn.Module):
             if final_mask is None:
                 final_mask = expanded_padding_mask
             else:
-                final_mask += expanded_padding_mask
+                # Use regular addition instead of in-place to avoid RuntimeError
+                final_mask = final_mask + expanded_padding_mask
 
         return final_mask
 
