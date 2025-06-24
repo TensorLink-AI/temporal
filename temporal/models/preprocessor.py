@@ -13,11 +13,7 @@ class InputPreprocessor(nn.Module):
     This class encapsulates the entire input preparation pipeline, including:
     - Value embedding (with optional patching)
     - Positional embedding
-    - Attention mask creation
-
-    By centralizing this logic, it ensures that inputs are consistently
-    prepared for both training/evaluation forward passes and for autoregressive
-    generation.
+    - Attention mask creation (padding and optional causal)
     """
 
     def __init__(self, config: TransformerTimeSeriesConfig, builder: ModuleBuilder):
@@ -42,6 +38,7 @@ class InputPreprocessor(nn.Module):
         input_values: torch.Tensor,
         past_key_values_length: int = 0,
         attention_mask: Optional[torch.Tensor] = None,
+        is_causal: bool = False,
         validate_shapes: bool = False,
         verbose: bool = False,
     ) -> Dict[str, Any]:
@@ -50,19 +47,14 @@ class InputPreprocessor(nn.Module):
 
         Args:
             input_values (torch.Tensor): The raw input features, shape `[B, T, F]`.
-            past_key_values_length (int): The length of the KV cache, used for
-                creating the correct positional embeddings and attention masks.
+            past_key_values_length (int): The length of the KV cache.
             attention_mask (Optional[torch.Tensor]): A 2D padding mask.
-            validate_shapes (bool): If True, performs assertions to check for
-                shape consistency between value and positional embeddings.
-            verbose (bool): If True, prints the shapes of tensors at each
-                stage of the preprocessing pipeline for debugging.
+            is_causal (bool): If True, a causal mask is created and combined with the padding mask.
+            validate_shapes (bool): If True, performs shape assertions.
+            verbose (bool): If True, prints shape information for debugging.
 
         Returns:
-            A dictionary containing:
-            - `hidden_states` (torch.Tensor): The final processed embeddings.
-            - `attention_mask` (torch.Tensor): The 4D attention mask for the model.
-            - `patch_meta` (Dict): Metadata related to patching, if applicable.
+            A dictionary containing processed `hidden_states` and `attention_mask`.
         """
         if verbose: print(f"[Preprocessor] Initial input shape: {input_values.shape}")
 
@@ -73,7 +65,7 @@ class InputPreprocessor(nn.Module):
             if remainder != 0:
                 pad_len = self.patch_size - remainder
                 input_values = nn.functional.pad(input_values, (0, 0, 0, pad_len))
-                if verbose: print(f"[Preprocessor] Padded input shape for patching: {input_values.shape}")
+                if verbose: print(f"[Preprocessor] Padded input for patching: {input_values.shape}")
         
         # --- Value and Positional Embedding ---
         value_embeds = self.value_embedding(input_values)
@@ -102,7 +94,8 @@ class InputPreprocessor(nn.Module):
             attention_mask,
             (batch_size, seq_len),
             hidden_states,
-            past_key_values_length
+            past_key_values_length,
+            is_causal=is_causal,
         )
 
         return {
@@ -116,30 +109,44 @@ class InputPreprocessor(nn.Module):
         attention_mask: Optional[torch.Tensor],
         input_shape: Tuple[int, int],
         inputs_embeds: torch.Tensor,
-        past_key_values_length: int
+        past_key_values_length: int,
+        is_causal: bool,
     ) -> Optional[torch.Tensor]:
         """
-        Creates a 4D causal attention mask for a decoder, combining a causal
-        mask with an optional padding mask.
+        Creates a 4D attention mask, optionally causal.
+
+        Args:
+            attention_mask (Optional[torch.Tensor]): A 2D padding mask.
+            input_shape (Tuple[int, int]): The shape of the input sequence.
+            inputs_embeds (torch.Tensor): The input embeddings.
+            past_key_values_length (int): The length of the past key values.
+            is_causal (bool): Whether to create a causal mask.
+
+        Returns:
+            Optional[torch.Tensor]: The final 4D attention mask.
         """
         bsz, seq_len = input_shape
-        
-        causal_mask = self._make_causal_mask(
-            (bsz, seq_len),
-            inputs_embeds.dtype,
-            device=inputs_embeds.device,
-            past_key_values_length=past_key_values_length,
-        )
+        final_mask = None
+
+        if is_causal:
+            final_mask = self._make_causal_mask(
+                (bsz, seq_len),
+                inputs_embeds.dtype,
+                device=inputs_embeds.device,
+                past_key_values_length=past_key_values_length,
+            )
 
         if attention_mask is not None:
-            # The padding mask needs to be expanded to 4D to be combined with the causal mask.
             expanded_padding_mask = self._expand_mask(
                 attention_mask, inputs_embeds.dtype, tgt_len=seq_len
             ).to(inputs_embeds.device)
-            # The final mask is the sum of the causal mask and the padding mask.
-            causal_mask = expanded_padding_mask + causal_mask
+            
+            if final_mask is None:
+                final_mask = expanded_padding_mask
+            else:
+                final_mask += expanded_padding_mask
 
-        return causal_mask
+        return final_mask
 
     def _make_causal_mask(
         self,
@@ -156,15 +163,13 @@ class InputPreprocessor(nn.Module):
         mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
         mask_cond = torch.arange(mask.size(-1), device=device)
         
-        # Use a standard and readable broadcasting approach to create the lower-triangular mask
         mask.masked_fill_(mask_cond[None, :] <= mask_cond[:, None], 0)
         
         if past_key_values_length > 0:
-            # If a KV cache is used, the mask needs to be extended to accommodate the cached tokens.
             mask = torch.cat(
                 [torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1
             )
-        # The mask is expanded to 4D to be broadcastable to the attention weights.
+        
         return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
 
     def _expand_mask(
@@ -179,5 +184,5 @@ class InputPreprocessor(nn.Module):
         tgt_len = tgt_len if tgt_len is not None else src_len
         expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
         inverted_mask = 1.0 - expanded_mask
-        # The mask is inverted and filled with a large negative number where padded.
+        
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)

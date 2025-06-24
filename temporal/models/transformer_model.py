@@ -179,6 +179,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
             processed_encoder = self.preprocessor.process(
                 input_values=encoder_inputs,
                 attention_mask=attention_mask,
+                is_causal=False,  # Encoders are never causal
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
@@ -203,6 +204,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
                 input_values=decoder_inputs,
                 past_key_values_length=past_kv_length,
                 attention_mask=decoder_attention_mask,
+                is_causal=True, # Decoders are always causal
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
