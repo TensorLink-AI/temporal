@@ -113,9 +113,17 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
 
         self.patch_merger = None
         if config.value_embedding_config.type == "patch":
-             self.patch_merger = nn.Linear(
-                None, config.prediction_length
-             )
+            patch_kwargs = config.value_embedding_config.kwargs
+            patch_length = patch_kwargs.get("patch_length")
+            patch_stride = patch_kwargs.get("stride")
+
+            if patch_length is None or patch_stride is None:
+                raise ValueError(
+                    "Patch embedder config requires 'patch_length' and 'stride' in value_embedding_config.kwargs."
+                )
+
+            num_patches = (config.context_length - patch_length) // patch_stride + 1
+            self.patch_merger = nn.Linear(num_patches, config.prediction_length)
         
         # 5. Loss function is not a module, but we assign it here.
         self.loss_fn = loss_fn
