@@ -110,6 +110,12 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         # 4. Output heads run last.
         self.output_heads = output_heads
         self.head_aggregator = head_aggregator
+
+        self.patch_merger = None
+        if config.preprocessor.embedding_config.embedder_type == "patch":
+             self.patch_merger = nn.Linear(
+                self.preprocessor.num_patches, config.prediction_length
+             )
         
         # 5. Loss function is not a module, but we assign it here.
         self.loss_fn = loss_fn
@@ -223,7 +229,7 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
             decoder_outputs = None
 
         # Step 3: Align head input with targets for loss calculation if needed.
-        if targets is not None and self.config.architecture.layout == "decoder":
+        if targets is not None and self.config.architecture.layout == "decoder" and self.patch_merger is None:
             num_target_steps = targets.size(1)
             input_to_heads = input_to_heads[:, -num_target_steps:, :]
         
@@ -231,13 +237,16 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         logits = self.output_heads(input_to_heads)
         if self.head_aggregator is not None:
             logits = self.head_aggregator(logits)
+        
+        if self.patch_merger is not None:
+            logits = self.patch_merger(logits.transpose(1,2)).transpose(1,2)
 
         # Step 5: Calculate the loss if targets are provided.
         loss = None
         total_aux_loss = None
-        if encoder_outputs and hasattr(encoder_outputs, 'aux_loss'):
+        if encoder_outputs and hasattr(encoder_outputs, 'aux_loss') and encoder_outputs.aux_loss is not None:
             total_aux_loss = encoder_outputs.aux_loss
-        if decoder_outputs and hasattr(decoder_outputs, 'aux_loss'):
+        if decoder_outputs and hasattr(decoder_outputs, 'aux_loss') and decoder_outputs.aux_loss is not None:
             if total_aux_loss is None:
                 total_aux_loss = decoder_outputs.aux_loss
             else:
@@ -246,9 +255,12 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
         if targets is not None:
             if self.loss_fn is None:
                 raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
+            
             loss = self.loss_fn(logits, targets)
+
             if total_aux_loss is not None:
-                loss += self.config.aux_loss_weight * total_aux_loss
+                # Ensure aux loss is a scalar before adding
+                loss += self.config.aux_loss_weight * total_aux_loss.mean()
 
         # Step 6: Construct and return the final output object.
         return TransformerOutput(
