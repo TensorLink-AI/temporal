@@ -471,12 +471,6 @@ class TransformerBlockConfig:
                raise ValueError(
                     "The 'adaptive_patch_transformer' block requires 'wrapped_block_type' in its kwargs."
                 )
-          #  allowed_wrapped_types = ["transformer_encoder", "transformer_decoder"]
-          #  if self.kwargs["wrapped_block_type"] not in allowed_wrapped_types:
-          ##      raise ValueError(
-           #         f"The 'wrapped_block_type' for 'adaptive_patch_transformer' must be one of {allowed_wrapped_types}, "
-           ##         f"but got '{self.kwargs['wrapped_block_type']}'."
-            #    )
 
 class LossConfig:
     """
@@ -555,6 +549,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         use_teacher_forcing: bool = True,
+        aux_loss_weight: float = 0.01,
         attention_blocks: Optional[Any] = None, # Deprecated
         feedforward_config: Optional[Any] = None, # Deprecated
         # feature_size is removed from here, will be handled via input_dim and kwargs
@@ -611,6 +606,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         self.output_hidden_states = output_hidden_states
         self.use_teacher_forcing = use_teacher_forcing
         self.use_cache          = use_cache
+        self.aux_loss_weight = aux_loss_weight
 
         self.quantizer_config = quantizer_config
         self.vocab_size = vocab_size
