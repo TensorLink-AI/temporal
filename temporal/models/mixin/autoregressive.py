@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Optional, Union, Any
-
+from typing import Optional, Union, Any, Tuple
 
 class AutoregressiveMixin:
     def enable_dropout(self):
@@ -17,12 +16,12 @@ class AutoregressiveMixin:
         if torch.is_tensor(value):
             temp_value = value
             while temp_value.numel() > 1:
-                 print(f"Warning: {name} tensor had {temp_value.numel()} elements. Taking first element.")
-                 temp_value = temp_value[0]
+                print(f"Warning: {name} tensor had {temp_value.numel()} elements. Taking first element.")
+                temp_value = temp_value[0]
             if temp_value.numel() == 1:
-                 return float(temp_value.item())
+                return float(temp_value.item())
             else:
-                 raise ValueError(f"Could not reduce {name} tensor (original shape {value.shape}) to a scalar.")
+                raise ValueError(f"Could not reduce {name} tensor (original shape {value.shape}) to a scalar.")
         try:
             return float(value)
         except (TypeError, ValueError) as e:
@@ -43,51 +42,77 @@ class AutoregressiveMixin:
         **kwargs,
     ) -> torch.Tensor:
         """
-        Autoregressive generation, supporting encoder-decoder and decoder-only.
-        Assumes `input_ids` are pre-processed (i.e., embeddings / hidden states).
+        Autoregressively generates a sequence of features.
+
+        This method supports both raw feature inputs and pre-processed embeddings.
+        - If `input_ids` has 3 dimensions and the last dimension matches `config.feature_size`,
+          it is treated as raw features and passed through the `preprocessor`.
+        - Otherwise, it is assumed to be pre-processed embeddings.
         """
         self.eval()
-        batch_size = input_ids.shape[0]
-        device = input_ids.device
+        batch_size, device = input_ids.shape[0], input_ids.device
 
-        # 1) Prepare Encoder Output
+        # 1) Preprocess inputs if they are raw features
+        if hasattr(self, "preprocessor") and input_ids.ndim == 3 and input_ids.shape[-1] == self.config.feature_size:
+            proc = self.preprocessor.process(
+                input_values=input_ids,
+                attention_mask=attention_mask,
+                is_causal=False,
+                validate_shapes=False,
+                verbose=False,
+            )
+            processed_inputs = proc["hidden_states"]
+            attention_mask = proc["attention_mask"]
+        else:
+            processed_inputs = input_ids  # Assumed to be embeddings
+
+        # 2) Prepare Encoder Output
         encoder_hidden_states = None
         if hasattr(self, 'encoder') and self.encoder is not None:
             encoder_outputs = self.encoder(
-                hidden_states=input_ids,
+                hidden_states=processed_inputs,
                 attention_mask=attention_mask,
                 output_attentions=output_attentions,
                 return_dict=True,
                 **kwargs.get("encoder_kwargs", {}),
             )
             encoder_hidden_states = encoder_outputs.last_hidden_state
-
-        # 2) Initialize Decoder Input Sequence
-        if hasattr(self, 'encoder') and self.encoder is not None:
-            effective_start_token_id = decoder_start_token_id
-            if effective_start_token_id is None:
-                effective_start_token_id = getattr(self.config, "decoder_start_token_id", 0)
-            start_value_scalar = self._get_scalar_value(effective_start_token_id, "decoder_start_token_id")
-            decoder_input_ids = torch.full(
-                 (batch_size, 1, encoder_hidden_states.shape[-1]),
-                 start_value_scalar,
-                 dtype=encoder_hidden_states.dtype,
-                 device=device,
-            )
+            hidden_size = encoder_hidden_states.shape[-1]
         else:
-             decoder_input_ids = input_ids
+            # Decoder-only model
+            hidden_size = processed_inputs.shape[-1]
+
+        # 3) Initialize Decoder Input Sequence
+        if decoder_start_token_id is None:
+            decoder_start_token_id = getattr(self.config, "decoder_start_token_id", 0)
+        
+        start_val = self._get_scalar_value(decoder_start_token_id, "decoder_start_token_id")
+        
+        # Create a start tensor: zero for all features except the first.
+        decoder_start_tensor = torch.zeros(hidden_size, device=device, dtype=processed_inputs.dtype)
+        if hidden_size > 0:
+            decoder_start_tensor[0] = start_val
+        
+        decoder_inputs = decoder_start_tensor.repeat(batch_size, 1, 1)
+
+        # For decoder-only models, the generation starts from the provided inputs
+        if not (hasattr(self, 'encoder') and self.encoder is not None):
+            decoder_inputs = torch.cat([processed_inputs, decoder_inputs], dim=1)
 
         predictions = []
         past_key_values = None
         internal_decoder_attention_mask = decoder_attention_mask
         eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
 
-        # 3) Autoregressive Loop
+        # 4) Autoregressive Loop
         for _ in range(prediction_length):
             step_attention_mask = internal_decoder_attention_mask if not use_cache or past_key_values is None else None
-            step_inputs = decoder_input_ids[:, -1:, :] if use_cache and past_key_values is not None else decoder_input_ids
+            
+            # For caching, only use the last generated step as input
+            step_inputs = decoder_inputs[:, -1:, :] if use_cache and past_key_values is not None else decoder_inputs
 
-            if not hasattr(self, 'decoder'): raise AttributeError("Model missing decoder")
+            if not hasattr(self, 'decoder'):
+                raise AttributeError("Model is missing a decoder, which is required for autoregressive generation.")
             
             decoder_outputs = self.decoder(
                 hidden_states=step_inputs,
@@ -100,32 +125,37 @@ class AutoregressiveMixin:
                 return_dict=True,
                 **kwargs.get("decoder_kwargs", {}),
             )
-            last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]
+            last_hidden = decoder_outputs.last_hidden_state[:, -1:, :].contiguous()
 
-            if not hasattr(self, 'output_heads'): raise AttributeError("Model missing output_heads")
+            if not hasattr(self, 'output_heads'):
+                raise AttributeError("Model is missing output_heads required to project decoder outputs to features.")
             
-            last_hidden_contiguous = last_hidden.contiguous()
+            # Project to feature space
             if isinstance(self.output_heads, nn.ModuleList):
-                head_outputs = [head(last_hidden_contiguous) for head in self.output_heads]
+                head_outputs = [head(last_hidden) for head in self.output_heads]
                 if hasattr(self, 'head_aggregator') and self.head_aggregator:
                     next_pred_features = self.head_aggregator(head_outputs)
                 else:
                     next_pred_features = head_outputs[0]
             else:
-                next_pred_features = self.output_heads(last_hidden_contiguous)
+                next_pred_features = self.output_heads(last_hidden)
 
             predictions.append(next_pred_features)
 
-            # Use the output head's dedicated `predict` method for feedback if it exists. This is the most robust approach.
+            # Use the output head's dedicated `predict` method for feedback if it exists.
             if hasattr(self.output_heads, "predict"):
                 next_decoder_input_step = self.output_heads.predict(next_pred_features)
             else:
-                # Fallback: Assume the first feature dimension of the prediction is the feedback.
-                # This is a reasonable default for simple, single-variate forecasting heads.
-                expected_input_features = getattr(self.config, "feature_size", 1)
-                next_decoder_input_step = next_pred_features[:, :, :expected_input_features].contiguous()
+                # Fallback: assume the prediction itself is the input for the next step.
+                next_decoder_input_step = next_pred_features
 
-            decoder_input_ids = torch.cat([decoder_input_ids, next_decoder_input_step], dim=1)
+            # The feedback loop requires inputs to be in the hidden dimension space, not feature space.
+            # We must re-embed the generated features before feeding them back.
+            if hasattr(self, "preprocessor"):
+                 # We only need to embed the value, no complex processing needed here.
+                 next_decoder_input_step = self.preprocessor.value_embed(next_decoder_input_step)
+
+            decoder_inputs = torch.cat([decoder_inputs, next_decoder_input_step], dim=1)
 
             if internal_decoder_attention_mask is not None and not use_cache:
                  new_mask_column = torch.ones((batch_size, 1), dtype=internal_decoder_attention_mask.dtype, device=device)
@@ -135,7 +165,8 @@ class AutoregressiveMixin:
                 past_key_values = decoder_outputs.past_key_values
 
             if early_stopping and eos_value_scalar is not None:
-                if torch.isclose(next_decoder_input_step[:, :, 0], torch.tensor(eos_value_scalar, device=device)).all():
+                # Check the first feature of the *predicted* value for the EOS token
+                if torch.isclose(next_pred_features[:, :, 0], torch.tensor(eos_value_scalar, device=device)).all():
                     break
         
         if not predictions:

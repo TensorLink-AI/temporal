@@ -242,30 +242,62 @@ class DistPredHead(BaseOutputHead):
         else:
             return projected_output
 
-    def predict(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Reduces the ensemble output to a single point forecast for autoregression.
+    def predict(
+            self,
+            x: torch.Tensor,
+            method: Union[str, float, int] = "median"
+        ) -> torch.Tensor:
+            """
+            Collapse an ensemble head x of shape [B, T, K] or [B, T, F, K]
+            down to [B, T, 1] or [B, T, F], via:
 
-        This method selects the median prediction from the ensemble to serve as
-        the input for the next decoding step.
+            - method='mean'   → empirical mean across K
+            - method='median' → middle index (K//2)
+            - method=float    → nearest quantile to that fraction
+            - method=int      → direct index into the K dimension
 
-        Args:
-            x (torch.Tensor): The output from the `forward` method.
+            Args:
+                x (torch.Tensor): head output, either
+                                [B, T, K] or [B, T, F, K].
+                method (str|float|int): which collapse strategy.
 
-        Returns:
-            torch.Tensor: The median forecast of shape `[B, T, feature_size]`.
-        """
-        # The output of forward() is either [B,T,F,K] or [B,T,K]
-        # We need to return a tensor of shape [B,T,F] for the decoder input.
-        is_multivariate = x.dim() == 4
-        median_index = self.num_outputs // 2
+            Returns:
+                torch.Tensor: [B, T, 1] if univariate, else [B, T, F].
+            """
+            # determine dims
+            is_multi = (x.ndim == 4)     # [B,T,F,K]
+            K = x.shape[-1]
 
-        if is_multivariate:
-            # Input: [B, T, F, K] -> Output: [B, T, F]
-            return x[..., median_index]
-        else:
-            # Input: [B, T, K] -> Output: [B, T, 1]
-            return x[..., median_index:median_index + 1]
+            # choose index or mean
+            if isinstance(method, str):
+                if method == "mean":
+                    return x.mean(dim=-1, keepdim=not is_multi)
+                elif method == "median":
+                    idx = K // 2
+                else:
+                    raise ValueError(f"Unsupported method string: {method!r}")
+            elif isinstance(method, float):
+                # nearest quantile fraction → use self.config.quantiles
+                qs = getattr(self, "quantiles", None) or getattr(self.config, "quantiles", None)
+                if qs is None or len(qs) != K:
+                    raise ValueError(f"No valid quantiles list of length {K} found")
+                qt = torch.tensor(qs, device=x.device)
+                idx = (qt - method).abs().argmin().item()
+            elif isinstance(method, int):
+                # direct index
+                idx = method if method >= 0 else K + method
+                if not (0 <= idx < K):
+                    raise IndexError(f"Index {method} out of range for K={K}")
+            else:
+                raise TypeError(f"method must be str|float|int, not {type(method)}")
+
+            # now slice at idx
+            if is_multi:
+                # x[..., idx] → [B, T, F]
+                return x[..., idx]
+            else:
+                # x[..., idx:idx+1] → [B, T, 1]
+                return x[..., idx: idx + 1]
 
 
     def get_loss_fn(self) -> Optional[Callable]:
