@@ -555,37 +555,56 @@ class FourierFeatureEmbedding(BaseEmbedding):
 # -----------------------------
 # Time2Vec Embedding
 # -----------------------------
-@register_module("embedding", "time2vec")
-class Time2VecEmbedding(BaseEmbedding):
+import torch
+import torch.nn as nn
+
+class Time2VecEmbedding(nn.Module):
     """
-    Time2Vec positional embedding: linear + periodic components.
+    Time2Vec positional embedding: 1 linear + sinusoidal components.
+    If use_cos=True, uses (d_model - 1) // 2 sin/cos pairs (RoPE-compatible).
+    If use_cos=False, uses (d_model - 1) sin components (original Time2Vec).
     """
-    def __init__(self, d_model: int):
+    def __init__(self, d_model: int, use_cos: bool = True):
         """
         Args:
-            d_model: Output embedding dimension (>=2).
+            d_model: Output embedding dimension (must be >= 2).
+            use_cos: If True, use sin+cos pairs (RoPE-aligned). If False, sin only.
         """
-        super().__init__(d_model)
+        super().__init__()
+        assert d_model >= 2, "d_model must be >= 2"
+
+        self.use_cos = use_cos
         self.linear = nn.Linear(1, 1)
-        self.periodic = nn.Linear(1, d_model - 1)
+
+        if use_cos:
+            self.num_freqs = (d_model - 1) // 2
+            out_dim = 2 * self.num_freqs
+        else:
+            self.num_freqs = d_model - 1
+            out_dim = self.num_freqs
+
+        self.periodic = nn.Linear(1, self.num_freqs)
+        self.d_model = 1 + out_dim  # 1 linear + sin/cos or sin only
 
     def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
-        """
-        Embed time steps via Time2Vec.
-
-        Args:
-            batch_size: Batch size.
-            seq_len: Sequence length.
-
-        Returns:
-            Tensor [B, seq_len, d_model].
-        """
         device = next(self.parameters()).device
-        t = torch.arange(seq_len, device=device, dtype=torch.float32).unsqueeze(-1)
-        lin = self.linear(t)
-        per = torch.sin(self.periodic(t))
-        embeds = torch.cat([lin, per], dim=-1)
-        return embeds.unsqueeze(0).expand(batch_size, -1, -1)
+        t = torch.arange(seq_len, device=device, dtype=torch.float32).view(-1, 1)  # [T, 1]
+
+        lin_part = self.linear(t)  # [T, 1]
+        freq_proj = self.periodic(t)  # [T, num_freqs]
+
+        if self.use_cos:
+            sin_part = torch.sin(freq_proj)
+            cos_part = torch.cos(freq_proj)
+            per_part = torch.cat([sin_part, cos_part], dim=-1)  # [T, 2 * num_freqs]
+        else:
+            per_part = torch.sin(freq_proj)  # [T, d_model - 1]
+
+        embeddings = torch.cat([lin_part, per_part], dim=-1)  # [T, d_model]
+        embeddings = embeddings.unsqueeze(0).expand(batch_size, -1, -1)  # [B, T, d_model]
+        return embeddings
+
+
 
 # -----------------------------
 # ALiBi Positional Bias
