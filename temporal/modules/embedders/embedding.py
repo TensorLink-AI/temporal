@@ -873,11 +873,14 @@ class StackedPositionalEmbedding(BaseEmbedding):
 @register_module("embedding", "none")
 class NoneEmbedding(BaseEmbedding):
     """
-    A placeholder embedding that returns a zero tensor. This effectively
-    disables the positional embedding when used in a model configuration.
+    A placeholder embedding that returns a zero tensor on the correct device.
+    This effectively disables the positional embedding when used in a model
+    configuration.
     """
     def __init__(self, d_model: int, **kwargs):
         super().__init__(d_model)
+        # Register a dummy buffer to make the module device-aware.
+        self.register_buffer("dummy_buffer", torch.zeros(1), persistent=False)
 
     def forward(
         self,
@@ -886,7 +889,7 @@ class NoneEmbedding(BaseEmbedding):
         **kwargs
     ) -> torch.Tensor:
         """
-        Returns a zero tensor of the correct shape.
+        Returns a zero tensor of the correct shape and on the correct device.
 
         Args:
             batch_size: The batch size of the input.
@@ -894,6 +897,14 @@ class NoneEmbedding(BaseEmbedding):
             **kwargs: Additional arguments (ignored).
 
         Returns:
-            A zero tensor of shape [batch_size, seq_len, d_model].
+            A zero tensor of shape [batch_size, seq_len, d_model] on the
+            correct device.
         """
-        return torch.zeros(batch_size, seq_len, self.d_model)
+        # Use the device of the dummy buffer to create the tensor.
+        return torch.zeros(
+            batch_size,
+            seq_len,
+            self.d_model,
+            device=self.dummy_buffer.device
+        )
+
