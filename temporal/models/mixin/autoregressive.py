@@ -153,7 +153,7 @@ class AutoregressiveMixin:
             # We must re-embed the generated features before feeding them back.
             if hasattr(self, "preprocessor"):
                  # We only need to embed the value, no complex processing needed here.
-                 next_decoder_input_step = self.preprocessor.value_embed(next_decoder_input_step)
+                 next_decoder_input_step = self.preprocessor.value_embedding(next_decoder_input_step)
 
             decoder_inputs = torch.cat([decoder_inputs, next_decoder_input_step], dim=1)
 
