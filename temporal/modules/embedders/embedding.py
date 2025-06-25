@@ -8,6 +8,7 @@ from typing import Optional, Tuple, List, Dict, Union, Sequence, Any, Callable
 # === Corrected Imports ===
 from temporal.registry.core import register_module, resolve  # resolve is in core
 from temporal.models.module_builder_helper import ModuleBuilder
+from torch.fft import rfft, irfft
 
 """
 Module providing a variety of time-series embedding classes and helper functions.
@@ -557,7 +558,7 @@ class FourierFeatureEmbedding(BaseEmbedding):
 # -----------------------------
 
 @register_module("embedding", "time2vec")
-class Time2VecEmbedding(nn.Module):
+class Time2VecEmbedding(BaseEmbedding):
     """
     Time2Vec positional embedding: 1 linear + sinusoidal components.
     If use_cos=True, uses (d_model - 1) // 2 sin/cos pairs (RoPE-compatible).
@@ -926,3 +927,64 @@ class NoneEmbedding(BaseEmbedding):
             device=self.dummy_buffer.device
         )
 
+
+
+
+
+@register_module("embedding", "s4")
+class S4PositionalEmbedding(BaseEmbedding):
+    """
+    S4-inspired positional embedding using a learned long convolution kernel.
+    Projects identity input over time (like a learned filter bank) and returns
+    a [B, T, d_model] positional signal.
+    """
+
+    def __init__(self, d_model: int, kernel_size: int = 512, max_seq_len: int = 4096):
+        """
+        Args:
+            d_model: Output embedding dimension.
+            kernel_size: Length of the learned filter.
+            max_seq_len: Maximum supported sequence length.
+        """
+        super().__init__(d_model)
+        self.kernel_size = kernel_size
+        self.max_seq_len = max_seq_len
+
+        self.filter = nn.Parameter(torch.randn(d_model, kernel_size) * 0.01)
+        self.skip = nn.Parameter(torch.randn(1, max_seq_len, d_model) * 0.01)
+
+    def forward(
+        self,
+        batch_size: int,
+        seq_len: int,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate positional embeddings.
+
+        Args:
+            batch_size: Batch size.
+            seq_len: Sequence length.
+
+        Returns:
+            Tensor of shape [B, T, d_model].
+        """
+        device = self.filter.device
+        T = seq_len
+
+        # Identity impulse sequence for convolution: [d_model, T]
+        x = torch.eye(T, device=device).unsqueeze(0).repeat(self.d_model, 1, 1)
+
+        # FFT convolution with learned kernel
+        x_fft = rfft(x, n=2 * T)                              # [d_model, T, Freq]
+        k_fft = rfft(self.filter, n=2 * T)                   # [d_model, Freq]
+        y_fft = x_fft * k_fft.unsqueeze(1)                   # broadcast multiply
+        y = irfft(y_fft, n=2 * T)[..., :T]                   # [d_model, T, T]
+
+        # Extract diagonals → position encodings [T, d_model]
+        pos = torch.diagonal(y, dim1=1, dim2=2).transpose(0, 1)  # [T, d_model]
+
+        # Add learnable skip bias
+        pos = pos + self.skip[0, :T]
+
+        return pos.unsqueeze(0).expand(batch_size, -1, -1)  # [B, T, d_model]
