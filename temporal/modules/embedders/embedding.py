@@ -868,3 +868,12 @@ class StackedPositionalEmbedding(BaseEmbedding):
                 combined_embedding += output
 
         return combined_embedding
+
+
+@register("embedding", "none")
+class NoneEmbedding(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+
+    def forward(self, x, **kwargs):
+        return x
