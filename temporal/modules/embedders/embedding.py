@@ -871,9 +871,11 @@ class StackedPositionalEmbedding(BaseEmbedding):
 
 
 @register_module("embedding", "none")
-class NoneEmbedding(nn.Module):
-    def __init__(self, **kwargs):
-        super().__init__()
+class NoneEmbedding(BaseEmbedding):
+    def __init__(self, d_model: int = None, **kwargs):
+        # If BaseEmbedding takes a d_model arg, pass it along (or drop if unused)
+        super().__init__(d_model)
 
-    def forward(self, x, **kwargs):
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        # Ignore any other kwargs (like attention_mask, etc.) and just return x
         return x
