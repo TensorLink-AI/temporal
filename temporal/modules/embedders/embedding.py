@@ -872,10 +872,28 @@ class StackedPositionalEmbedding(BaseEmbedding):
 
 @register_module("embedding", "none")
 class NoneEmbedding(BaseEmbedding):
-    def __init__(self, d_model: int = None, **kwargs):
-        # If BaseEmbedding takes a d_model arg, pass it along (or drop if unused)
+    """
+    A placeholder embedding that returns a zero tensor. This effectively
+    disables the positional embedding when used in a model configuration.
+    """
+    def __init__(self, d_model: int, **kwargs):
         super().__init__(d_model)
 
-    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        # Ignore any other kwargs (like attention_mask, etc.) and just return x
-        return x
+    def forward(
+        self,
+        batch_size: int,
+        seq_len: int,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Returns a zero tensor of the correct shape.
+
+        Args:
+            batch_size: The batch size of the input.
+            seq_len: The sequence length of the input.
+            **kwargs: Additional arguments (ignored).
+
+        Returns:
+            A zero tensor of shape [batch_size, seq_len, d_model].
+        """
+        return torch.zeros(batch_size, seq_len, self.d_model)
