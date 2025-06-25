@@ -555,9 +555,8 @@ class FourierFeatureEmbedding(BaseEmbedding):
 # -----------------------------
 # Time2Vec Embedding
 # -----------------------------
-import torch
-import torch.nn as nn
 
+@register_module("embedding", "time2vec")
 class Time2VecEmbedding(nn.Module):
     """
     Time2Vec positional embedding: 1 linear + sinusoidal components.
