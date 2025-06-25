@@ -870,7 +870,7 @@ class StackedPositionalEmbedding(BaseEmbedding):
         return combined_embedding
 
 
-@register("embedding", "none")
+@register_module("embedding", "none")
 class NoneEmbedding(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
