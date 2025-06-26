@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple 
 from einops import rearrange
 
 from temporal.registry.core import register_module
