@@ -147,11 +147,12 @@ class S4Block(nn.Module):
         s4_kwargs = s4_kwargs or {}
         
         self.s4 = S4Layer(d_model=d_model, d_state=d_state, **s4_kwargs)
-        self.ffn = StandardFeedForward(
-            embed_dim=d_model,
-            feedforward_dim=ffn_dim or 4 * d_model,
+        self.ffn = StandardFeedForward(  # Changed arguments to match assumed StandardFeedForward __init__
+            hidden_size=d_model,
+            intermediate_size=ffn_dim or 4 * d_model,
             activation="gelu"
         )
+
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
