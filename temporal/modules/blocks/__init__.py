@@ -8,3 +8,4 @@ from . import block_hierarchical
 from . import block_multiscale
 from . import effitime_block
 from . import block_adaptive # Add this line to register the new block
+from . import block_s4 # Add this line to register the new block
