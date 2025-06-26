@@ -988,3 +988,66 @@ class S4PositionalEmbedding(BaseEmbedding):
         pos = pos + self.skip[0, :T]
 
         return pos.unsqueeze(0).expand(batch_size, -1, -1)  # [B, T, d_model]
+
+
+
+@register_module("embedding", "wavelet")
+class WaveletPositionalEmbedding(BaseEmbedding):
+    """
+    Wavelet-based positional embedding that projects identity-position impulses
+    through a learned multi-resolution filter bank (DWT basis).
+
+    This is a fixed-time-index embedding (like sinusoidal) but with multi-scale
+    locality and better modeling of transients.
+
+    Args:
+        d_model (int): Output embedding dimension.
+        wavelet (str): Wavelet type (e.g., 'db1', 'haar', 'coif1').
+        level (int): Decomposition level (e.g., 3).
+        max_seq_len (int): Maximum supported sequence length.
+    """
+    def __init__(
+        self,
+        d_model: int,
+        wavelet: str = "db4",
+        level: int = 3,
+        max_seq_len: int = 2048,
+        **kwargs
+    ):
+        super().__init__(d_model)
+        self.wavelet = wavelet
+        self.level = level
+        self.max_seq_len = max_seq_len
+
+        # Precompute embedding matrix
+        basis = torch.eye(max_seq_len)
+        coeffs = []
+        for i in range(max_seq_len):
+            signal = basis[i].numpy()
+            c = pywt.wavedec(signal, wavelet=self.wavelet, level=self.level, mode="periodization")
+            coeff = np.concatenate(c)
+            coeffs.append(coeff)
+        coeffs = np.stack(coeffs)  # [T, total_wavelet_dim]
+        self.input_dim = coeffs.shape[1]
+
+        # Projection to d_model
+        self.proj = nn.Linear(self.input_dim, d_model)
+        self.register_buffer("basis_embed", torch.tensor(coeffs, dtype=torch.float32), persistent=False)
+
+    def forward(
+        self,
+        batch_size: int,
+        seq_len: int,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Args:
+            batch_size: Batch size.
+            seq_len: Current sequence length.
+
+        Returns:
+            Tensor of shape [B, T, d_model]
+        """
+        pos_embed = self.basis_embed[:seq_len]  # [T, input_dim]
+        embed = self.proj(pos_embed)  # [T, d_model]
+        return embed.unsqueeze(0).expand(batch_size, -1, -1)
