@@ -5,7 +5,7 @@ import math
 from typing import Optional, Dict, Any
 from einops import rearrange
 
-from temporal.registry import register_module
+from temporal.registry.core import register_module
 from temporal.modules.feedforward.standard import StandardFeedForward
 
 @register_module("block", "s4")
