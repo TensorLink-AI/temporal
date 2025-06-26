@@ -9,7 +9,7 @@ from typing import Optional, Tuple, List, Dict, Union, Sequence, Any, Callable
 from temporal.registry.core import register_module, resolve  # resolve is in core
 from temporal.models.module_builder_helper import ModuleBuilder
 from torch.fft import rfft, irfft
-
+import pywt
 """
 Module providing a variety of time-series embedding classes and helper functions.
 All embeddings are registered via the temporal.registry.core system.
