@@ -33,6 +33,6 @@ __all__ = [
     "ConvolutionalPositionalEmbedding",
     "TimeDeltaEmbedding",
     "StackedPositionalEmbedding", # Add the new stacked embedding class name
-    "S4PositionalEmbedding".
+    "S4PositionalEmbedding",
     "WaveletPositionalEmbedding"
 ]
