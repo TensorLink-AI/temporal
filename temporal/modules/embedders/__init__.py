@@ -14,6 +14,8 @@ from .embedding                   import BucketedRelativeBias
 from .embedding                   import ConvolutionalPositionalEmbedding
 from .embedding                   import TimeDeltaEmbedding
 from .embedding                   import StackedPositionalEmbedding # Add the new stacked embedding
+from .embedding                   import WaveletPositionalEmbedding # Add the new stacked embedding
+from .embedding                   import S4PositionalEmbedding # Add the new stacked embedding
 
 __all__ = [
     "TimeSeriesValueEmbedding",
@@ -31,4 +33,6 @@ __all__ = [
     "ConvolutionalPositionalEmbedding",
     "TimeDeltaEmbedding",
     "StackedPositionalEmbedding", # Add the new stacked embedding class name
+    "S4PositionalEmbedding".
+    "WaveletPositionalEmbedding"
 ]
