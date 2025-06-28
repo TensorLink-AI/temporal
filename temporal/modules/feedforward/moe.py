@@ -150,23 +150,8 @@ class MoEFeedForward(nn.Module):
                 hidden_states_for_this_expert = hidden_states_flat[token_indices_for_this_expert_flat]
                 weights_for_this_expert = router_weights[token_indices_for_this_expert_flat, top_k_pos_for_this_expert].unsqueeze(1)
                 
-                # --- START DEBUGGING PRINTS ---
-                print(f"\n--- Debugging Expert {i} ---")
-                print(f"hidden_states_for_this_expert shape: {hidden_states_for_this_expert.shape}, dtype: {hidden_states_for_this_expert.dtype}")
-                print(f"weights_for_this_expert shape: {weights_for_this_expert.shape}, dtype: {weights_for_this_expert.dtype}")
-                # --- END DEBUGGING PRINTS ---
-
-                expert_output = expert(hidden_states_for_this_expert)
+                expert_output, _ = expert(hidden_states_for_this_expert) 
                 
-                # --- START DEBUGGING PRINTS ---
-                print(f"expert_output shape: {expert_output.shape}, dtype: {expert_output.dtype}")
-                # Check for unexpected scalar or integer types after expert call
-                if expert_output.numel() == 1 and expert_output.dtype == torch.int:
-                     print(f"!!! WARNING: expert_output is a single integer scalar: {expert_output}")
-                if weights_for_this_expert.numel() == 1 and weights_for_this_expert.dtype == torch.int:
-                     print(f"!!! WARNING: weights_for_this_expert is a single integer scalar: {weights_for_this_expert}")
-                # --- END DEBUGGING PRINTS ---
-
                 updates = expert_output * weights_for_this_expert
                 
                 final_hidden_states_flat.index_add_(0, token_indices_for_this_expert_flat.long(), updates)
