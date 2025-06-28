@@ -1,3 +1,12 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Tuple
+
+from temporal.registry.core import register_module
+# Assuming StandardFeedForward is the base for experts
+from temporal.modules.feedforward.standard import StandardFeedForward, _resolve_activation
+
 @register_module("feedforward", "moe")
 class MoEFeedForward(nn.Module):
     """A Mixture of Experts (MoE) Feed-Forward Network layer.
