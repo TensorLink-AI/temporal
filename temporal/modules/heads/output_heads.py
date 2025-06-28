@@ -109,7 +109,7 @@ class GaussianHead(BaseOutputHead):
         eps = torch.randn_like(mu)
         return mu + eps * sigma
 
-    def quantiles(self, x: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
+    def sample_quantiles(self, x: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
         mu, log_sigma = x.chunk(2, dim=-1)
         sigma = torch.exp(log_sigma)
         q_values = torch.tensor(quantile_levels, dtype=mu.dtype, device=mu.device)
