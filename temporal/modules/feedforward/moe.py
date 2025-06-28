@@ -1,13 +1,3 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Tuple
-
-from temporal.registry.core import register_module
-# Assuming StandardFeedForward is the base for experts
-from temporal.modules.feedforward.standard import StandardFeedForward, _resolve_activation
-
-
 @register_module("feedforward", "moe")
 class MoEFeedForward(nn.Module):
     """A Mixture of Experts (MoE) Feed-Forward Network layer.
@@ -44,7 +34,7 @@ class MoEFeedForward(nn.Module):
         expert_intermediate_size: Optional[int] = None,
         bias: bool = True,
         load_balancing_coef: float = 0.01,
-        gate_dropout: Optional[float] = None, # Added gate_dropout
+        gate_dropout: Optional[float] = None,
         **kwargs
     ):
         """Initializes the MoEFeedForward module.
@@ -74,19 +64,14 @@ class MoEFeedForward(nn.Module):
         if top_k > num_experts:
             raise ValueError(f"top_k ({top_k}) cannot be greater than num_experts ({num_experts}).")
 
-        # Determine the intermediate size for the expert FFNs
         ffn_intermediate_size = expert_intermediate_size if expert_intermediate_size is not None else intermediate_size
         if ffn_intermediate_size is None:
             ffn_intermediate_size = self.d_model * 4
             print(f"Warning: MoE expert intermediate size not specified, defaulting to 4*d_model={ffn_intermediate_size}")
 
-        # Gating network: Maps a token's embedding to a logit for each expert.
-        # Changed bias to True as suggested, but False is also common.
-        self.gate = nn.Linear(self.d_model, num_experts, bias=True) 
+        self.gate = nn.Linear(self.d_model, num_experts, bias=True)
         self.gate_dropout = nn.Dropout(gate_dropout) if gate_dropout is not None and gate_dropout > 0 else None
 
-
-        # Create the pool of expert networks.
         self.experts = nn.ModuleList(
             [
                 StandardFeedForward(
@@ -114,45 +99,33 @@ class MoEFeedForward(nn.Module):
                   mode, otherwise None.
         """
         batch_size, seq_len, d_model = hidden_states.shape
-        # Reshape for easier processing: [B, T, D] -> [B*T, D]
         hidden_states_flat = hidden_states.view(-1, d_model)
         num_tokens = hidden_states_flat.shape[0]
 
         # 1. Get routing decisions from the gating network.
-        # gate_logits shape: [B*T, num_experts]
         gate_logits = self.gate(hidden_states_flat)
         
-        # Apply gate dropout if enabled
         if self.training and self.gate_dropout is not None:
             gate_logits = self.gate_dropout(gate_logits)
 
-        # Find the top-k experts for each token.
-        # top_k_weights/indices shape: [B*T, top_k]
         top_k_weights, top_k_indices = torch.topk(gate_logits, self.top_k, dim=-1, sorted=False)
-
-        # Normalize the weights of the selected experts.
-        # Removed explicit dtype=torch.float32 for softmax
         router_weights = F.softmax(top_k_weights, dim=-1).to(hidden_states.dtype)
 
         # 2. Calculate the auxiliary load balancing loss (during training only).
         aux_loss = None
         if self.training and self.load_balancing_coef > 0:
-            # This loss encourages the router to use all experts equally.
-            # It's based on the formulation from the Switch Transformer paper.
-            # Removed explicit dtype=torch.float32 for softmax
             router_probs = F.softmax(gate_logits, dim=-1)
             
-            expert_mask_one_hot = F.one_hot(top_k_indices, num_classes=self.num_experts) # [B*T, top_k, num_experts]
-            expert_mask_sum_per_token = expert_mask_one_hot.sum(dim=1) # [B*T, num_experts]
+            expert_mask_one_hot = F.one_hot(top_k_indices, num_classes=self.num_experts)
+            expert_mask_sum_per_token = expert_mask_one_hot.sum(dim=1)
 
-            tokens_routed_to_expert = expert_mask_sum_per_token.sum(dim=0).float() # [num_experts]
-            sum_router_prob_for_expert = (router_probs * expert_mask_sum_per_token).sum(dim=0) # [num_experts]
+            tokens_routed_to_expert = expert_mask_sum_per_token.sum(dim=0).float()
+            sum_router_prob_for_expert = (router_probs * expert_mask_sum_per_token).sum(dim=0)
 
-            fraction_tokens_routed_to_expert = tokens_routed_to_expert / num_tokens # [num_experts]
+            fraction_tokens_routed_to_expert = tokens_routed_to_expert / num_tokens
             
-            # Avoid division by zero for experts with no tokens (already handled by +1e-6, but explicit check)
             divisor = tokens_routed_to_expert + 1e-6
-            mean_router_prob_per_expert = sum_router_prob_for_expert / divisor # [num_experts]
+            mean_router_prob_per_expert = sum_router_prob_for_expert / divisor
             
             load_balancing_loss = self.num_experts * torch.sum(fraction_tokens_routed_to_expert * mean_router_prob_per_expert)
             aux_loss = load_balancing_loss * self.load_balancing_coef
@@ -161,27 +134,34 @@ class MoEFeedForward(nn.Module):
         final_hidden_states_flat = torch.zeros_like(hidden_states_flat)
         
         for i, expert in enumerate(self.experts):
-            # Find all (token_idx, top_k_position) that selected the current expert 'i'.
             mask_for_this_expert_in_topk = (top_k_indices == i)
-            
-            # `token_indices_for_this_expert_flat` are the original token indices from hidden_states_flat
-            # `top_k_pos_for_this_expert` are the column indices (0 to top_k-1) within top_k_indices
             token_indices_for_this_expert_flat, top_k_pos_for_this_expert = torch.where(mask_for_this_expert_in_topk)
 
             if token_indices_for_this_expert_flat.numel() > 0:
                 hidden_states_for_this_expert = hidden_states_flat[token_indices_for_this_expert_flat]
-
-                # Get the specific router weights for these tokens and their chosen positions.
                 weights_for_this_expert = router_weights[token_indices_for_this_expert_flat, top_k_pos_for_this_expert].unsqueeze(1)
                 
+                # --- START DEBUGGING PRINTS ---
+                print(f"\n--- Debugging Expert {i} ---")
+                print(f"hidden_states_for_this_expert shape: {hidden_states_for_this_expert.shape}, dtype: {hidden_states_for_this_expert.dtype}")
+                print(f"weights_for_this_expert shape: {weights_for_this_expert.shape}, dtype: {weights_for_this_expert.dtype}")
+                # --- END DEBUGGING PRINTS ---
+
                 expert_output = expert(hidden_states_for_this_expert)
                 
+                # --- START DEBUGGING PRINTS ---
+                print(f"expert_output shape: {expert_output.shape}, dtype: {expert_output.dtype}")
+                # Check for unexpected scalar or integer types after expert call
+                if expert_output.numel() == 1 and expert_output.dtype == torch.int:
+                     print(f"!!! WARNING: expert_output is a single integer scalar: {expert_output}")
+                if weights_for_this_expert.numel() == 1 and weights_for_this_expert.dtype == torch.int:
+                     print(f"!!! WARNING: weights_for_this_expert is a single integer scalar: {weights_for_this_expert}")
+                # --- END DEBUGGING PRINTS ---
+
                 updates = expert_output * weights_for_this_expert
                 
-                # Use index_add_ to sum contributions from multiple experts for a single token.
                 final_hidden_states_flat.index_add_(0, token_indices_for_this_expert_flat.long(), updates)
 
-        # Reshape the output back to the original input shape.
         final_hidden_states = final_hidden_states_flat.view_as(hidden_states)
 
         return final_hidden_states, aux_loss
