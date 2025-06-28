@@ -152,26 +152,28 @@ class MoEFeedForward(nn.Module):
         for i, expert in enumerate(self.experts):
             # Find all routing entries that point to the current expert.
             expert_mask = (expert_indices == i)
-            if not expert_mask.any():
-                continue
-
-            # Get the indices of the tokens that should be processed by this expert.
             tokens_for_this_expert_idx = token_indices[expert_mask]
 
-            # Ensure indices are of type long for safe indexing, especially for index_add_
-            long_indices = tokens_for_this_expert_idx.long()
+            if tokens_for_this_expert_idx.numel() > 0:
+                # Ensure indices are of type long for safe indexing
+                long_indices = tokens_for_this_expert_idx.long()
 
-            # Get the weights for these tokens.
-            weights_for_this_expert = flat_router_weights[expert_mask].unsqueeze(1)
-
-            # Get the hidden states of these tokens.
-            hidden_states_for_this_expert = hidden_states_flat[long_indices]
-
-            # Run the expert on its assigned tokens.
-            expert_output = expert(hidden_states_for_this_expert)
-
-            # Add the weighted expert output to the final result tensor.
-            final_hidden_states_flat.index_add_(0, long_indices, expert_output * weights_for_this_expert)
+                # Get the weights and hidden states for these tokens.
+                weights_for_this_expert = flat_router_weights[expert_mask].unsqueeze(1)
+                hidden_states_for_this_expert = hidden_states_flat[long_indices]
+                
+                # Run the expert on its assigned tokens.
+                expert_output = expert(hidden_states_for_this_expert)
+                
+                # Ensure updates is 2D and indices are 1D for index_add_
+                updates = expert_output * weights_for_this_expert
+                if long_indices.dim() == 0:
+                    long_indices = long_indices.unsqueeze(0)
+                if updates.dim() == 1:
+                    updates = updates.unsqueeze(0)
+                
+                # Add the weighted expert output to the final result tensor.
+                final_hidden_states_flat.index_add_(0, long_indices, updates)
 
         # Reshape the output back to the original input shape.
         final_hidden_states = final_hidden_states_flat.view_as(hidden_states)
