@@ -1,21 +1,23 @@
+from typing import Dict, List, Optional, Union
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.distributions import Normal
 
-from temporal.modules.losses.loss_functions import (
-    QuantileLoss,
-    MQLoss,
-    WeightedQuantileLoss,
-    KernelEnergyLoss,
-    EnergyDistanceLoss,
-    SpectralLoss,
-    FastSoftDTWLoss,
-    SpreadPenalty,
-    MixtureLoss
-)
 from temporal.losses.crps_loss_ensemble import crps_ensemble
+from temporal.modules.losses.loss_functions import (
+    EnergyDistanceLoss,
+    FastSoftDTWLoss,
+    KernelEnergyLoss,
+    MQLoss,
+    MixtureLoss,
+    QuantileLoss,
+    SpectralLoss,
+    SpreadPenalty,
+    WeightedQuantileLoss,
+)
 from temporal.registry.core import register_module
-from typing import Optional, Tuple
+
 
 class BaseLoss(nn.Module):
     """
@@ -28,6 +30,7 @@ class BaseLoss(nn.Module):
     Attributes:
         reduction (str): The type of reduction to apply to the loss.
     """
+
     def __init__(self, reduction: str = "mean"):
         """
         Initializes the BaseLoss.
@@ -41,11 +44,18 @@ class BaseLoss(nn.Module):
             raise ValueError(f"Invalid reduction type: {reduction}")
         self.reduction = reduction
 
-    def forward(self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self,
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        loss_mask: torch.Tensor = None,
+    ) -> torch.Tensor:
         """The forward pass for the loss calculation. Must be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement the forward method")
 
-    def _apply_reduction(self, loss: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
+    def _apply_reduction(
+        self, loss: torch.Tensor, loss_mask: torch.Tensor = None
+    ) -> torch.Tensor:
         """
         Applies masking and reduction to a calculated loss tensor.
 
@@ -60,27 +70,31 @@ class BaseLoss(nn.Module):
         """
         if loss_mask is not None:
             if loss_mask.shape != loss.shape:
-                 if loss_mask.ndim == loss.ndim:
-                      mask_expanded_shape = loss_mask.shape + (1,) * (loss.ndim - loss_mask.ndim)
-                      loss_mask = loss_mask.view(mask_expanded_shape).expand_as(loss)
-                 elif loss_mask.shape == loss.shape[:loss_mask.ndim]:
-                     loss_mask = loss_mask.unsqueeze(-1).expand_as(loss)
-                 else:
-                      raise ValueError(f"Loss shape {loss.shape} and mask shape {loss_mask.shape} are incompatible.")
+                if loss_mask.ndim == loss.ndim:
+                    mask_expanded_shape = loss_mask.shape + (
+                        1,
+                    ) * (loss.ndim - loss_mask.ndim)
+                    loss_mask = loss_mask.view(mask_expanded_shape).expand_as(loss)
+                elif loss_mask.shape == loss.shape[: loss_mask.ndim]:
+                    loss_mask = loss_mask.unsqueeze(-1).expand_as(loss)
+                else:
+                    raise ValueError(
+                        f"Loss shape {loss.shape} and mask shape {loss_mask.shape} are incompatible."
+                    )
 
             loss = loss * loss_mask
             if self.reduction == "mean":
                 return loss.sum() / loss_mask.sum().clamp(min=1e-9)
             elif self.reduction == "sum":
                 return loss.sum()
-            else: # reduction == "none"
+            else:  # reduction == "none"
                 return loss
         else:
             if self.reduction == "mean":
                 return loss.mean()
             elif self.reduction == "sum":
                 return loss.sum()
-            else: # reduction == "none"
+            else:  # reduction == "none"
                 return loss
 
 
@@ -97,12 +111,13 @@ class TimeSeriesLoss(BaseLoss):
     Attributes:
         loss_fn: The underlying instantiated loss function module.
     """
+
     def __init__(
         self,
         loss_type: str = "mse",
         quantiles: list = [0.1, 0.5, 0.9],
         reduction: str = "mean",
-        **kwargs
+        **kwargs,
     ):
         """
         Initializes the TimeSeriesLoss.
@@ -117,21 +132,23 @@ class TimeSeriesLoss(BaseLoss):
         self.loss_type = loss_type
         self.quantiles = quantiles
 
-        nn_reduction = 'none'
+        nn_reduction = "none"
 
         if loss_type == "mse":
             self.loss_fn = nn.MSELoss(reduction=nn_reduction)
         elif loss_type == "mae":
             self.loss_fn = nn.L1Loss(reduction=nn_reduction)
         elif loss_type == "rmse":
-             self._mse_for_rmse = nn.MSELoss(reduction='none')
-             self.loss_fn = None
+            self._mse_for_rmse = nn.MSELoss(reduction="none")
+            self.loss_fn = None
         elif loss_type == "quantile":
             self.loss_fn = QuantileLoss(quantile=quantiles[0], reduction=nn_reduction)
         elif loss_type == "mq":
             self.loss_fn = MQLoss(quantiles=quantiles, reduction=nn_reduction)
         elif loss_type == "wql":
-            self.loss_fn = WeightedQuantileLoss(quantiles=quantiles, reduction=nn_reduction)
+            self.loss_fn = WeightedQuantileLoss(
+                quantiles=quantiles, reduction=nn_reduction
+            )
         elif loss_type == "kernel_energy":
             self.loss_fn = KernelEnergyLoss(reduction=nn_reduction)
         elif loss_type == "energy":
@@ -144,7 +161,9 @@ class TimeSeriesLoss(BaseLoss):
         else:
             raise ValueError(f"Unsupported loss_type: {loss_type}")
 
-    def forward(self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None
+    ) -> torch.Tensor:
         """
         Calculates the loss for the given predictions and targets.
 
@@ -158,39 +177,48 @@ class TimeSeriesLoss(BaseLoss):
             torch.Tensor: The final computed loss.
         """
         if self.loss_type in ("quantile", "mq", "wql"):
-            if preds.ndim == targets.ndim + 1 and preds.shape[-1] == len(self.quantiles):
-                 targets = targets.unsqueeze(-1)
+            if preds.ndim == targets.ndim + 1 and preds.shape[-1] == len(
+                self.quantiles
+            ):
+                targets = targets.unsqueeze(-1)
         elif self.loss_type in ("mse", "mae", "rmse"):
-             if preds.shape != targets.shape:
-                  if preds.ndim == targets.ndim + 1 and preds.shape[-1] == 1:
-                       targets = targets.unsqueeze(-1)
-                  elif preds.ndim + 1 == targets.ndim and targets.shape[-1] == 1:
-                       targets = targets.squeeze(-1)
-             if preds.shape != targets.shape:
-                  raise ValueError(f"Shape mismatch for loss '{self.loss_type}': preds {preds.shape}, targets {targets.shape}")
+            if preds.shape != targets.shape:
+                if preds.ndim == targets.ndim + 1 and preds.shape[-1] == 1:
+                    targets = targets.unsqueeze(-1)
+                elif preds.ndim + 1 == targets.ndim and targets.shape[-1] == 1:
+                    targets = targets.squeeze(-1)
+            if preds.shape != targets.shape:
+                raise ValueError(
+                    f"Shape mismatch for loss '{self.loss_type}': preds {preds.shape}, targets {targets.shape}"
+                )
 
         if self.loss_type == "rmse":
-             mse_loss = self._mse_for_rmse(preds, targets)
-             if loss_mask is not None:
-                  if loss_mask.shape != mse_loss.shape:
-                      if loss_mask.shape == mse_loss.shape[:loss_mask.ndim]:
-                           loss_mask = loss_mask.unsqueeze(-1).expand_as(mse_loss)
-                      else:
-                           raise ValueError(f"RMSE Loss shape {mse_loss.shape} and mask shape {loss_mask.shape} are incompatible.")
-                  masked_mse_loss = mse_loss * loss_mask
-                  mean_masked_mse = masked_mse_loss.sum() / loss_mask.sum().clamp(min=1e-9)
-                  loss = torch.sqrt(mean_masked_mse)
-                  return loss
-             else:
-                  mean_mse = mse_loss.mean()
-                  loss = torch.sqrt(mean_mse)
-                  return loss
+            mse_loss = self._mse_for_rmse(preds, targets)
+            if loss_mask is not None:
+                if loss_mask.shape != mse_loss.shape:
+                    if loss_mask.shape == mse_loss.shape[: loss_mask.ndim]:
+                        loss_mask = loss_mask.unsqueeze(-1).expand_as(mse_loss)
+                    else:
+                        raise ValueError(
+                            f"RMSE Loss shape {mse_loss.shape} and mask shape {loss_mask.shape} are incompatible."
+                        )
+                masked_mse_loss = mse_loss * loss_mask
+                mean_masked_mse = masked_mse_loss.sum() / loss_mask.sum().clamp(min=1e-9)
+                loss = torch.sqrt(mean_masked_mse)
+                return loss
+            else:
+                mean_mse = mse_loss.mean()
+                loss = torch.sqrt(mean_mse)
+                return loss
         else:
-             elementwise_loss = self.loss_fn(preds, targets)
-             if self.loss_type in ("mq", "wql"):
-                  if elementwise_loss.ndim > targets.ndim and elementwise_loss.shape[-1] == len(self.quantiles):
-                      elementwise_loss = elementwise_loss.mean(dim=-1)
-             return self._apply_reduction(elementwise_loss, loss_mask)
+            elementwise_loss = self.loss_fn(preds, targets)
+            if self.loss_type in ("mq", "wql"):
+                if (
+                    elementwise_loss.ndim > targets.ndim
+                    and elementwise_loss.shape[-1] == len(self.quantiles)
+                ):
+                    elementwise_loss = elementwise_loss.mean(dim=-1)
+            return self._apply_reduction(elementwise_loss, loss_mask)
 
 
 @register_module("loss", "crps")
@@ -213,6 +241,7 @@ class CRPSLoss(BaseLoss):
         spread_penalty_fn (Optional[SpreadPenalty]): The spread penalty function
             module, if enabled.
     """
+
     def __init__(
         self,
         reduction: str = "mean",
@@ -225,7 +254,7 @@ class CRPSLoss(BaseLoss):
         spread_penalty_type: str = "symmetric_log",
         spread_penalty_epsilon: float = 1e-3,
         spread_target_spread: float = 0.0,
-        **kwargs
+        **kwargs,
     ):
         """
         Initializes the CRPSLoss module.
@@ -268,14 +297,14 @@ class CRPSLoss(BaseLoss):
                 penalty_type=spread_penalty_type,
                 epsilon=spread_penalty_epsilon,
                 target_spread=spread_target_spread,
-                reduction="none"
+                reduction="none",
             )
 
     def forward(
         self,
         preds: torch.Tensor,
         targets: torch.Tensor,
-        loss_mask: Optional[torch.Tensor] = None
+        loss_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Calculates the CRPS loss.
@@ -301,18 +330,22 @@ class CRPSLoss(BaseLoss):
             forecasts=preds_sorted,
             estimator=self.estimator,
             axis=self.axis,
-            reduce=False
+            reduce=False,
         )
 
         if self.spread_lambda > 0.0 and self.spread_penalty_fn is not None:
             spread_penalty_map = self.spread_penalty_fn(preds_sorted)
-            elementwise_crps = elementwise_crps + self.spread_lambda * spread_penalty_map
+            elementwise_crps = (
+                elementwise_crps + self.spread_lambda * spread_penalty_map
+            )
 
         if self.scaling_type != "none":
             dim_size = targets.size(self.scaling_dim)
             if dim_size > 1:
                 if self.scaling_type == "std":
-                    factor = torch.std(targets, dim=self.scaling_dim, keepdim=True, unbiased=False)
+                    factor = torch.std(
+                        targets, dim=self.scaling_dim, keepdim=True, unbiased=False
+                    )
                 else:
                     mn = torch.min(targets, dim=self.scaling_dim, keepdim=True).values
                     mx = torch.max(targets, dim=self.scaling_dim, keepdim=True).values
@@ -323,48 +356,177 @@ class CRPSLoss(BaseLoss):
         return self._apply_reduction(elementwise_crps, loss_mask)
 
 
-@register_module("loss", "mixture")
-class RegisteredMixtureLoss(BaseLoss):
+@register_module("loss", "nll")
+class NegativeLogLikelihoodLoss(BaseLoss):
     """
-    A registered wrapper for the `MixtureLoss` function.
+    Computes the Negative Log Likelihood (NLL) loss for probabilistic forecasts.
 
-    This module serves as a bridge between the model's configuration system
-    and the `MixtureLoss` implementation. It allows `MixtureLoss` to be
-    instantiated from a configuration dictionary via the registry. The actual
-    loss computation, including reduction and masking, is handled by the
-    underlying `MixtureLoss` instance.
+    This loss function is designed to work with output heads that predict
+    parameters of a probability distribution.
+
+    It supports:
+    - Gaussian distributions (parameters: mean, log_std).
+    - Mixture distributions (delegates to internal MixtureLoss).
+    - Other single-component distributions can be added by extending the forward method.
 
     Attributes:
-        loss_fn (MixtureLoss): The instantiated `MixtureLoss` object.
+        distribution_type (str): The type of distribution ("gaussian", "mixture").
+        mixture_loss_fn (Optional[MixtureLoss]): An instance of MixtureLoss if
+            `distribution_type` is "mixture".
     """
-    def __init__(self, reduction: str = "mean", min_df: float = 2.0, fixed_sigma: float = 1e-3, **kwargs):
+
+    def __init__(
+        self,
+        distribution_type: str,
+        reduction: str = "mean",
+        # Parameters for MixtureLoss, passed through if distribution_type is "mixture"
+        min_df: float = 2.0,
+        fixed_sigma: float = 1e-3,
+        **kwargs,
+    ):
         """
-        Initializes the RegisteredMixtureLoss wrapper.
+        Initializes the NegativeLogLikelihoodLoss.
 
         Args:
-            reduction (str): Specifies the reduction for MixtureLoss: 'none', 'mean', 'sum'.
-            min_df (float): Minimum degrees of freedom for StudentT components.
-            fixed_sigma (float): Fixed standard deviation for FixedNormal components.
-            **kwargs: Catches unused arguments from the config if any.
+            distribution_type (str): The type of distribution whose NLL to calculate.
+                Supported: "gaussian", "mixture".
+            reduction (str): The reduction method ('mean', 'sum', 'none').
+            min_df (float): Minimum degrees of freedom for StudentT components in MixtureLoss.
+                Only used if `distribution_type` is "mixture".
+            fixed_sigma (float): Fixed standard deviation for FixedNormal components in MixtureLoss.
+                Only used if `distribution_type` is "mixture".
+            **kwargs: Catches any additional arguments.
         """
         super().__init__(reduction=reduction)
-        self.loss_fn = MixtureLoss(
-            reduction=reduction,
-            min_df=min_df,
-            fixed_sigma=fixed_sigma
-        )
+        self.distribution_type = distribution_type
+        self.mixture_loss_fn = None
 
-    def forward(self, preds: dict, targets: torch.Tensor, loss_mask: torch.Tensor = None) -> torch.Tensor:
+        if distribution_type == "gaussian":
+            pass  # No specific internal loss function needed, handled in forward
+        elif distribution_type == "mixture":
+            # Delegate to the existing MixtureLoss for consistency and robust handling of mixtures.
+            # Important: The internal MixtureLoss instance should use "none" reduction,
+            # so `_apply_reduction` of this NLLLoss can apply the final desired reduction.
+            self.mixture_loss_fn = MixtureLoss(
+                reduction="none",  # Ensure element-wise NLL from MixtureLoss for our _apply_reduction
+                min_df=min_df,
+                fixed_sigma=fixed_sigma,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported distribution_type for NLLLoss: {distribution_type}. "
+                "Supported types are 'gaussian', 'mixture'."
+            )
+
+    def forward(
+        self,
+        preds: Union[torch.Tensor, Dict[str, Union[torch.Tensor, List[str]]]],
+        targets: torch.Tensor,
+        loss_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
-        Calculates the Mixture Negative Log-Likelihood loss.
+        Calculates the Negative Log Likelihood loss.
 
         Args:
-            preds (dict): A dictionary of predictions from the `MixtureOutputHead`.
-            targets (torch.Tensor): Ground truth values. Shape [B, T].
-            loss_mask (Optional[torch.Tensor]): An optional mask for the loss
-                elements, shape `[B, T]`.
+            preds (Union[torch.Tensor, Dict]): The model's probabilistic predictions.
+                - If `distribution_type` is "gaussian": Tensor of shape `[B, T, F*2]`
+                  containing concatenated mean and log_std for each feature.
+                - If `distribution_type` is "mixture": Dictionary of parameters
+                  from `MixtureOutputHead`.
+            targets (torch.Tensor): The ground truth values. Shape `[B, T, F]`
+                for multivariate, or `[B, T]` for univariate.
+            loss_mask (Optional[torch.Tensor]): An optional mask to apply to
+                the loss values. Shape `[B, T]` for univariate targets, or
+                `[B, T, F]` for multivariate targets. The mask will be expanded
+                to match the element-wise NLL loss shape before reduction.
 
         Returns:
-            torch.Tensor: The final computed mixture loss.
+            torch.Tensor: The final computed NLL loss, reduced according to `self.reduction`.
         """
-        return self.loss_fn(preds=preds, targets=targets, loss_mask=loss_mask)
+        elementwise_nll = None
+
+        if self.distribution_type == "gaussian":
+            # Validate preds format for Gaussian
+            if not isinstance(preds, torch.Tensor) or preds.ndim not in [2, 3]:
+                raise TypeError(
+                    f"Expected preds to be a Tensor for 'gaussian' distribution_type, but got {type(preds)}"
+                )
+
+            # Infer number of features (F) from preds and reshape to [B, T, F, 2]
+            if preds.ndim == 2:  # Assumes [Batch, F*2] for a single timestep or feature (e.g., from an output head processing last step)
+                num_features = preds.shape[-1] // 2
+                preds_reshaped = preds.unsqueeze(1).view(
+                    preds.shape[0], 1, num_features, 2
+                )
+            elif preds.ndim == 3:  # Assumes [Batch, Time, F*2]
+                num_features = preds.shape[-1] // 2
+                preds_reshaped = preds.view(
+                    preds.shape[0], preds.shape[1], num_features, 2
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported preds dimension for Gaussian: {preds.ndim}. Expected 2D or 3D."
+                )
+
+            # Extract mu and log_sigma
+            mu = preds_reshaped[..., 0]
+            log_sigma = preds_reshaped[..., 1]
+            sigma = torch.exp(log_sigma).clamp(
+                min=1e-6
+            )  # Clamp sigma for numerical stability
+
+            # Ensure targets matches the shape of mu/sigma for element-wise log_prob calculation
+            # targets needs to be [B, T, F] to match mu/sigma for log_prob.
+            if (
+                targets.ndim == mu.ndim - 1 and mu.shape[-1] == 1
+            ):  # univariate case: targets [B,T], mu [B,T,1]
+                targets_expanded = targets.unsqueeze(-1)  # [B, T] -> [B, T, 1]
+            elif targets.ndim == mu.ndim:  # multivariate case: targets [B,T,F], mu [B,T,F]
+                targets_expanded = targets
+            else:  # Handle cases where targets might be [B,F] for a single timestep, or other mismatches
+                if (
+                    targets.ndim == 2 and mu.ndim == 3 and mu.shape[1] == 1
+                ):  # targets [B,F], mu [B,1,F]
+                    targets_expanded = targets.unsqueeze(1)  # [B,F] -> [B,1,F]
+                else:
+                    raise ValueError(
+                        f"Target shape {targets.shape} incompatible with Gaussian parameters mu/sigma shape {mu.shape}. "
+                        "Expected targets to match features (F) and broadcast across time (T)."
+                    )
+
+            # Create Normal distribution
+            distribution = Normal(mu, sigma)  # torch.distributions.Normal
+
+            # Calculate log_prob and then negative log likelihood
+            elementwise_nll = -distribution.log_prob(targets_expanded)
+
+        elif self.distribution_type == "mixture":
+            # Validate preds format for Mixture
+            if not isinstance(preds, Dict):
+                raise TypeError(
+                    f"Expected preds to be a Dict for 'mixture' distribution_type, but got {type(preds)}"
+                )
+            if self.mixture_loss_fn is None:
+                raise RuntimeError(
+                    "MixtureLoss function not initialized for 'mixture' distribution_type."
+                )
+
+            # Delegate to the internal MixtureLoss. It's already configured for reduction="none"
+            # so its output will be element-wise NLL.
+            # The MixtureLoss expects `targets` to be [B, T] or [B, T, F].
+            elementwise_nll = self.mixture_loss_fn(
+                preds=preds,
+                targets=targets,
+                loss_mask=None,  # Pass None here, as our `_apply_reduction` will handle the mask
+            )
+            # The `elementwise_nll` from MixtureLoss will be of shape [B, T] (univariate) or [B, T, F] (multivariate).
+
+        else:
+            # This case should ideally not be reached due to __init__ validation
+            raise ValueError(
+                f"Internal error: Unhandled distribution_type: {self.distribution_type}"
+            )
+
+        # Apply reduction and loss_mask using the BaseLoss's helper
+        # `elementwise_nll` is already of shape [B, T] or [B, T, F] (element-wise per sample/time/feature)
+        return self._apply_reduction(elementwise_nll, loss_mask)
