@@ -5,7 +5,7 @@ from dataclasses import dataclass, asdict
 
 from temporal.models.base_model import BaseTemporalModel
 from temporal.registry.generate import register_generate
-from temporal.models.mixin.autoregressive import AutoregressiveMixin
+from temporal.models.mixin.autoregressive import AutoregressiveDispatchMixin
 from temporal.models.mixin.multistep import MultiStepMixin
 from temporal.models.preprocessor import InputPreprocessor
 from temporal.models.module_builder_helper import ModuleBuilder
@@ -67,7 +67,7 @@ class TransformerOutput:
         return asdict(self)
 
 @register_generate(name="transformer")
-class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporalModel):
+class TransformerTemporalModel(AutoregressiveDispatchMixin, MultiStepMixin, BaseTemporalModel):
     """A concrete implementation of a transformer-based temporal model.
 
     This class assembles the encoder, decoder, and output heads into a cohesive
@@ -236,21 +236,38 @@ class TransformerTemporalModel(AutoregressiveMixin, MultiStepMixin, BaseTemporal
             input_to_heads = input_to_heads[:, -num_target_steps:, :]
         
         # CORRECTED Step 4: Apply patch merger BEFORE the output head.
+        # ─── Step 4: Merge or Expand Patch Tokens ───
         if self.config.value_embedding_config.type == "patch":
-            # Lazy initialization of the patch merger
-            if self.patch_merger is None:
-                num_patches = input_to_heads.shape[1]
-                self.patch_merger = nn.Linear(num_patches, self.config.prediction_length).to(input_to_heads.device)
+            B, P, D = input_to_heads.shape
+            device = input_to_heads.device
 
-            # Transpose to apply linear layer across the patch sequence dimension
-            merged_output = self.patch_merger(input_to_heads.transpose(1, 2))
-            # Transpose back to get [B, Prediction_Length, Hidden_Size]
-            input_to_heads = merged_output.transpose(1, 2)
-            
-            # Add assertion for shape correctness
-            assert input_to_heads.shape[1] == self.config.prediction_length, \
-                f"Patch merger output sequence length ({input_to_heads.shape[1]}) " \
-                f"does not match prediction_length ({self.config.prediction_length})"
+            # read your config flags
+            use_mlp        = getattr(self.config, "patch_merge_use_mlp", False)
+            hidden_size    = getattr(self.config, "patch_merge_mlp_hidden_size", None) or (P * 2)
+            p_out          = self.config.prediction_length
+
+            # lazy‐init the merger
+            if self.patch_merger is None:
+                if use_mlp:
+                    # 2‐layer MLP: P → hidden_size → p_out
+                    self.patch_merger = nn.Sequential(
+                        nn.Linear(P,          hidden_size, bias=True),
+                        nn.ReLU(),
+                        nn.Linear(hidden_size, p_out,       bias=True),
+                    ).to(device)
+                else:
+                    # simple linear: P → p_out
+                    self.patch_merger = nn.Linear(P, p_out, bias=False).to(device)
+
+            # apply it across the patch axis
+            # 1) bring patches into last dim: [B, P, D] → [B, D, P]
+            x = input_to_heads.transpose(1, 2)
+
+            # 2) run the merger MLP or linear: [B, D, P] → [B, D, p_out]
+            x = self.patch_merger(x)
+
+            # 3) back to [B, p_out, D]
+            input_to_heads = x.transpose(1, 2)
 
 
         # Step 5: Project the final hidden states through the output head(s).

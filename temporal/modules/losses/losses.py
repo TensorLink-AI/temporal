@@ -1,5 +1,5 @@
 from typing import Dict, List, Optional, Union
-
+import math
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
@@ -360,15 +360,12 @@ class CRPSLoss(BaseLoss):
 class NegativeLogLikelihoodLoss(BaseLoss):
     """
     Computes the Negative Log Likelihood (NLL) loss for probabilistic forecasts.
-
     This loss function is designed to work with output heads that predict
     parameters of a probability distribution.
-
     It supports:
     - Gaussian distributions (parameters: mean, log_std).
     - Mixture distributions (delegates to internal MixtureLoss).
     - Other single-component distributions can be added by extending the forward method.
-
     Attributes:
         distribution_type (str): The type of distribution ("gaussian", "mixture").
         mixture_loss_fn (Optional[MixtureLoss]): An instance of MixtureLoss if
@@ -382,11 +379,12 @@ class NegativeLogLikelihoodLoss(BaseLoss):
         # Parameters for MixtureLoss, passed through if distribution_type is "mixture"
         min_df: float = 2.0,
         fixed_sigma: float = 1e-3,
+        min_log_sigma: float = -20.0,
+        max_log_sigma: float = 20.0,
         **kwargs,
     ):
         """
         Initializes the NegativeLogLikelihoodLoss.
-
         Args:
             distribution_type (str): The type of distribution whose NLL to calculate.
                 Supported: "gaussian", "mixture".
@@ -395,6 +393,8 @@ class NegativeLogLikelihoodLoss(BaseLoss):
                 Only used if `distribution_type` is "mixture".
             fixed_sigma (float): Fixed standard deviation for FixedNormal components in MixtureLoss.
                 Only used if `distribution_type` is "mixture".
+            min_log_sigma (float): Minimum value for the log of the standard deviation.
+            max_log_sigma (float): Maximum value for the log of the standard deviation.
             **kwargs: Catches any additional arguments.
         """
         super().__init__(reduction=reduction)
@@ -402,7 +402,8 @@ class NegativeLogLikelihoodLoss(BaseLoss):
         self.mixture_loss_fn = None
 
         if distribution_type == "gaussian":
-            pass  # No specific internal loss function needed, handled in forward
+            self.min_log_sigma = min_log_sigma
+            self.max_log_sigma = max_log_sigma
         elif distribution_type == "mixture":
             # Delegate to the existing MixtureLoss for consistency and robust handling of mixtures.
             # Important: The internal MixtureLoss instance should use "none" reduction,
@@ -426,7 +427,6 @@ class NegativeLogLikelihoodLoss(BaseLoss):
     ) -> torch.Tensor:
         """
         Calculates the Negative Log Likelihood loss.
-
         Args:
             preds (Union[torch.Tensor, Dict]): The model's probabilistic predictions.
                 - If `distribution_type` is "gaussian": Tensor of shape `[B, T, F*2]`
@@ -439,7 +439,6 @@ class NegativeLogLikelihoodLoss(BaseLoss):
                 the loss values. Shape `[B, T]` for univariate targets, or
                 `[B, T, F]` for multivariate targets. The mask will be expanded
                 to match the element-wise NLL loss shape before reduction.
-
         Returns:
             torch.Tensor: The final computed NLL loss, reduced according to `self.reduction`.
         """
@@ -470,10 +469,9 @@ class NegativeLogLikelihoodLoss(BaseLoss):
 
             # Extract mu and log_sigma
             mu = preds_reshaped[..., 0]
-            log_sigma = preds_reshaped[..., 1]
-            sigma = torch.exp(log_sigma).clamp(
-                min=1e-6
-            )  # Clamp sigma for numerical stability
+            log_sigma_unclamped = preds_reshaped[..., 1]
+            log_sigma = torch.clamp(log_sigma_unclamped, min=self.min_log_sigma, max=self.max_log_sigma)
+
 
             # Ensure targets matches the shape of mu/sigma for element-wise log_prob calculation
             # targets needs to be [B, T, F] to match mu/sigma for log_prob.
@@ -494,11 +492,14 @@ class NegativeLogLikelihoodLoss(BaseLoss):
                         "Expected targets to match features (F) and broadcast across time (T)."
                     )
 
-            # Create Normal distribution
-            distribution = Normal(mu, sigma)  # torch.distributions.Normal
-
-            # Calculate log_prob and then negative log likelihood
-            elementwise_nll = -distribution.log_prob(targets_expanded)
+            inv_sigma_sq = torch.exp(-2 * log_sigma)
+            squared_error = (targets_expanded - mu) ** 2
+            
+            elementwise_nll = (
+                0.5 * squared_error * inv_sigma_sq
+                + log_sigma
+                + 0.5 * math.log(2 * math.pi)
+            )
 
         elif self.distribution_type == "mixture":
             # Validate preds format for Mixture

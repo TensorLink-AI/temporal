@@ -271,13 +271,22 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         slice = self.weight[positions]
         return slice.unsqueeze(0).expand(batch_size, -1, -1)
 
-# -----------------------------
-# Patch Embedding
-# -----------------------------
+
 @register_module("embedding", "patch")
 class TimeSeriesPatchEmbedding(BaseEmbedding):
     """
-    Embed overlapping/non-overlapping patches of time-series data.
+    Embed overlapping/non-overlapping patches of time-series data,
+    optionally using an MLP residual block instead of a linear projection.
+    Stores all initialization parameters on the instance for downstream inspection.
+
+    Args:
+        patch_size (int): Length of each patch.
+        feature_size (int): Number of input channels F.
+        d_model (int): Output embedding dimension.
+        stride (Optional[int]): Step between patch starts. Defaults to patch_size.
+        pad_value (float): Value to pad with if sequence length is not divisible.
+        use_mlp (bool): If True, use a 2-layer residual MLP instead of a linear layer.
+        mlp_hidden_size (Optional[int]): Hidden dimension for the MLP. Defaults to d_model.
     """
     def __init__(
         self,
@@ -286,52 +295,75 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
         d_model: int,
         stride: Optional[int] = None,
         pad_value: float = 0.0,
+        use_mlp: bool = False,
+        mlp_hidden_size: Optional[int] = None,
     ):
-        """
-        Args:
-            patch_size: Length of each patch.
-            feature_size: Number of input channels F.
-            d_model: Output embedding dimension.
-            stride: Step between patch starts. Defaults to patch_size.
-            pad_value: Value to pad with if sequence length is not divisible.
-        """
         super().__init__(d_model)
+        # Store init parameters for later introspection
         self.patch_size = patch_size
         self.feature_size = feature_size
+        self.d_model = d_model
         self.stride = stride or patch_size
         self.pad_value = pad_value
-        self.proj = nn.Linear(patch_size * feature_size, d_model, bias=False)
+        self.use_mlp = use_mlp
+        self.mlp_hidden_size = mlp_hidden_size or d_model
+        self.flat_size = patch_size * feature_size
+
+        # Build projection or MLP+skip
+        if use_mlp:
+            # 2-layer MLP + residual skip connection
+            H = self.mlp_hidden_size
+            self.mlp = nn.Sequential(
+                nn.Linear(self.flat_size, H, bias=True),
+                nn.ReLU(),
+                nn.Linear(H, d_model, bias=True),
+            )
+            self.skip = nn.Linear(self.flat_size, d_model, bias=False)
+        else:
+            # Simple linear projection
+            self.proj = nn.Linear(self.flat_size, d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: Tensor of shape [B, L, F].
-
+            x (torch.Tensor): Input tensor of shape [B, L, F].
         Returns:
-            Tensor of shape [B, num_patches, d_model].
-
-        Raises:
-            ValueError: If input feature dimension mismatches feature_size.
+            torch.Tensor: Output tensor of shape [B, num_patches, d_model].
         """
         B, L, F = x.shape
         if F != self.feature_size:
             raise ValueError(f"Expected feature_size={self.feature_size}, got={F}")
 
+        # Compute padding length for stride compatibility
         if L < self.patch_size:
             pad_len = self.patch_size - L
         else:
             rem = (L - self.patch_size) % self.stride
-            pad_len = self.stride - rem if rem else 0
+            pad_len = (self.stride - rem) if rem else 0
 
-        if pad_len:
-            pad_tensor = torch.full((B, pad_len, F), self.pad_value, device=x.device, dtype=x.dtype)
-            x = torch.cat([x, pad_tensor], dim=1)
+        # Apply padding if needed
+        if pad_len > 0:
+            pad = x.new_full((B, pad_len, F), self.pad_value)
+            x = torch.cat([x, pad], dim=1)
             L += pad_len
 
+        # Unfold into patches: shape [B, P, patch_size, F]
         patches = x.unfold(1, self.patch_size, self.stride)
-        B, num_patches, _, _ = patches.shape
-        flat = patches.contiguous().view(B, num_patches, -1)
-        return self.proj(flat)
+        B, P, p, F = patches.shape
+        flat = patches.contiguous().view(B, P, self.flat_size)
+
+        # Flatten for projection/MLP: [B*P, flat_size]
+        flat_2d = flat.view(B * P, -1)
+
+        # Apply embedder
+        if self.use_mlp:
+            out = self.mlp(flat_2d) + self.skip(flat_2d)
+        else:
+            out = self.proj(flat_2d)
+
+        # Reshape back: [B, P, d_model]
+        return out.view(B, P, self.d_model)
+
 
 # -----------------------------
 # Global Embedding

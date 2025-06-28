@@ -115,7 +115,7 @@ class InputPreprocessor(nn.Module):
             seq_len=seq_len_after_patching,
             past_key_values_length=past_key_values_length
         )
-        if verbose: print(f"[Preprocessor] Positional embedding shape: {pos_embed.shape}")
+        if verbose: print(f"[Praeprocessor] Positional embedding shape: {pos_embed.shape}")
 
         if validate_shapes:
             assert value_embeds.shape == pos_embed.shape, \
