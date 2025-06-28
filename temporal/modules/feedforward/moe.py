@@ -149,7 +149,6 @@ class MoEFeedForward(nn.Module):
         flat_router_weights = router_weights.view(-1)
 
         # Process tokens expert by expert for clarity.
-        # (Note: For extreme performance, this dispatch can be optimized with custom kernels).
         for i, expert in enumerate(self.experts):
             # Find all routing entries that point to the current expert.
             expert_mask = (expert_indices == i)
@@ -159,17 +158,20 @@ class MoEFeedForward(nn.Module):
             # Get the indices of the tokens that should be processed by this expert.
             tokens_for_this_expert_idx = token_indices[expert_mask]
 
+            # Ensure indices are of type long for safe indexing, especially for index_add_
+            long_indices = tokens_for_this_expert_idx.long()
+
             # Get the weights for these tokens.
             weights_for_this_expert = flat_router_weights[expert_mask].unsqueeze(1)
 
             # Get the hidden states of these tokens.
-            hidden_states_for_this_expert = hidden_states_flat[tokens_for_this_expert_idx]
+            hidden_states_for_this_expert = hidden_states_flat[long_indices]
 
             # Run the expert on its assigned tokens.
             expert_output = expert(hidden_states_for_this_expert)
 
             # Add the weighted expert output to the final result tensor.
-            final_hidden_states_flat.index_add_(0, tokens_for_this_expert_idx, expert_output * weights_for_this_expert)
+            final_hidden_states_flat.index_add_(0, long_indices, expert_output * weights_for_this_expert)
 
         # Reshape the output back to the original input shape.
         final_hidden_states = final_hidden_states_flat.view_as(hidden_states)
