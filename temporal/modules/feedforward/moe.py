@@ -1,5 +1,3 @@
-# temporal/modules/feedforward/moe.py
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,7 +23,6 @@ class MoEFeedForward(nn.Module):
 
     An auxiliary load balancing loss is computed during training to encourage
     the gating network to distribute tokens evenly across all experts,
-
     preventing a state where only a few experts are consistently chosen.
 
     Attributes:
@@ -47,6 +44,7 @@ class MoEFeedForward(nn.Module):
         expert_intermediate_size: Optional[int] = None,
         bias: bool = True,
         load_balancing_coef: float = 0.01,
+        gate_dropout: Optional[float] = None, # Added gate_dropout
         **kwargs
     ):
         """Initializes the MoEFeedForward module.
@@ -63,6 +61,8 @@ class MoEFeedForward(nn.Module):
                 size for the expert FFNs. Takes precedence over `intermediate_size`.
             bias (bool): Whether the expert FFNs should use a bias.
             load_balancing_coef (float): The coefficient for the load balancing loss.
+            gate_dropout (Optional[float]): Dropout rate to apply to the gate logits.
+                                            If None or 0, no dropout is applied.
             **kwargs: Catches any other unused arguments.
         """
         super().__init__()
@@ -77,11 +77,14 @@ class MoEFeedForward(nn.Module):
         # Determine the intermediate size for the expert FFNs
         ffn_intermediate_size = expert_intermediate_size if expert_intermediate_size is not None else intermediate_size
         if ffn_intermediate_size is None:
-             ffn_intermediate_size = self.d_model * 4
-             print(f"Warning: MoE expert intermediate size not specified, defaulting to 4*d_model={ffn_intermediate_size}")
+            ffn_intermediate_size = self.d_model * 4
+            print(f"Warning: MoE expert intermediate size not specified, defaulting to 4*d_model={ffn_intermediate_size}")
 
         # Gating network: Maps a token's embedding to a logit for each expert.
-        self.gate = nn.Linear(self.d_model, num_experts, bias=False)
+        # Changed bias to True as suggested, but False is also common.
+        self.gate = nn.Linear(self.d_model, num_experts, bias=True) 
+        self.gate_dropout = nn.Dropout(gate_dropout) if gate_dropout is not None and gate_dropout > 0 else None
+
 
         # Create the pool of expert networks.
         self.experts = nn.ModuleList(
@@ -118,62 +121,65 @@ class MoEFeedForward(nn.Module):
         # 1. Get routing decisions from the gating network.
         # gate_logits shape: [B*T, num_experts]
         gate_logits = self.gate(hidden_states_flat)
+        
+        # Apply gate dropout if enabled
+        if self.training and self.gate_dropout is not None:
+            gate_logits = self.gate_dropout(gate_logits)
 
         # Find the top-k experts for each token.
         # top_k_weights/indices shape: [B*T, top_k]
         top_k_weights, top_k_indices = torch.topk(gate_logits, self.top_k, dim=-1, sorted=False)
 
         # Normalize the weights of the selected experts.
-        router_weights = F.softmax(top_k_weights, dim=-1, dtype=torch.float32).to(hidden_states.dtype)
+        # Removed explicit dtype=torch.float32 for softmax
+        router_weights = F.softmax(top_k_weights, dim=-1).to(hidden_states.dtype)
 
         # 2. Calculate the auxiliary load balancing loss (during training only).
         aux_loss = None
         if self.training and self.load_balancing_coef > 0:
             # This loss encourages the router to use all experts equally.
             # It's based on the formulation from the Switch Transformer paper.
-            router_probs = F.softmax(gate_logits, dim=-1, dtype=torch.float32)
-            expert_mask = F.one_hot(top_k_indices, num_classes=self.num_experts)
-            expert_mask_sum = expert_mask.sum(dim=1)
+            # Removed explicit dtype=torch.float32 for softmax
+            router_probs = F.softmax(gate_logits, dim=-1)
+            
+            expert_mask_one_hot = F.one_hot(top_k_indices, num_classes=self.num_experts) # [B*T, top_k, num_experts]
+            expert_mask_sum_per_token = expert_mask_one_hot.sum(dim=1) # [B*T, num_experts]
 
-            tokens_per_expert_fraction = expert_mask_sum.sum(dim=0) / num_tokens
-            router_prob_per_expert = (router_probs * expert_mask_sum).sum(dim=0)
-            mean_router_prob_per_expert = router_prob_per_expert / (tokens_per_expert_fraction * num_tokens + 1e-6)
+            tokens_routed_to_expert = expert_mask_sum_per_token.sum(dim=0).float() # [num_experts]
+            sum_router_prob_for_expert = (router_probs * expert_mask_sum_per_token).sum(dim=0) # [num_experts]
 
-            load_balancing_loss = self.num_experts * torch.sum(tokens_per_expert_fraction * mean_router_prob_per_expert)
+            fraction_tokens_routed_to_expert = tokens_routed_to_expert / num_tokens # [num_experts]
+            
+            # Avoid division by zero for experts with no tokens (already handled by +1e-6, but explicit check)
+            divisor = tokens_routed_to_expert + 1e-6
+            mean_router_prob_per_expert = sum_router_prob_for_expert / divisor # [num_experts]
+            
+            load_balancing_loss = self.num_experts * torch.sum(fraction_tokens_routed_to_expert * mean_router_prob_per_expert)
             aux_loss = load_balancing_loss * self.load_balancing_coef
 
         # 3. Dispatch tokens to experts and compute the final output.
         final_hidden_states_flat = torch.zeros_like(hidden_states_flat)
-        token_indices = torch.arange(num_tokens, device=hidden_states.device).repeat_interleave(self.top_k)
-        expert_indices = top_k_indices.view(-1)
-        flat_router_weights = router_weights.view(-1)
-
-        # Process tokens expert by expert for clarity.
+        
         for i, expert in enumerate(self.experts):
-            # Find all routing entries that point to the current expert.
-            expert_mask = (expert_indices == i)
-            tokens_for_this_expert_idx = token_indices[expert_mask]
+            # Find all (token_idx, top_k_position) that selected the current expert 'i'.
+            mask_for_this_expert_in_topk = (top_k_indices == i)
+            
+            # `token_indices_for_this_expert_flat` are the original token indices from hidden_states_flat
+            # `top_k_pos_for_this_expert` are the column indices (0 to top_k-1) within top_k_indices
+            token_indices_for_this_expert_flat, top_k_pos_for_this_expert = torch.where(mask_for_this_expert_in_topk)
 
-            if tokens_for_this_expert_idx.numel() > 0:
-                # Ensure indices are of type long for safe indexing
-                long_indices = tokens_for_this_expert_idx.long()
+            if token_indices_for_this_expert_flat.numel() > 0:
+                hidden_states_for_this_expert = hidden_states_flat[token_indices_for_this_expert_flat]
 
-                # Get the weights and hidden states for these tokens.
-                weights_for_this_expert = flat_router_weights[expert_mask].unsqueeze(1)
-                hidden_states_for_this_expert = hidden_states_flat[long_indices]
+                # Get the specific router weights for these tokens and their chosen positions.
+                weights_for_this_expert = router_weights[token_indices_for_this_expert_flat, top_k_pos_for_this_expert].unsqueeze(1)
                 
-                # Run the expert on its assigned tokens.
                 expert_output = expert(hidden_states_for_this_expert)
                 
-                # Ensure updates is 2D and indices are 1D for index_add_
                 updates = expert_output * weights_for_this_expert
-                if long_indices.dim() == 0:
-                    long_indices = long_indices.unsqueeze(0)
-                if updates.dim() == 1:
-                    updates = updates.unsqueeze(0)
                 
-                # Add the weighted expert output to the final result tensor.
-                final_hidden_states_flat.index_add_(0, long_indices, updates)
+                # Use index_add_ to sum contributions from multiple experts for a single token.
+                final_hidden_states_flat.index_add_(0, token_indices_for_this_expert_flat.long(), updates)
 
         # Reshape the output back to the original input shape.
         final_hidden_states = final_hidden_states_flat.view_as(hidden_states)
