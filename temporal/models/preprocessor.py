@@ -34,7 +34,7 @@ class InputPreprocessor(nn.Module):
         self.positional_embedding = builder.build_positional_embedding()
         self.layernorm_embedding = builder.build_normalization()
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.is_patched = "Patch" in self.value_embedding.__class__.__name__
+        self.is_patched = True if 'patch_size' in config.value_embedding_config.kwargs else False
         self.patch_size = self.value_embedding.patch_size if self.is_patched else 1
         # It's assumed TimeSeriesPatchEmbedding has a 'stride' attribute.
         self.patch_stride = self.value_embedding.stride if self.is_patched else 1 
