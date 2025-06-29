@@ -116,9 +116,9 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         self.patch_merger = None # Start as None
         #  partion this out eventually to make it cleaner
         if self.preprocessor.is_patched:
-
+            patch_size = self.preprocessor.patch_size
             use_mlp        =  getattr(self.preprocessor.value_embedding, 'use_mlp', False) 
-            num_patches = config.context_length // self.preprocessor.patch_size
+            num_patches = config.context_length // patch_size
             mlp_hidden_size    = getattr(self.preprocessor.value_embedding, ' mlp_hidden_size',None) or (num_patches  * 2)
             d_model = self.config.d_model
             feature_size = self.config.feature_size
