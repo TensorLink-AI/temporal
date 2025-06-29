@@ -239,13 +239,13 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         
         # CORRECTED Step 4: Apply patch merger BEFORE the output head.
         # ─── Step 4: Merge or Expand Patch Tokens ───
-        if self.config.value_embedding_config.type == "patch":
+        if hasattr(self.preprocessor.value_embedding, 'patch_size'):
             B, P, D = input_to_heads.shape
             device = input_to_heads.device
 
             # read your config flags
-            use_mlp        = getattr(self.config, "patch_merge_use_mlp", False)
-            hidden_size    = getattr(self.config, "patch_merge_mlp_hidden_size", None) or (P * 2)
+            use_mlp        =  getattr(self.preprocessor.value_embedding, 'use_mlp', False) 
+            hidden_size    = getattr(self.preprocessor.value_embedding, ' mlp_hidden_size',None) or (P * 2)
             p_out          = self.config.prediction_length
 
             # lazy‐init the merger
