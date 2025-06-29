@@ -118,9 +118,10 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         if self.preprocessor.is_patched:
 
             use_mlp        =  getattr(self.preprocessor.value_embedding, 'use_mlp', False) 
-            mlp_hidden_size    = getattr(self.preprocessor.value_embedding, ' mlp_hidden_size',None) or (P * 2)
             p_out          = self.config.prediction_length
             num_patches = config.context_length // self.preprocessor.patch_size
+            mlp_hidden_size    = getattr(self.preprocessor.value_embedding, ' mlp_hidden_size',None) or (num_patches  * 2)
+
             prediction_len = config.prediction_length
 
             if use_mlp:
