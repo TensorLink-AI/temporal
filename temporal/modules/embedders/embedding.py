@@ -338,7 +338,7 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
             )
 
         # Flatten for projection/MLP: [B*P, flat_size]
-        flat_2d = x.view(B * L, -1)
+        flat_2d = x.contiguous().view(B * L, -1)
 
         # Apply embedder
         if self.use_mlp:
