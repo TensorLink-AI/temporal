@@ -119,7 +119,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             patch_size = self.preprocessor.patch_size
             use_mlp        =  getattr(self.preprocessor.value_embedding, 'use_mlp', False) 
             num_patches = config.context_length // patch_size
-            mlp_hidden_size    = getattr(self.preprocessor.value_embedding, ' mlp_hidden_size',None) or (num_patches  * 2)
+            mlp_hidden_size    = getattr(self.preprocessor.value_embedding, 'mlp_hidden_size',None) or (patch_size  * 2)
             d_model = self.config.d_model
             feature_size = self.config.feature_size
             output_projection_size = patch_size * feature_size
@@ -248,15 +248,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             input_to_heads = encoder_hidden_states
             decoder_outputs = None
 
-        # Step 3: Align head input with targets for loss calculation if needed.
-        if (
-            targets is not None and 
-            self.config.architecture.layout == "decoder" and 
-            self.config.value_embedding_config.type != "patch"
-        ):
-            num_target_steps = targets.size(1)
-            input_to_heads = input_to_heads[:, -num_target_steps:, :]
-        
+
         # CORRECTED Step 4: Apply patch merger BEFORE the output head.
         # ─── Step 4: Merge or Expand Patch Tokens ───
         if self.preprocessor.is_patched:
@@ -270,6 +262,14 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             # [B, P, patch_size * F] -> [B, P * patch_size, F]
             input_to_heads = projected_patches.view(B, P * p_sz, f_sz)
 
+        # Step 3: Align head input with targets for loss calculation if needed.
+        if (
+            targets is not None and 
+            self.config.architecture.layout == "decoder" 
+        ):
+            num_target_steps = targets.size(1)
+            input_to_heads = input_to_heads[:, -num_target_steps:, :]
+        
         # Step 5: Project the final hidden states through the output head(s).
         logits = self.output_heads(input_to_heads)
         if self.head_aggregator is not None:
