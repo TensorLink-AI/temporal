@@ -61,9 +61,9 @@ class AutoregressivePatchMixin:
     def generate(
         self,
         encoder_inputs: torch.Tensor,
+        prediction_length: int,
         attention_mask: Optional[torch.Tensor] = None,
         decoder_attention_mask: Optional[torch.Tensor] = None,
-        num_patches_to_generate: int = 0,
         use_cache: bool = True,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
@@ -79,10 +79,11 @@ class AutoregressivePatchMixin:
 
         Args:
             encoder_inputs (torch.Tensor): The initial context sequence of raw time-series data.
+            prediction_length (int): The number of time steps to predict. This will be
+                converted to the number of patches to generate.
             attention_mask (Optional[torch.Tensor]): Mask for encoder attention.
             decoder_attention_mask (Optional[torch.Tensor]): Pre-computed mask for the decoder's
                 self-attention. Typically not needed when using `use_cache=True`.
-            num_patches_to_generate (int): The number of future *patches* to generate.
             use_cache (bool): Whether to use past key values for faster decoding.
             output_attentions (bool): Whether to return attentions from the model.
             output_hidden_states (bool): Whether to return hidden states from the model.
@@ -92,6 +93,12 @@ class AutoregressivePatchMixin:
             The generated sequence of predicted features.
         """
         self.eval()
+
+        if not hasattr(self.config, 'patch_length') or not hasattr(self.config, 'prediction_length'):
+            raise AttributeError("The model's config must have 'patch_length' and 'prediction_length' attributes.")
+        
+        num_patches_to_generate = prediction_length // self.config.patch_length
+
 
         # --- Attribute validation ---
         required_attrs = ['preprocessor', 'encoder', 'decoder', 'patch_merger', 'output_heads']
