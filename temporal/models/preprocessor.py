@@ -302,3 +302,63 @@ class InputPreprocessor(nn.Module):
         
         # Fill the padded positions with a large negative number
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
+
+    def _prepare_decoder_inputs_for_generation(
+            self,
+            patch_embeds: torch.Tensor,
+            past_key_values_length: int = 0,
+            attention_mask: Optional[torch.Tensor] = None,
+            is_causal: bool = True,
+            verbose: bool = False
+        ) -> Dict[str, Any]:
+            """
+            Prepares a single, already-embedded patch for the decoder during generation.
+
+            This is a lightweight version of `process` that skips the value embedding/patching
+            step and is used inside the autoregressive loop.
+
+            Args:
+                patch_embeds (torch.Tensor): The patch embedding from the previous generation step.
+                                            Shape: `[B, 1, d_model]`.
+                past_key_values_length (int): The length of the KV cache.
+                attention_mask (Optional[torch.Tensor]): A 2D padding mask. Assumed to be `[B, 1]`.
+                is_causal (bool): If True, a causal mask is created.
+
+            Returns:
+                A dictionary containing processed `hidden_states` and `attention_mask`.
+            """
+            if verbose: print(f"[Preprocessor Gen Step] Initial patch embed shape: {patch_embeds.shape}")
+            
+            # This function starts with embeddings, so it skips the `value_embedding` step.
+            batch_size, seq_len, d_model = patch_embeds.shape
+
+            # Add positional encoding for the current generation step.
+            # `past_key_values_length` tells the positional embedding module *which* step we are on.
+            pos_embed = self.positional_embedding(
+                batch_size=batch_size,
+                seq_len=seq_len,
+                past_key_values_length=past_key_values_length
+            )
+            if verbose: print(f"[Preprocessor Gen Step] Positional embedding shape: {pos_embed.shape}")
+
+            hidden_states = patch_embeds + pos_embed
+            hidden_states = self.layernorm_embedding(hidden_states)
+            hidden_states = self.dropout(hidden_states)
+            if verbose: print(f"[Preprocessor Gen Step] Final hidden_states shape: {hidden_states.shape}")
+            
+            # Create the appropriate attention mask for this single step.
+            final_attention_mask = self._prepare_attention_mask(
+                attention_mask,
+                (batch_size, seq_len),
+                hidden_states,
+                past_key_values_length,
+                is_causal=is_causal
+            )
+            if verbose and final_attention_mask is not None: 
+                print(f"[Preprocessor Gen Step] Final attention mask shape (4D): {final_attention_mask.shape}")
+
+            return {
+                "hidden_states": hidden_states,
+                "attention_mask": final_attention_mask,
+            }
+

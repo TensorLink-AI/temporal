@@ -30,7 +30,7 @@ class AutoregressiveDispatchMixin:
 
         if is_patch:
             # call the patch‐based generator
-            return super(AutoregressiveDispatchMixin, self).generate(*args, **kwargs)
+            return super(AutoregressivePatchMixin, self).generate(*args, **kwargs)
         else:
             # call the stepwise generator
             return super(AutoregressiveStepwiseMixin, self).generate(*args, **kwargs)
