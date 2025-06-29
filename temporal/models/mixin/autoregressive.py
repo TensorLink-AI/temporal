@@ -3,7 +3,7 @@ import torch.nn as nn
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-# Assume these are correctly imported
+# Make sure the paths to your other mixins are correct
 from .autoregressive_patch import AutoregressivePatchMixin
 from .autoregressive_stepwise import AutoregressiveStepwiseMixin
 
@@ -13,6 +13,8 @@ class AutoregressiveDispatchMixin:
     """
     A mixin that dynamically dispatches calls to the correct implementation
     (patch-based or stepwise) by inspecting the model's components at runtime.
+
+    This should be placed *first* in the inheritance list of a model.
     """
 
     def _is_patch_based(self) -> bool:
