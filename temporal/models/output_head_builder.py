@@ -50,7 +50,12 @@ class OutputHeadBuilder:
 
         # Determine the required output_size based on the head type.
         output_size = self._calculate_output_size(head_type, head_config)
-        final_hidden_size_for_head = head_input_dim
+        if hasattr(self.config.value_embedding_config.kwargs , 'patch_size'): 
+          final_hidden_size_for_head = head_input_dim
+
+        else: 
+          final_hidden_size_for_head = hidden_size
+
 
         # Prepare arguments for the head's constructor.
         # We start with the essential ones and add others from the config's kwargs.
