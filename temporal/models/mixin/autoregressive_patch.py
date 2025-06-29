@@ -94,36 +94,50 @@ class AutoregressivePatchMixin:
         """
         self.eval()
 
-        if not hasattr(self.config, 'patch_length') or not hasattr(self.config, 'prediction_length'):
-            raise AttributeError("The model's config must have 'patch_length' and 'prediction_length' attributes.")
+        # --- 1. Robust Initialization & Validation ---
+        if encoder_inputs is None and decoder_inputs is None:
+            raise ValueError("You must provide either 'encoder_inputs' or 'decoder_inputs'.")
+
+        required_attrs = ['config', 'preprocessor', 'decoder', 'patch_merger', 'output_heads']
+        if not all(hasattr(self, attr) for attr in required_attrs):
+            raise AttributeError(f"Model must have {required_attrs} attributes for patch-based generation.")
         
+        # Determine batch_size and device from the available tensor
+        # This also determines the data type for creating empty tensors later.
+        reference_tensor = decoder_inputs if encoder_inputs is None else encoder_inputs
+        batch_size, device = reference_tensor.shape[0], reference_tensor.device
+
         num_patches_to_generate = prediction_length // self.config.patch_length
 
+        # --- 2. Architectural Path: Prepare context and initial decoder state ---
+        if hasattr(self, 'encoder') and self.encoder is not None and encoder_inputs is not None:
+            # --- Encoder-Decoder Path ---
+            processed_encoder = self.preprocessor.process(
+                input_values=encoder_inputs, attention_mask=attention_mask, is_causal=False
+            )
+            context_patches = processed_encoder["hidden_states"]
+            encoder_outputs = self.encoder(
+                hidden_states=context_patches, attention_mask=processed_encoder["attention_mask"], return_dict=True
+            )
+            encoder_hidden_states = encoder_outputs.last_hidden_state
+            
+            # Start generation from the last patch of the context
+            decoder_sequence_patches = context_patches[:, -1:, :]
 
-        # --- Attribute validation ---
-        required_attrs = ['preprocessor', 'encoder', 'decoder', 'patch_merger', 'output_heads']
-        if not all(hasattr(self, attr) for attr in required_attrs):
-             raise AttributeError(f"Model must have {required_attrs} attributes for patch-based generation.")
-        if not hasattr(self.preprocessor, '_prepare_decoder_inputs_for_generation'):
-            raise AttributeError("Preprocessor must have a '_prepare_decoder_inputs_for_generation' method.")
+        elif decoder_inputs is not None:
+            # --- Decoder-Only Path ---
+            processed_decoder_context = self.preprocessor.process(
+                input_values=decoder_inputs, attention_mask=attention_mask, is_causal=True
+            )
+            context_patches = processed_decoder_context["hidden_states"]
+            encoder_hidden_states = None # No encoder context to pass to the decoder
+            
+            # The entire prompt is the initial sequence for the decoder
+            decoder_sequence_patches = context_patches
+            
+        else:
+            raise ValueError("Could not determine model architecture. For encoder-decoder models, provide 'encoder_inputs'. For decoder-only, provide 'decoder_inputs'.")
 
-        # --- Step 1: Process initial context and run the encoder ---
-        processed_encoder = self.preprocessor.process(
-            input_values=encoder_inputs,
-            attention_mask=attention_mask,
-            is_causal=False,
-        )
-        context_patches = processed_encoder["hidden_states"]
-        
-        encoder_outputs = self.encoder(
-            hidden_states=context_patches,
-            attention_mask=processed_encoder["attention_mask"],
-            return_dict=True,
-        )
-        encoder_hidden_states = encoder_outputs.last_hidden_state
-
-        # --- Step 2: Initialize the autoregressive loop ---
-        decoder_sequence_patches = context_patches[:, -1:, :]
         generated_patches = []
         past_key_values = None
 
@@ -132,8 +146,6 @@ class AutoregressivePatchMixin:
             input_patches_for_step = decoder_sequence_patches[:, -1:, :] if use_cache and past_key_values else decoder_sequence_patches
             past_kv_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
             
-            # Use the dedicated method for processing latent embeddings in the decoder.
-            # This correctly adds positional information and creates causal masks without re-patching.
             processed_decoder = self.preprocessor._prepare_decoder_inputs_for_generation(
                 patch_embeds=input_patches_for_step,
                 attention_mask=decoder_attention_mask if not (use_cache and past_key_values) else None,
@@ -145,11 +157,9 @@ class AutoregressivePatchMixin:
                 hidden_states=processed_decoder["hidden_states"],
                 attention_mask=processed_decoder["attention_mask"],
                 encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=processed_encoder["attention_mask"],
+                encoder_attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
                 return_dict=True,
             )
 
@@ -158,7 +168,7 @@ class AutoregressivePatchMixin:
             decoder_sequence_patches = torch.cat([decoder_sequence_patches, next_patch_embedding], dim=1)
             
             if use_cache:
-                past_key_values = decoder_outputs.past_key_values
+                past_key_values = decoder_outputs.past_key_values       
 
         if not generated_patches:
             return torch.empty((encoder_inputs.shape[0], 0, encoder_inputs.shape[-1]), device=encoder_inputs.device)
@@ -173,3 +183,43 @@ class AutoregressivePatchMixin:
         final_output = self._get_head_output(point_predictions)
         
         return final_output
+
+    @torch.no_grad()
+    def forecast(
+        self,
+        inputs: torch.Tensor,
+        prediction_length: int,
+        **kwargs,
+    ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
+        """
+        A user-friendly wrapper for the `generate` method, tailored for forecasting tasks.
+
+        This method simplifies the forecasting process by automatically handling the
+        distinction between encoder-decoder and decoder-only models based on the
+        model's architecture.
+
+        Args:
+            inputs (torch.Tensor): The input data.
+                - For Encoder-Decoder models: This is the historical context sequence.
+                - For Decoder-Only models: This is the initial prompt sequence.
+            prediction_length (int): The number of future steps to forecast.
+            **kwargs: Additional arguments passed to the underlying `generate` method.
+        """
+        # This wrapper function is identical to the one from the stepwise mixin.
+        # It inspects the model's architecture and calls `generate` correctly.
+        if hasattr(self, 'encoder') and self.encoder is not None:
+            # Encoder-Decoder Path
+            logger.info("Encoder-Decoder model detected. Using `inputs` as `encoder_inputs` for forecasting.")
+            return self.generate(
+                encoder_inputs=inputs,
+                prediction_length=prediction_length,
+                **kwargs,
+            )
+        else:
+            # Decoder-Only Path
+            logger.info("Decoder-Only model detected. Using `inputs` as `decoder_inputs` for forecasting.")
+            return self.generate(
+                decoder_inputs=inputs,
+                prediction_length=prediction_length,
+                **kwargs,
+            )

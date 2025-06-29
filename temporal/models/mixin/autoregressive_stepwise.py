@@ -128,7 +128,7 @@ class AutoregressiveStepwiseMixin:
     @torch.no_grad()
     def generate(
         self,
-        encoder_inputs: torch.Tensor,
+        encoder_inputs: Optional[torch.Tensor] = None,
         decoder_inputs: Optional[torch.Tensor] = None,
         prediction_length: int = 0,
         attention_mask: Optional[torch.Tensor] = None,
@@ -173,11 +173,19 @@ class AutoregressiveStepwiseMixin:
                 The generated sequence of predicted features.
         """
         self.eval()
-        batch_size, device = encoder_inputs.shape[0], encoder_inputs.device
+        if encoder_inputs is None and decoder_inputs is None:
+            raise ValueError("You must provide either 'encoder_inputs' or 'decoder_inputs'.")
+
+        # Determine batch_size and device from the available tensor
+        if decoder_inputs is not None:
+            batch_size, device = decoder_inputs.shape[0], decoder_inputs.device
+        else:
+            # This branch will be taken by encoder-decoder models
+            batch_size, device = encoder_inputs.shape[0], encoder_inputs.device
 
         # Step 1: Run the encoder if it exists.
         encoder_outputs = None
-        if self.encoder:
+        if self.encoder and encoder_inputs is not None:
             processed_encoder = self.preprocessor.process(
                 input_values=encoder_inputs,
                 attention_mask=attention_mask,
@@ -279,3 +287,43 @@ class AutoregressiveStepwiseMixin:
             return predictions
         else:
             return torch.cat(predictions, dim=1)
+
+    @torch.no_grad()
+    def forecast(
+        self,
+        inputs: torch.Tensor,
+        prediction_length: int,
+        **kwargs,
+    ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
+        """
+        A user-friendly wrapper for the `generate` method, tailored for forecasting tasks.
+
+        This method simplifies the forecasting process by automatically handling the
+        distinction between encoder-decoder and decoder-only models based on the
+        model's architecture.
+
+        Args:
+            inputs (torch.Tensor): The input data.
+                - For Encoder-Decoder models: This is the historical context sequence.
+                - For Decoder-Only models: This is the initial prompt sequence.
+            prediction_length (int): The number of future steps to forecast.
+            **kwargs: Additional arguments to be passed directly to the
+                      underlying `generate` method (e.g., `prediction_strategy`).
+        """
+        # This wrapper inspects the model's architecture and calls `generate` correctly.
+        if hasattr(self, 'encoder') and self.encoder is not None:
+            # Encoder-Decoder Path
+            logger.info("Encoder-Decoder model detected. Using `inputs` as `encoder_inputs` for forecasting.")
+            return self.generate(
+                encoder_inputs=inputs,
+                prediction_length=prediction_length,
+                **kwargs,
+            )
+        else:
+            # Decoder-Only Path
+            logger.info("Decoder-Only model detected. Using `inputs` as `decoder_inputs` for forecasting.")
+            return self.generate(
+                decoder_inputs=inputs,
+                prediction_length=prediction_length,
+                **kwargs,
+            )

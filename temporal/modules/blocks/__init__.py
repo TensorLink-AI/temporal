@@ -7,4 +7,4 @@
 from . import block_multiscale
 from . import effitime_block
 from . import block_s4 # Add this line to register the new block
-from . import patch_transform_block
+from . import block_patch_transformer
