@@ -118,20 +118,22 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         if self.preprocessor.is_patched:
 
             use_mlp        =  getattr(self.preprocessor.value_embedding, 'use_mlp', False) 
-            p_out          = self.config.prediction_length
             num_patches = config.context_length // self.preprocessor.patch_size
             mlp_hidden_size    = getattr(self.preprocessor.value_embedding, ' mlp_hidden_size',None) or (num_patches  * 2)
-
-            prediction_len = config.prediction_length
+            d_model = self.config.d_model
+            feature_size = self.config.feature_size
+            output_projection_size = patch_size * feature_size
 
             if use_mlp:
+                print(f"INFO: Building MLP patch_merger (d_model -> {mlp_hidden_size} -> {output_projection_size}).")
                 self.patch_merger = nn.Sequential(
-                    nn.Linear(num_patches, mlp_hidden_size),
+                    nn.Linear(d_model, mlp_hidden_size),
                     nn.ReLU(),
-                    nn.Linear(mlp_hidden_size, prediction_len)
+                    nn.Linear(mlp_hidden_size, output_projection_size)
                 )
             else:
-                self.patch_merger = nn.Linear(num_patches, prediction_len)
+                print(f"INFO: Building Linear patch_merger (d_model -> {output_projection_size}).")
+                self.patch_merger = nn.Linear(d_model, output_projection_size)
         
         # 5. Loss function is not a module, but we assign it here.
         self.loss_fn = loss_fn
@@ -259,15 +261,14 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         # ─── Step 4: Merge or Expand Patch Tokens ───
         if self.preprocessor.is_patched:
 
-            # 1) bring patches into last dim: [B, P, D] → [B, D, P]
-            x = input_to_heads.transpose(1, 2)
+            projected_patches = self.patch_merger(input_to_heads)
+            B, P, _ = projected_patches.shape
+            p_sz = self.preprocessor.patch_size
+            f_sz = self.config.feature_size
 
-            # 2) run the merger MLP or linear: [B, D, P] → [B, D, p_out]
-            x = self.patch_merger(x)
-
-            # 3) back to [B, p_out, D]
-            input_to_heads = x.transpose(1, 2)
-
+            # The .view() operation flattens the patch dimension back into a time sequence.
+            # [B, P, patch_size * F] -> [B, P * patch_size, F]
+            input_to_heads = projected_patches.view(B, P * p_sz, f_sz)
 
         # Step 5: Project the final hidden states through the output head(s).
         logits = self.output_heads(input_to_heads)
