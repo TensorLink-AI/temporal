@@ -148,10 +148,28 @@ class PatchTransformBlock(nn.Module):
         # 4. Merge patches back
         merged_output = self.patch_merging(x_processed)
 
-        if isinstance(layer_output, tuple):
-            return (merged_output,) + layer_output[1:]
-        else:
-            return merged_output
+                hidden_states_out = None
+        attentions_out = None
+        cross_attentions_out = None
+        past_key_values_out = None # Should be None due to NotImplementedError
+
+        # Try to extract auxiliary info if layer_output was a structured object
+        if hasattr(layer_output, 'hidden_states'):
+            hidden_states_out = layer_output.hidden_states
+        if hasattr(layer_output, 'attentions'):
+            attentions_out = layer_output.attentions
+        if hasattr(layer_output, 'cross_attentions'):
+            cross_attentions_out = layer_output.cross_attentions
+        if hasattr(layer_output, 'past_key_values'):
+            past_key_values_out = layer_output.past_key_values # Will be None if NotImplementedError triggered
+
+        return BaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=merged_output, # The processed main hidden state
+            hidden_states=hidden_states_out,
+            attentions=attentions_out,
+            cross_attentions=cross_attentions_out,
+            past_key_values=past_key_values_out
+        )
 
     def forward_merge_first(self, hidden_states, attention_mask, **kwargs):
         # Path: Merge -> Transform -> Split
@@ -190,7 +208,25 @@ class PatchTransformBlock(nn.Module):
             )
         split_output = self.patch_splitting(x_processed)
 
-        if isinstance(layer_output, tuple):
-            return (split_output,) + layer_output[1:]
-        else:
-            return split_output
+        hidden_states_out = None
+        attentions_out = None
+        cross_attentions_out = None
+        past_key_values_out = None # Should be None due to NotImplementedError
+
+        # Try to extract auxiliary info if layer_output was a structured object
+        if hasattr(layer_output, 'hidden_states'):
+            hidden_states_out = layer_output.hidden_states
+        if hasattr(layer_output, 'attentions'):
+            attentions_out = layer_output.attentions
+        if hasattr(layer_output, 'cross_attentions'):
+            cross_attentions_out = layer_output.cross_attentions
+        if hasattr(layer_output, 'past_key_values'):
+            past_key_values_out = layer_output.past_key_values # Will be None if NotImplementedError triggered
+
+        return BaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=merged_output, # The processed main hidden state
+            hidden_states=hidden_states_out,
+            attentions=attentions_out,
+            cross_attentions=cross_attentions_out,
+            past_key_values=past_key_values_out
+        )
