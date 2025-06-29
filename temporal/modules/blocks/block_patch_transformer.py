@@ -225,7 +225,7 @@ class PatchTransformBlock(nn.Module):
             past_key_values_out = layer_output.past_key_values # Will be None if NotImplementedError triggered
 
         return BaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=merged_output, # The processed main hidden state
+            last_hidden_state=split_output , # The processed main hidden state
             hidden_states=hidden_states_out,
             attentions=attentions_out,
             cross_attentions=cross_attentions_out,
