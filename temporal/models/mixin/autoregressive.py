@@ -1,39 +1,29 @@
 import torch
 import torch.nn as nn
-
+import logging
 from typing import Any, Dict, List, Optional, Union
 
-# assume these live somewhere in your codebase
-from temporal.models.mixin.autoregressive_patch import AutoregressivePatchMixin
-from temporal.models.mixin.autoregressive_stepwise import AutoregressiveStepwiseMixin
-
-import logging
+# Assume these are correctly imported
+from .autoregressive_patch import AutoregressivePatchMixin
+from .autoregressive_stepwise import AutoregressiveStepwiseMixin
 
 logger = logging.getLogger(__name__)
 
 class AutoregressiveDispatchMixin:
     """
-    Dispatch between patch‐based and stepwise generation based on config.
+    A mixin that dynamically dispatches calls to the correct implementation
+    (patch-based or stepwise) by inspecting the model's components at runtime.
     """
 
-    def generate(
-        self,
-        *args,
-        **kwargs
-    ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
+    def _is_patch_based(self) -> bool:
         """
-        If the model's value_embedding_config.type == "patch", delegate to
-        AutoregressivePatchMixin.generate; otherwise to AutoregressiveStepwiseMixin.generate.
+        Checks if the model is patch-based by inspecting its value_embedding module.
         """
-        # assume `self.config.value_embedding_config.type` exists
-        is_patch = hasattr(self.preprocessor.value_embedding, 'patch_size')
+        if not hasattr(self, 'preprocessor') or not hasattr(self.preprocessor, 'value_embedding'):
+            return False
+        # If the embedding module has a 'patch_size', we treat it as a patch model.
+        return hasattr(self.preprocessor.value_embedding, 'patch_size')
 
-        if is_patch:
-            # call the patch‐based generator
-            return super(AutoregressivePatchMixin, self).generate(*args, **kwargs)
-        else:
-            # call the stepwise generator
-            return super(AutoregressiveStepwiseMixin, self).generate(*args, **kwargs)
     @torch.no_grad()
     def forecast(
         self,
@@ -43,22 +33,34 @@ class AutoregressiveDispatchMixin:
     ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
         A user-friendly, dispatching forecast method.
-
-        It checks the model's configuration and calls the appropriate forecast
-        implementation from either the Patch or Stepwise mixin.
         """
-        # Determine the generation type from the model's config
-        is_patch = hasattr(self.preprocessor.value_embedding, 'patch_size')
-
-        if is_patch:
+        if self._is_patch_based():
             logger.info("Patch-based model detected. Dispatching to AutoregressivePatchMixin.forecast.")
-            # Explicitly call the forecast method from the Patch mixin
+            # CORRECT WAY: Call the parent method directly by name
             return AutoregressivePatchMixin.forecast(
                 self, inputs=inputs, prediction_length=prediction_length, **kwargs
             )
         else:
             logger.info("Stepwise model detected. Dispatching to AutoregressiveStepwiseMixin.forecast.")
-            # Explicitly call the forecast method from the Stepwise mixin
+            # CORRECT WAY: Call the parent method directly by name
             return AutoregressiveStepwiseMixin.forecast(
                 self, inputs=inputs, prediction_length=prediction_length, **kwargs
             )
+
+    @torch.no_grad()
+    def generate(
+        self,
+        *args,
+        **kwargs
+    ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
+        """
+        Dispatches the expert-level `generate` call to the correct implementation.
+        """
+        if self._is_patch_based():
+            logger.info("Patch-based model detected. Dispatching to AutoregressivePatchMixin.generate.")
+            # CORRECT WAY: Call the parent method directly by name
+            return AutoregressivePatchMixin.generate(self, *args, **kwargs)
+        else:
+            logger.info("Stepwise model detected. Dispatching to AutoregressiveStepwiseMixin.generate.")
+            # CORRECT WAY: Call the parent method directly by name
+            return AutoregressiveStepwiseMixin.generate(self, *args, **kwargs)
