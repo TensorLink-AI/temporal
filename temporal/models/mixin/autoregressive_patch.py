@@ -152,7 +152,7 @@ class AutoregressivePatchMixin:
         # --- Step 3: Autoregressively generate patch embeddings ---
         for _ in range(num_patches_to_generate):
             input_patches_for_step = decoder_sequence_patches[:, -1:, :] if use_cache and past_key_values else decoder_sequence_patches
-            past_kv_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+            past_kv_length = past_key_values[0][0][0].shape[2] if past_key_values is not None else 0
             
             processed_decoder = self.preprocessor._prepare_decoder_inputs_for_generation(
                 patch_embeds=input_patches_for_step,

@@ -228,7 +228,7 @@ class AutoregressiveStepwiseMixin:
 
         # Step 3: Autoregressive Loop
         for _ in range(prediction_length):
-            past_kv_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+            past_kv_length = past_key_values[0][0][0].shape[2] if past_key_values is not None else 0
 
             processed_decoder = self.preprocessor.process(
                 input_values=decoder_inputs[:, -1:, :] if use_cache and past_key_values is not None else decoder_inputs,
