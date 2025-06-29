@@ -121,7 +121,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
             hidden_states = layer_outputs.hidden_states
 
             if use_cache:
-                 next_decoder_cache.append(layer_outputs.past_key_value)
+                 next_decoder_cache.append(layer_outputs.past_key_values)
 
             if output_attentions:
                  if layer_outputs.self_attention_weights is not None:
