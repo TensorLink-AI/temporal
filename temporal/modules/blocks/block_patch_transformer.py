@@ -146,6 +146,8 @@ class PatchTransformBlock(nn.Module):
                 f"Unsupported output type from transformer_layer: {type(layer_output)}. "
                 f"Expected torch.Tensor, or object with 'last_hidden_state'/'hidden_states' attribute."
             )
+        merged_output = self.patch_merging(x_processed)
+
         # 4. Merge patches back
         aux_hidden_states = None 
         self_attention_weights = None
