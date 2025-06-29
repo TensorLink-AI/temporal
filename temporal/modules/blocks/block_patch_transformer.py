@@ -147,29 +147,54 @@ class PatchTransformBlock(nn.Module):
                 f"Expected torch.Tensor, or object with 'last_hidden_state'/'hidden_states' attribute."
             )
         # 4. Merge patches back
-        merged_output = self.patch_merging(x_processed)
+        aux_hidden_states = None 
+        self_attention_weights = None
+        cross_attention_weights = None
+        past_key_value = None # Singular name
+        aux_loss = None
 
-        hidden_states_out = None
-        attentions_out = None
-        cross_attentions_out = None
-        past_key_values_out = None # Should be None due to NotImplementedError
+        # Try to extract auxiliary info from inner layer's output (`layer_output`)
+        # Use hasattr and getattr for robustness against different layer_output types
+        # and to handle cases where outputs are not requested (and thus None).
 
-        # Try to extract auxiliary info if layer_output was a structured object
-        if hasattr(layer_output, 'hidden_states'):
-            hidden_states_out = layer_output.hidden_states
-        if hasattr(layer_output, 'attentions'):
-            attentions_out = layer_output.attentions
-        if hasattr(layer_output, 'cross_attentions'):
-            cross_attentions_out = layer_output.cross_attentions
-        if hasattr(layer_output, 'past_key_values'):
-            past_key_values_out = layer_output.past_key_values # Will be None if NotImplementedError triggered
+        # Main hidden_states will be the merged_output. Aux_hidden_states are intermediates.
+        aux_hidden_states = getattr(layer_output, 'hidden_states', None)
 
-        return BaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=merged_output, # The processed main hidden state
-            hidden_states=hidden_states_out,
-            attentions=attentions_out,
-            cross_attentions=cross_attentions_out,
-            past_key_values=past_key_values_out
+        # Attention weights mapping: layer_output might have 'attentions' (plural)
+        # or 'self_attention_weights' (singular)
+        if hasattr(layer_output, 'attentions') and layer_output.attentions is not None:
+            # If attentions is a tuple of (self_attn, cross_attn), assume first is self_attn
+            if isinstance(layer_output.attentions, tuple) and len(layer_output.attentions) > 0:
+                self_attention_weights = layer_output.attentions[0]
+            else: # If it's a single tensor or not a tuple, assume it's self-attention
+                self_attention_weights = layer_output.attentions
+        elif hasattr(layer_output, 'self_attention_weights'):
+            self_attention_weights = layer_output.self_attention_weights
+
+        # Cross-attention weights mapping
+        if hasattr(layer_output, 'cross_attentions') and layer_output.cross_attentions is not None:
+            if isinstance(layer_output.cross_attentions, tuple) and len(layer_output.cross_attentions) > 0:
+                cross_attention_weights = layer_output.cross_attentions[0]
+            else:
+                cross_attention_weights = layer_output.cross_attentions
+        elif hasattr(layer_output, 'cross_attention_weights'):
+            cross_attention_weights = layer_output.cross_attention_weights
+        
+        # Past Key Values mapping (singular 'past_key_value' expected by DecoderLayerOutput)
+        if hasattr(layer_output, 'past_key_values') and layer_output.past_key_values is not None: # From BaseModelOutput... (plural)
+            past_key_value = layer_output.past_key_values
+        elif hasattr(layer_output, 'past_key_value') and layer_output.past_key_value is not None: # From custom/other layers (singular)
+            past_key_value = layer_output.past_key_value
+
+        # Auxiliary Loss mapping
+        aux_loss = getattr(layer_output, 'aux_loss', None)
+
+        return DecoderLayerOutput(
+            hidden_states=merged_output, # The processed main hidden state after patch merging
+            self_attention_weights=self_attention_weights,
+            cross_attention_weights=cross_attention_weights,
+            past_key_value=past_key_value, 
+            aux_loss=aux_loss
         )
 
     def forward_merge_first(self, hidden_states, attention_mask, **kwargs):
@@ -209,25 +234,42 @@ class PatchTransformBlock(nn.Module):
             )
         split_output = self.patch_splitting(x_processed)
 
-        hidden_states_out = None
-        attentions_out = None
-        cross_attentions_out = None
-        past_key_values_out = None # Should be None due to NotImplementedError
+        aux_hidden_states = None 
+        self_attention_weights = None
+        cross_attention_weights = None
+        past_key_value = None 
+        aux_loss = None
 
-        # Try to extract auxiliary info if layer_output was a structured object
-        if hasattr(layer_output, 'hidden_states'):
-            hidden_states_out = layer_output.hidden_states
-        if hasattr(layer_output, 'attentions'):
-            attentions_out = layer_output.attentions
-        if hasattr(layer_output, 'cross_attentions'):
-            cross_attentions_out = layer_output.cross_attentions
-        if hasattr(layer_output, 'past_key_values'):
-            past_key_values_out = layer_output.past_key_values # Will be None if NotImplementedError triggered
+        # Try to extract auxiliary info from inner layer's output (`layer_output`)
+        aux_hidden_states = getattr(layer_output, 'hidden_states', None)
 
-        return BaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=split_output , # The processed main hidden state
-            hidden_states=hidden_states_out,
-            attentions=attentions_out,
-            cross_attentions=cross_attentions_out,
-            past_key_values=past_key_values_out
+        if hasattr(layer_output, 'attentions') and layer_output.attentions is not None:
+            if isinstance(layer_output.attentions, tuple) and len(layer_output.attentions) > 0:
+                self_attention_weights = layer_output.attentions[0]
+            else:
+                self_attention_weights = layer_output.attentions
+        elif hasattr(layer_output, 'self_attention_weights'):
+            self_attention_weights = layer_output.self_attention_weights
+
+        if hasattr(layer_output, 'cross_attentions') and layer_output.cross_attentions is not None:
+            if isinstance(layer_output.cross_attentions, tuple) and len(layer_output.cross_attentions) > 0:
+                cross_attention_weights = layer_output.cross_attentions[0]
+            else:
+                cross_attention_weights = layer_output.cross_attentions
+        elif hasattr(layer_output, 'cross_attention_weights'):
+            cross_attention_weights = layer_output.cross_attention_weights
+        
+        if hasattr(layer_output, 'past_key_values') and layer_output.past_key_values is not None:
+            past_key_value = layer_output.past_key_values 
+        elif hasattr(layer_output, 'past_key_value') and layer_output.past_key_value is not None:
+            past_key_value = layer_output.past_key_value
+
+        aux_loss = getattr(layer_output, 'aux_loss', None)
+
+        return DecoderLayerOutput(
+            hidden_states=split_output, # The processed main hidden state after patch splitting
+            self_attention_weights=self_attention_weights,
+            cross_attention_weights=cross_attention_weights,
+            past_key_value=past_key_value,
+            aux_loss=aux_loss
         )
