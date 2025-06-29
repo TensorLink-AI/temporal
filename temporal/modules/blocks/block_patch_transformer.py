@@ -174,7 +174,20 @@ class PatchTransformBlock(nn.Module):
         )
 
         # 4. Split patches back
-        x_processed = layer_output[0] if isinstance(layer_output, tuple) else layer_output
+        x_processed = None
+        if isinstance(layer_output, torch.Tensor):
+            x_processed = layer_output
+        elif hasattr(layer_output, 'last_hidden_state') and layer_output.last_hidden_state is not None:
+            x_processed = layer_output.last_hidden_state 
+        elif hasattr(layer_output, 'hidden_states') and layer_output.hidden_states is not None:
+            x_processed = layer_output.hidden_states
+        elif isinstance(layer_output, tuple) and len(layer_output) > 0 and isinstance(layer_output[0], torch.Tensor):
+            x_processed = layer_output[0]
+        else:
+            raise TypeError(
+                f"Unsupported output type from transformer_layer: {type(layer_output)}. "
+                f"Expected torch.Tensor, or object with 'last_hidden_state'/'hidden_states' attribute."
+            )
         split_output = self.patch_splitting(x_processed)
 
         if isinstance(layer_output, tuple):
