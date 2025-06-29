@@ -268,6 +268,13 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             self.config.architecture.layout == "decoder" 
         ):
             num_target_steps = targets.size(1)
+
+            # This check is crucial for catching data pipeline issues
+            if input_to_heads.shape[1] < num_target_steps:
+                 raise ValueError(
+                     f"Input to heads ({input_to_heads.shape[1]} steps) is shorter than targets ({num_target_steps} steps). "
+                     f"Cannot align for loss calculation. Ensure your decoder_inputs or model's effective output length in 'forward' covers your targets."
+                 )
             input_to_heads = input_to_heads[:, -num_target_steps:, :]
         
         # Step 5: Project the final hidden states through the output head(s).
