@@ -9,6 +9,7 @@ from temporal.registry.core import register_module
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.models.block_builder import BlockBuilder
 from temporal.configs.transformer_config import TransformerBlockConfig
+from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
 
 @register_module("block", "patch_transform_block")
 class PatchTransformBlock(nn.Module):
