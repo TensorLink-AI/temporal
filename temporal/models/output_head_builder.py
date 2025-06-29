@@ -42,6 +42,7 @@ class OutputHeadBuilder:
         head_config = self.config.output_head_config
         head_type = head_config.type
         head_class = resolve("output_head", head_type)
+        head_input_dim = getattr(self.config, 'feature_size', 1) 
 
         hidden_size = getattr(self.config, 'd_model', getattr(self.config, 'hidden_size', None))
         if hidden_size is None:
@@ -49,11 +50,12 @@ class OutputHeadBuilder:
 
         # Determine the required output_size based on the head type.
         output_size = self._calculate_output_size(head_type, head_config)
+        final_hidden_size_for_head = head_input_dim
 
         # Prepare arguments for the head's constructor.
         # We start with the essential ones and add others from the config's kwargs.
         init_args = {
-            "hidden_size": hidden_size,
+            "hidden_size": final_hidden_size_for_head,
             "output_size": output_size,
             "num_quantiles": getattr(self.config, 'num_quantiles', None),
             "feature_size": getattr(self.config, 'feature_size', 1),
