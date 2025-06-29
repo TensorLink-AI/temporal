@@ -49,8 +49,9 @@ class OutputHeadBuilder:
             raise ValueError("Config must specify 'd_model' or 'hidden_size'.")
 
         # Determine the required output_size based on the head type.
-        output_size = self._calculate_output_size(head_type, head_config)
-        if hasattr(self.config.value_embedding_config.kwargs , 'patch_size'): 
+        output_size = self._calculate_output_size(head_type, head_config) 
+
+        if 'patch_size' in self.config.value_embedding_config.kwargs: 
           final_hidden_size_for_head = head_input_dim
 
         else: 
