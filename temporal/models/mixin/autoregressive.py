@@ -26,7 +26,7 @@ class AutoregressiveDispatchMixin:
         AutoregressivePatchMixin.generate; otherwise to AutoregressiveStepwiseMixin.generate.
         """
         # assume `self.config.value_embedding_config.type` exists
-        is_patch = getattr(self.config.value_embedding_config, "type", None) == "patch"
+        is_patch = hasattr(model.preprocessor.value_embedding, 'patch_size')
 
         if is_patch:
             # call the patch‐based generator
@@ -48,7 +48,7 @@ class AutoregressiveDispatchMixin:
         implementation from either the Patch or Stepwise mixin.
         """
         # Determine the generation type from the model's config
-        is_patch = getattr(self.config.value_embedding_config, "type", None) == "patch"
+        is_patch = hasattr(model.preprocessor.value_embedding, 'patch_size')
 
         if is_patch:
             logger.info("Patch-based model detected. Dispatching to AutoregressivePatchMixin.forecast.")
