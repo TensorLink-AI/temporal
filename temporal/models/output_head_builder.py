@@ -52,7 +52,7 @@ class OutputHeadBuilder:
         output_size = self._calculate_output_size(head_type, head_config) 
 
         if 'patch_size' in self.config.value_embedding_config.kwargs: 
-          final_hidden_size_for_head = hidden_size
+          final_hidden_size_for_head = head_input_dim
 
         else: 
           final_hidden_size_for_head = hidden_size
