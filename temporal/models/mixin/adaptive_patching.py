@@ -1,8 +1,53 @@
 
 import torch
 import torch.nn as nn
+ 
 
+class MLP(nn.Module):
+    """
+    A simple 2-layer Multi-Layer Perceptron (MLP) with ReLU activation and Dropout.
+    Used for non-linear transformations within modules like PatchSplitting and PatchMerging.
+    """
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        dropout_prob: float = 0.1, # Common dropout probability
+        activation_fn: nn.Module = nn.ReLU(),
+    ):
+        """
+        Initializes the MLP.
 
+        Args:
+            input_dim (int): The dimensionality of the input features.
+            hidden_dim (int): The dimensionality of the hidden layer.
+            output_dim (int): The dimensionality of the output features.
+            dropout_prob (float): Dropout probability applied after the hidden layer.
+            activation_fn (nn.Module): The activation function to use between layers.
+        """
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.activation_fn = activation_fn
+        self.dropout = nn.Dropout(dropout_prob)
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Performs the forward pass through the MLP.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape `[B, ..., input_dim]`.
+
+        Returns:
+            torch.Tensor: Output tensor of shape `[B, ..., output_dim]`.
+        """
+        x = self.fc1(x)
+        x = self.activation_fn(x)
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x
+        
 class PatchSplitting(nn.Module):
     """
     Adaptive Patching: Increase number of patches and decrease feature dim.
