@@ -240,7 +240,8 @@ class DistPredHead(BaseOutputHead):
         if self.feature_size > 1:
             return projected_output.view(*projected_output.shape[:-1], self.feature_size, self.num_outputs)
         else:
-            return projected_output
+            return projected_output.view(*projected_output.shape[:-1], self.feature_size, self.num_outputs) # projected_output
+
 
     def predict(
             self,
