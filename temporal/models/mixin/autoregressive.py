@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Union
 from temporal.models.mixin.autoregressive_patch import AutoregressivePatchMixin
 from temporal.models.mixin.autoregressive_stepwise import AutoregressiveStepwiseMixin
 
+import logging
 
 import torch
 import torch.nn as nn
