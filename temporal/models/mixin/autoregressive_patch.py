@@ -60,13 +60,21 @@ class AutoregressivePatchMixin:
     @torch.no_grad()
     def generate(
         self,
-        encoder_inputs: torch.Tensor,
-        prediction_length: int,
+        encoder_inputs: Optional[torch.Tensor] = None,
+        decoder_inputs: Optional[torch.Tensor] = None,
+        prediction_length: int = 0,
         attention_mask: Optional[torch.Tensor] = None,
         decoder_attention_mask: Optional[torch.Tensor] = None,
         use_cache: bool = True,
+        decoder_start_token_id: Optional[Any] = None,
+        eos_token_id: Optional[Any] = None,
+        early_stopping: bool = False,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
+        prediction_strategy: Optional[Union[str, float, int]] = None,
+        quantile_levels: Optional[List[float]] = None,
+        validate_shapes: bool = True,
+        verbose: bool = True,
         **kwargs,
     ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """

@@ -8,7 +8,7 @@ class MultiStepMixin:
     """
 
     @torch.no_grad()
-    def generate(
+    def generate_multistep(
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
