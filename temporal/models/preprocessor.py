@@ -40,6 +40,7 @@ class InputPreprocessor(nn.Module):
         self.patch_stride = self.value_embedding.stride if self.is_patched else 1 
         # It's assumed TimeSeriesPatchEmbedding has a 'pad_value' attribute.
         self.embedding_pad_value = getattr(self.value_embedding, 'pad_value', 0.0)
+        print(f"[InputPreprocessor __init__] self.patch_size: {self.patch_size}") # ADD THIS
 
 
     def process(
