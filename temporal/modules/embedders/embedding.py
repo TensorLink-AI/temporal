@@ -331,29 +331,14 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
             torch.Tensor: Output tensor of shape [B, num_patches, d_model].
         """
         B, L, F = x.shape
-        if F != self.feature_size:
-            raise ValueError(f"Expected feature_size={self.feature_size}, got={F}")
-
-        # Compute padding length for stride compatibility
-        if L < self.patch_size:
-            pad_len = self.patch_size - L
-        else:
-            rem = (L - self.patch_size) % self.stride
-            pad_len = (self.stride - rem) if rem else 0
-
-        # Apply padding if needed
-        if pad_len > 0:
-            pad = x.new_full((B, pad_len, F), self.pad_value)
-            x = torch.cat([x, pad], dim=1)
-            L += pad_len
-
-        # Unfold into patches: shape [B, P, patch_size, F]
-        patches = x.unfold(1, self.patch_size, self.stride)
-        B, P, p, F = patches.shape
-        flat = patches.contiguous().view(B, P, self.flat_size)
+        if F != self.flat_size:
+            raise ValueError(
+                f"Input tensor has last dimension {x.shape[-1]}, but the embedding "
+                f"layer expects flattened patches of size {self.flat_size}."
+            )
 
         # Flatten for projection/MLP: [B*P, flat_size]
-        flat_2d = flat.view(B * P, -1)
+        flat_2d = flat.view(B * L, -1)
 
         # Apply embedder
         if self.use_mlp:
@@ -362,7 +347,7 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
             out = self.proj(flat_2d)
 
         # Reshape back: [B, P, d_model]
-        return out.view(B, P, self.d_model)
+        return out.view(B, L, self.d_model)
 
 
 # -----------------------------
