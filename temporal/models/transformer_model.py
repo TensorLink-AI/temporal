@@ -113,7 +113,24 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         self.output_heads = output_heads
         self.head_aggregator = head_aggregator
 
-        self.patch_merger = None
+        self.patch_merger = None # Start as None
+        #  partion this out eventually to make it cleaner
+        if self.preprocessor.is_patched:
+
+            use_mlp        =  getattr(self.preprocessor.value_embedding, 'use_mlp', False) 
+            mlp_hidden_size    = getattr(self.preprocessor.value_embedding, ' mlp_hidden_size',None) or (P * 2)
+            p_out          = self.config.prediction_length
+            num_patches = config.context_length // self.preprocessor.patch_size
+            prediction_len = config.prediction_length
+
+            if use_mlp:
+                self.patch_merger = nn.Sequential(
+                    nn.Linear(num_patches, mlp_hidden_size),
+                    nn.ReLU(),
+                    nn.Linear(mlp_hidden_size, prediction_len)
+                )
+            else:
+                self.patch_merger = nn.Linear(num_patches, prediction_len)
         
         # 5. Loss function is not a module, but we assign it here.
         self.loss_fn = loss_fn
@@ -239,29 +256,8 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         
         # CORRECTED Step 4: Apply patch merger BEFORE the output head.
         # ─── Step 4: Merge or Expand Patch Tokens ───
-        if hasattr(self.preprocessor.value_embedding, 'patch_size'):
-            B, P, D = input_to_heads.shape
-            device = input_to_heads.device
+        if self.preprocessor.is_patched:
 
-            # read your config flags
-            use_mlp        =  getattr(self.preprocessor.value_embedding, 'use_mlp', False) 
-            hidden_size    = getattr(self.preprocessor.value_embedding, ' mlp_hidden_size',None) or (P * 2)
-            p_out          = self.config.prediction_length
-
-            # lazy‐init the merger
-            if self.patch_merger is None:
-                if use_mlp:
-                    # 2‐layer MLP: P → hidden_size → p_out
-                    self.patch_merger = nn.Sequential(
-                        nn.Linear(P,          hidden_size, bias=True),
-                        nn.ReLU(),
-                        nn.Linear(hidden_size, p_out,       bias=True),
-                    ).to(device)
-                else:
-                    # simple linear: P → p_out
-                    self.patch_merger = nn.Linear(P, p_out, bias=False).to(device)
-
-            # apply it across the patch axis
             # 1) bring patches into last dim: [B, P, D] → [B, D, P]
             x = input_to_heads.transpose(1, 2)
 
