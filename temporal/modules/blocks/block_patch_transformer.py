@@ -148,7 +148,7 @@ class PatchTransformBlock(nn.Module):
         # 4. Merge patches back
         merged_output = self.patch_merging(x_processed)
 
-                hidden_states_out = None
+        hidden_states_out = None
         attentions_out = None
         cross_attentions_out = None
         past_key_values_out = None # Should be None due to NotImplementedError
