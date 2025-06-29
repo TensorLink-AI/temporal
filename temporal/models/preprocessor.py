@@ -74,37 +74,38 @@ class InputPreprocessor(nn.Module):
         # This padding ensures input_values length is suitable for TimeSeriesPatchEmbedding's unfold operation.
         # TimeSeriesPatchEmbedding also has internal padding logic, but this pre-padding helps align.
         pad_len_for_value_embedding = 0
+
         if self.is_patched:
-            remainder = original_seq_len % self.patch_stride # Use stride for padding calculation
-            if remainder != 0:
-                # Calculate padding needed to make it compatible with stride for unfold
-                # (L - patch_size) % stride == 0 -> L_new = patch_size + k*stride
-                # To get enough patches, L_new >= original_seq_len.
-                # Simplest way is to pad such that (L - self.patch_size) is a multiple of stride
-                
-                # The length after padding must be `P + k*S` for some integer k, where P is patch_size, S is stride.
-                # If L is current length, we need L_target such that L_target >= L and (L_target - P) % S == 0.
-                
-                # A robust way is to compute the number of patches needed, then the total length.
-                # num_patches_needed = (original_seq_len - self.patch_size + self.patch_stride - 1) // self.patch_stride + 1
-                # If original_seq_len is already less than patch_size, we need to pad to patch_size.
-                if original_seq_len < self.patch_size:
-                    min_len_for_patches = self.patch_size
-                else:
-                    # Calculate how many full strides beyond the first patch are needed
-                    required_strides = (original_seq_len - self.patch_size + self.patch_stride - 1) // self.patch_stride
-                    min_len_for_patches = self.patch_size + required_strides * self.patch_stride
-                
-                pad_len_for_value_embedding = min_len_for_patches - original_seq_len
-                
-                if pad_len_for_value_embedding > 0:
-                    input_values = nn.functional.pad(
-                        input_values, (0, 0, 0, pad_len_for_value_embedding), value=self.embedding_pad_value
-                    )
-                    if verbose: print(f"[Preprocessor] Padded input for patching (pre-value_embedding): {input_values.shape}")
-        
+            # This logic correctly handles multivariate time series.
+            # input_values shape: [B, T, F]
+            
+            # 1. Transpose to bring feature dimension forward for patching
+            # Shape: [B, F, T]
+            x = input_values.transpose(1, 2)
+
+            # 2. Unfold along the time dimension (now dimension 2)
+            # This creates overlapping windows (patches).
+            # Shape: [B, F, NumPatches, PatchSize]
+            patches = x.unfold(2, self.patch_size, self.patch_stride)
+            if verbose: print(f"[Preprocessor] Unfolded patches shape: {patches.shape}")
+
+            # 3. Permute to bring NumPatches forward and group patch dimensions
+            # Shape: [B, NumPatches, F, PatchSize]
+            patches = patches.permute(0, 2, 1, 3)
+
+            # 4. Flatten the last two dimensions (F and PatchSize)
+            # This creates the flat patch vector that the embedding layer expects.
+            B, N, F, P = patches.shape
+            input_for_embedding = patches.reshape(B, N, F * P)
+            if verbose: print(f"[Preprocessor] Flattened patches for embedding shape: {input_for_embedding.shape}")
+
+        else:
+            # For non-patched models, pass the input directly.
+            input_for_embedding = input_values
+
+
         # --- Value and Positional Embedding ---
-        value_embeds = self.value_embedding(input_values) # TimeSeriesPatchEmbedding handles its own internal padding if needed
+        value_embeds = self.value_embedding( input_for_embedding) # TimeSeriesPatchEmbedding handles its own internal padding if needed
         if verbose: print(f"[Preprocessor] Value embedding shape: {value_embeds.shape}")
         
         # The true sequence length for the transformer is derived from the value_embeds
@@ -126,56 +127,13 @@ class InputPreprocessor(nn.Module):
         hidden_states = self.dropout(hidden_states)
         if verbose: print(f"[Preprocessor] Final hidden_states shape: {hidden_states.shape}")
 
-        # --- Attention Mask Creation ---
-        processed_attention_mask = None
-        if attention_mask is not None:
-            # 1. Convert original attention_mask to boolean for unfolding
-            # Assume attention_mask is 1 for valid, 0 for padded
-            bool_mask = attention_mask.to(torch.bool) # Shape [B, T_original]
-
-            # 2. Pad the boolean mask identically to how input_values was padded before value_embedding
-            if pad_len_for_value_embedding > 0:
-                pad_zeros = torch.zeros(batch_size, pad_len_for_value_embedding, 
-                                        device=attention_mask.device, dtype=torch.bool)
-                bool_mask = torch.cat([bool_mask, pad_zeros], dim=1) # Shape [B, T_padded_pre_embedding]
-            
-            # 3. Apply unfold to the padded boolean mask
-            # This simulates the patching on the mask
-            # The length of bool_mask should now match the length of input_values passed to value_embedding
-            if bool_mask.shape[1] < self.patch_size:
-                # If the sequence is shorter than a patch, it's a single "patch" (which might be entirely padded)
-                # In this case, unfolding will fail or yield unexpected results.
-                # A single patch is formed, its validity depends on the original data.
-                # Simplification: If all original tokens were masked, the patch is masked.
-                patch_mask_bool = bool_mask.any(dim=-1).unsqueeze(-1) # [B, 1]
-            else:
-                patch_bool = bool_mask.unfold(dimension=1, size=self.patch_size, step=self.patch_stride)
-                # Shape: [B, num_patches, patch_size]
-            
-                # 4. A patch is "valid" if **any** of its positions are valid (True)
-                patch_mask_bool = patch_bool.any(dim=-1) # Shape: [B, num_patches]
-
-            # 5. Convert back to the original attention_mask's dtype
-            processed_attention_mask = patch_mask_bool.to(attention_mask.dtype)
-            
-            # Runtime validation: Ensure the generated mask length matches the embedded sequence length
-            if validate_shapes:
-                assert processed_attention_mask.shape[1] == seq_len_after_patching, \
-                    f"Mismatch between generated patch mask length ({processed_attention_mask.shape[1]}) " \
-                    f"and embedded sequence length ({seq_len_after_patching}). Check patching logic."
-            
-            if verbose: print(f"[Preprocessor] Processed attention mask shape (2D): {processed_attention_mask.shape}")
-            
         final_attention_mask = self._prepare_attention_mask(
-            processed_attention_mask, # This mask is now correctly aligned with seq_len_after_patching
-            (batch_size_embed, seq_len_after_patching), # Use actual embedded sequence dimensions
+            attention_mask,
+            (batch_size_embed, seq_len_after_patching),
             hidden_states,
             past_key_values_length,
             is_causal=is_causal,
         )
-        if verbose and final_attention_mask is not None: 
-            print(f"[Preprocessor] Final attention mask shape (4D): {final_attention_mask.shape}")
-
         return {
             "hidden_states": hidden_states,
             "attention_mask": final_attention_mask,
@@ -184,59 +142,29 @@ class InputPreprocessor(nn.Module):
 
     def _prepare_attention_mask(
         self,
-        attention_mask: Optional[torch.Tensor], # 2D mask (1=valid, 0=padded) aligned with embedded sequence length
-        input_shape: Tuple[int, int], # (batch_size, sequence_length_after_embedding)
+        attention_mask: Optional[torch.Tensor],
+        input_shape: Tuple[int, int],
         inputs_embeds: torch.Tensor,
         past_key_values_length: int,
         is_causal: bool,
     ) -> Optional[torch.Tensor]:
-        """
-        Creates a 4D attention mask, optionally causal.
-
-        Args:
-            attention_mask (Optional[torch.Tensor]): A 2D padding mask. Shape `[B, S_embedded]`,
-                                                    where `1` indicates a valid token and `0` indicates padding.
-                                                    This mask should already be aligned with `input_shape[1]`.
-            input_shape (Tuple[int, int]): The shape of the sequence (batch_size, sequence_length_after_embedding).
-            inputs_embeds (torch.Tensor): The input embeddings (used for dtype and device).
-            past_key_values_length (int): The length of the past key values.
-            is_causal (bool): Whether to create a causal mask.
-
-        Returns:
-            Optional[torch.Tensor]: The final 4D attention mask (0 for valid, -inf for masked).
-        """
+        """Creates a 4D attention mask, handling patching internally."""
         bsz, seq_len = input_shape
         final_mask = None
-
+        
         if is_causal:
-            final_mask = self._make_causal_mask(
-                (bsz, seq_len), 
-                inputs_embeds.dtype,
-                device=inputs_embeds.device,
-                past_key_values_length=past_key_values_length,
-            )
-
+            final_mask = self._make_causal_mask((bsz, seq_len), inputs_embeds.dtype, device=inputs_embeds.device, past_key_values_length=past_key_values_length)
+        
         if attention_mask is not None:
-            # Validate that the provided attention_mask matches the expected sequence length
-            if attention_mask.shape[1] != seq_len:
-                 raise ValueError(
-                    f"Input `attention_mask` has length {attention_mask.shape[1]} "
-                    f"but expected length {seq_len} based on embedded sequence. "
-                    "Ensure `attention_mask` is correctly prepared (e.g., via `unfold` if patching) "
-                    "before being passed to `_prepare_attention_mask`."
-                )
-
-            # Convert 2D (1=valid, 0=padded) mask to 4D (0=valid, -inf=padded) mask
-            expanded_padding_mask = self._expand_mask(
-                attention_mask, inputs_embeds.dtype, tgt_len=seq_len
-            ).to(inputs_embeds.device)
-            
-            if final_mask is None:
-                final_mask = expanded_padding_mask
+            if self.is_patched:
+                # A patch is considered valid if ANY of its original time steps were valid.
+                patch_mask_bool = attention_mask.unfold(1, self.patch_size, self.patch_stride).any(dim=-1)
+                processed_mask = patch_mask_bool.to(attention_mask.dtype)
             else:
-                # Combine causal mask (0 or -inf) with padding mask (0 or -inf)
-                # Adding them correctly combines the masking effects (max(-inf, -inf) = -inf; max(0, -inf) = 0)
-                final_mask = final_mask + expanded_padding_mask
+                processed_mask = attention_mask
+
+            expanded_padding_mask = self._expand_mask(processed_mask, inputs_embeds.dtype, tgt_len=seq_len).to(inputs_embeds.device)
+            final_mask = expanded_padding_mask if final_mask is None else final_mask + expanded_padding_mask
 
         return final_mask
 
