@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+
 from typing import Any, Dict, List, Optional, Union
 
 # assume these live somewhere in your codebase
@@ -7,9 +9,7 @@ from temporal.models.mixin.autoregressive_stepwise import AutoregressiveStepwise
 
 import logging
 
-import torch
-import torch.nn as nn
-from typing import Any, Dict, List, Optional, Union
+logger = logging.getLogger(__name__)
 
 class AutoregressiveDispatchMixin:
     """
