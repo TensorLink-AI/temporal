@@ -236,8 +236,7 @@ class DistPredHead(BaseOutputHead):
             torch.Tensor: Output tensor of shape `[B, T, feature_size, num_outputs]`
             or `[B, T, num_outputs]` for the univariate case.
         """
-        print(f"DEBUG_CRPS_OUTER: preds shape entering crps_ensemble: {preds.shape}")
-        print(f"DEBUG_CRPS_OUTER: targets shape entering crps_ensemble: {targets.shape}")
+
         
         projected_output = self.proj(x)
         if self.feature_size > 1:
