@@ -150,6 +150,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         attention_mask: Optional[torch.Tensor] = None,
         decoder_attention_mask: Optional[torch.Tensor] = None,
         targets: Optional[torch.Tensor] = None,
+        loss_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -171,6 +172,8 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                 the decoder inputs, shape `[B, L_dec]`.
             targets (Optional[torch.Tensor]): The ground truth values for loss
                 calculation, shape `[B, L_dec, F_out]`.
+            loss_mask (Optional[torch.Tensor]): An optional mask to apply to the loss
+                calculation. Its shape should be broadcastable to the shape of `logits`.
             past_key_values (Optional[Tuple]): A cache of key-value states for
                 efficient autoregressive decoding.
             use_cache (Optional[bool]): If True, the model will return the
@@ -252,6 +255,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         # CORRECTED Step 4: Apply patch merger BEFORE the output head.
         # ─── Step 4: Merge or Expand Patch Tokens ───
         if self.preprocessor.is_patched:
+            
 
             projected_patches = self.patch_merger(input_to_heads)
             B, P, _ = projected_patches.shape
@@ -297,7 +301,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             if self.loss_fn is None:
                 raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
             
-            loss = self.loss_fn(logits, targets)
+            loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
 
             if total_aux_loss is not None:
                 # Ensure aux loss is a scalar before adding

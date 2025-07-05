@@ -14,7 +14,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.nn.utils import clip_grad_norm_
 
 # Local project imports - assuming this script is run from the project root
-from temporal.configs.transformer_config import TransformerTimeSeriesConfig, TransformerBlockConfig, AttentionConfig, FeedForwardConfig, EmbeddingConfig, OutputHeadConfig
+from temporal.configs.transformer_config import TransformerTimeSeriesConfig, TransformerBlockConfig, AttentionConfig, FeedForwardConfig, EmbeddingConfig, OutputHeadConfig, TransformerArchitectureConfig
 from temporal.models.builder import build_time_series_transformer
 
 # --- Synthetic Data Generation ---
@@ -26,7 +26,7 @@ def generate_synthetic_data_list(num_series=500, min_len=150, max_len=300, noise
     data_list = []
     base_date = datetime(2023, 1, 1)
     for i in range(num_series):
-        seq_length = np.random.randint(min_len, max_len + 1)
+    does     seq_length = np.random.randint(min_len, max_len + 1)
         t = np.linspace(0, 4 * np.pi, seq_length)
         amp = np.random.rand() * 2 + 0.5
         freq = np.random.rand() * 0.5 + 0.5
@@ -72,21 +72,35 @@ class TimeSeriesIterableDataset(IterableDataset):
                 }
 
 def timeseries_collate_fn(batch):
-    """Custom collate function to handle time series batches."""
+    """
+    Custom collate function for an encoder-decoder architecture.
+    """
     if not batch:
         return None
 
-    # Assuming input_ids and labels are 1D tensors of lengths context_length and prediction_length
-    input_ids = torch.stack([item['input_ids'] for item in batch]).unsqueeze(-1) # Shape: [B, T, 1]
-    labels = torch.stack([item['labels'] for item in batch]) # Shape: [B, P]
+    # Encoder gets the historical context
+    encoder_inputs = torch.stack([item['input_ids'] for item in batch]).unsqueeze(-1) # Shape: [B, T_ctx, 1]
+    
+    # Labels are the future values we want to predict
+    labels = torch.stack([item['labels'] for item in batch]) # Shape: [B, T_pred]
 
-    # Create a basic attention mask (1 for all tokens)
-    attention_mask = torch.ones(input_ids.shape[:-1], dtype=torch.long) # Shape: [B, T]
+    # Decoder input is the "shifted" version of the labels.
+    # A start-of-sequence token (zeros) is prepended, and the last label is dropped.
+    decoder_input_start = torch.zeros((labels.shape[0], 1), dtype=labels.dtype)
+    decoder_inputs = torch.cat([decoder_input_start, labels[:, :-1]], dim=1).unsqueeze(-1) # Shape: [B, T_pred, 1]
+
+    # Masks
+    encoder_attention_mask = torch.ones(encoder_inputs.shape[:-1], dtype=torch.long) # Shape: [B, T_ctx]
+    decoder_attention_mask = torch.ones(decoder_inputs.shape[:-1], dtype=torch.long) # Shape: [B, T_pred]
+    loss_mask = torch.ones_like(labels, dtype=torch.float) # Shape: [B, T_pred]
 
     return {
-        "input_ids": input_ids,
+        "encoder_inputs": encoder_inputs,
+        "decoder_inputs": decoder_inputs,
         "labels": labels,
-        "attention_mask": attention_mask
+        "encoder_attention_mask": encoder_attention_mask,
+        "decoder_attention_mask": decoder_attention_mask,
+        "loss_mask": loss_mask
     }
 
 # --- Model Configuration ---
@@ -96,13 +110,31 @@ NUM_HEADS = 8
 CONTEXT_LENGTH = 128
 PREDICTION_LENGTH = 64
 FEATURE_SIZE = 1 # Univariate
+NUM_ENCODER_LAYERS = 4
+NUM_DECODER_LAYERS = 4
+
+# Switched to a more powerful GLU-based feedforward network
+ffn_config = FeedForwardConfig(
+    type="glu", 
+    intermediate_size=HIDDEN_SIZE * 4, 
+    activation="gelu", 
+    dropout=0.1
+)
+
+encoder_blocks = [
+    TransformerBlockConfig(
+        block_type="default_encoder",
+        attention_config=AttentionConfig(attention_type="full", num_heads=NUM_HEADS, dropout=0.1, use_rope=True),
+        ffn_config=ffn_config,
+    ) for _ in range(NUM_ENCODER_LAYERS)
+]
 
 decoder_blocks = [
     TransformerBlockConfig(
         block_type="default_decoder",
         attention_config=AttentionConfig(attention_type="full", num_heads=NUM_HEADS, dropout=0.1, use_rope=True),
-        ffn_config=FeedForwardConfig(type="standard", intermediate_size=HIDDEN_SIZE * 4, activation="gelu", dropout=0.1),
-    ) for _ in range(8)
+        ffn_config=ffn_config,
+    ) for _ in range(NUM_DECODER_LAYERS)
 ]
 
 config = TransformerTimeSeriesConfig(
@@ -112,13 +144,19 @@ config = TransformerTimeSeriesConfig(
     context_length=CONTEXT_LENGTH,
     prediction_length=PREDICTION_LENGTH,
     d_model=HIDDEN_SIZE,
-    architecture=TransformerArchitectureConfig(layout="decoder", num_decoder_layers=len(decoder_blocks)),
+    # Switched to encoder-decoder architecture
+    architecture=TransformerArchitectureConfig(
+        layout="encoder-decoder", 
+        num_encoder_layers=len(encoder_blocks),
+        num_decoder_layers=len(decoder_blocks)
+    ),
+    encoder_blocks=encoder_blocks,
     decoder_blocks=decoder_blocks,
     value_embedding_config=EmbeddingConfig(type="value", kwargs={"feature_size": FEATURE_SIZE, "d_model": HIDDEN_SIZE}),
     positional_embedding_config=EmbeddingConfig(type="sinusoidal"),
     output_head_config=OutputHeadConfig(type="linear", output_size=FEATURE_SIZE),
     loss_config={"type": "mse"},
-    use_cache=True # Important for generation, but also good practice to have
+    use_cache=True
 )
 
 print("Building model...")
@@ -141,26 +179,11 @@ print(f"Using device: {device}")
 
 model.to(device)
 
-# Prebuild rotary caches if the model uses them
-max_len = config.context_length + config.prediction_length
-if hasattr(model, 'decoder') and hasattr(model.decoder, 'layers'):
-    for layer in model.decoder.layers:
-        if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'rotary_proj'):
-            rp = layer.self_attn.rotary_proj
-            if hasattr(rp, '_build_cache'):
-                print(f"Building rotary cache for layer with max_len={max_len}")
-                rp._build_cache(max_len)
-            if hasattr(rp, 'cos_cached'):
-                rp.cos_cached = rp.cos_cached.to(device)
-                rp.sin_cached = rp.sin_cached.to(device)
-
-
-# Optimizer + scaler + scheduler
+# --- Main Training Loop ---
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 scaler = GradScaler(enabled=(device.type == 'cuda'))
 scheduler = CosineAnnealingLR(optimizer, T_max=MAX_BATCHES, eta_min=ETA_MIN)
 
-# Data
 print("Generating data and creating DataLoader...")
 raw_data = generate_synthetic_data_list(num_series=2000, min_len=config.context_length + config.prediction_length + 1)
 dataset = TimeSeriesIterableDataset(raw_data, config, stride=16)
@@ -168,30 +191,22 @@ loader = DataLoader(dataset, batch_size=32, collate_fn=timeseries_collate_fn, nu
 
 data_iter = iter(loader)
 val_loss_queue = deque(maxlen=VAL_SMOOTH_WINDOW)
-
 batch_counter = 0
 token_counter = 0
 
-# --- Main Training Loop ---
-print("🔁 Starting randomized training loop with cosine LR scheduling…")
+print("🔁 Starting training loop with new Encoder-Decoder architecture…")
 
 while batch_counter < MAX_BATCHES:
     # --- TRAINING PHASE ---
-    train_batches = random.randint(100, 200)
-    print(f"🟢 Training for {train_batches} batches…")
     model.train()
-
-    for _ in range(train_batches):
-        if batch_counter >= MAX_BATCHES:
-            break
+    for _ in range(100): # Train for 100 batches before a quick validation
+        if batch_counter >= MAX_BATCHES: break
         try:
             batch = next(data_iter)
         except StopIteration:
-            data_iter = iter(loader)
-            batch = next(data_iter)
+            data_iter = iter(loader); batch = next(data_iter)
 
         if not batch: continue
-
         for k, v in batch.items():
             if isinstance(v, torch.Tensor): batch[k] = v.to(device)
 
@@ -199,9 +214,12 @@ while batch_counter < MAX_BATCHES:
 
         with autocast(enabled=(device.type == 'cuda')):
             out = model(
-                decoder_inputs=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
+                encoder_inputs=batch["encoder_inputs"],
+                decoder_inputs=batch["decoder_inputs"],
+                attention_mask=batch["encoder_attention_mask"],
+                decoder_attention_mask=batch["decoder_attention_mask"],
                 targets=batch["labels"],
+                loss_mask=batch["loss_mask"],
             )
             loss = out.loss
 
@@ -216,7 +234,7 @@ while batch_counter < MAX_BATCHES:
         scaler.update()
         scheduler.step()
 
-        B, T, _ = batch["input_ids"].shape
+        B, T, _ = batch["encoder_inputs"].shape
         token_counter += B * T
         batch_counter += 1
 
@@ -225,30 +243,27 @@ while batch_counter < MAX_BATCHES:
             print(f"[Train {batch_counter}/{MAX_BATCHES}] Loss: {loss.item():.4f} | LR: {current_lr:.2e} | Tokens: {token_counter:,}")
 
     # --- QUICK VALIDATION ---
-    val_batches = random.randint(5, 20)
-    print(f"🔵 Validating on {val_batches} batches…")
     model.eval()
     val_loss_total = 0.0
     val_seen = 0
-
     with torch.no_grad():
-        for _ in range(val_batches):
+        for _ in range(10): # Quick validation on 10 batches
             try:
                 val_batch = next(data_iter)
             except StopIteration:
-                data_iter = iter(loader)
-                val_batch = next(data_iter)
-
+                data_iter = iter(loader); val_batch = next(data_iter)
             if not val_batch: continue
-
             for k, v in val_batch.items():
                 if isinstance(v, torch.Tensor): val_batch[k] = v.to(device)
 
             with autocast(enabled=(device.type == 'cuda')):
                 vout = model(
-                    decoder_inputs=val_batch["input_ids"],
-                    attention_mask=val_batch["attention_mask"],
+                    encoder_inputs=val_batch["encoder_inputs"],
+                    decoder_inputs=val_batch["decoder_inputs"],
+                    attention_mask=val_batch["encoder_attention_mask"],
+                    decoder_attention_mask=val_batch["decoder_attention_mask"],
                     targets=val_batch["labels"],
+                    loss_mask=val_batch["loss_mask"],
                 )
                 if vout.loss is not None and torch.isfinite(vout.loss):
                     val_loss_total += vout.loss.item()
@@ -258,40 +273,6 @@ while batch_counter < MAX_BATCHES:
         avg_val = val_loss_total / val_seen
         val_loss_queue.append(avg_val)
         smooth_val = sum(val_loss_queue) / len(val_loss_queue)
-        print(f"[Val @ {batch_counter}] Raw: {avg_val:.4f} | Smoothed: {smooth_val:.4f}")
-
-    # --- DEEP VALIDATION ---
-    if batch_counter % DEEP_VAL_INTERVAL == 0 and batch_counter > 0:
-        print(f"🔍 Deep validation on next {DEEP_VAL_BATCHES} batches…")
-        model.eval()
-        deep_loss = 0.0
-        deep_seen = 0
-        with torch.no_grad():
-            for db in islice(data_iter, DEEP_VAL_BATCHES):
-                if not db: continue
-                for k, v in db.items():
-                    if isinstance(v, torch.Tensor): db[k] = v.to(device)
-                with autocast(enabled=(device.type == 'cuda')):
-                    dout = model(
-                        decoder_inputs=db["input_ids"],
-                        attention_mask=db["attention_mask"],
-                        targets=db["labels"],
-                    )
-                if dout.loss is not None and torch.isfinite(dout.loss):
-                    deep_loss += dout.loss.item()
-                    deep_seen += 1
-
-        if deep_seen > 0:
-            avg_deep = deep_loss / deep_seen
-            print(f"====== [Deep Val @ {batch_counter}] Loss: {avg_deep:.4f} ======")
-        else:
-            print("⚠️ No deep validation samples processed.")
+        print(f"🔵 [Val @ {batch_counter}] Raw: {avg_val:.4f} | Smoothed: {smooth_val:.4f}")
 
 print("✅ Training complete.")
-
-# --- Optional: Save the final model ---
-# save_dir = "./trained_model"
-# os.makedirs(save_dir, exist_ok=True)
-# torch.save(model.state_dict(), os.path.join(save_dir, "model.pth"))
-# config.to_json_file(os.path.join(save_dir, "config.json"))
-# print(f"Model saved to {save_dir}")
