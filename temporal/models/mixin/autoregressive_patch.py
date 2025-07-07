@@ -192,7 +192,7 @@ class AutoregressivePatchMixin:
         # 2. Reshape to get the final time-series output.
         B, P_gen, _ = projected_patches.shape
         # pull the output patch size
-        P_out = self.config.value_embedding.output_patch_size
+        P_out = self.preprocessor.value_embedding.output_patch_size
         f_sz  = self.config.feature_size
 
         point_predictions = projected_patches.view(B, P_gen * P_out, f_sz)

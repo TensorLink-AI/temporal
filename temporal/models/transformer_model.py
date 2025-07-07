@@ -262,7 +262,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             patch_preds = self.output_patch_reconstructor(input_to_heads)
             # reshape into [B, T_tokens * output_patch_size, feature_size]
             B, Ttok, _ = patch_preds.shape
-            op = self.config.value_embedding.output_patch_size
+            op = self.preprocessor.value_embedding.output_patch_size
             input_to_heads = patch_preds.view(B, Ttok * op, f_sz)
 
         # Step 3: Align head input with targets for loss calculation if needed.
