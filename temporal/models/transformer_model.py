@@ -113,27 +113,28 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         self.output_heads = output_heads
         self.head_aggregator = head_aggregator
 
-        self.patch_merger = None # Start as None
+        self.output_patch_reconstructor = None # Start as None
         #  partion this out eventually to make it cleaner
         if self.preprocessor.is_patched:
             patch_size = self.preprocessor.patch_size
+            output_patch_size = self.preprocessor.value_embedding.output_patch_size
             use_mlp        =  getattr(self.preprocessor.value_embedding, 'use_mlp', False) 
             num_patches = config.context_length // patch_size
             mlp_hidden_size    = getattr(self.preprocessor.value_embedding, 'mlp_hidden_size',None) or (patch_size  * 2)
             d_model = self.config.d_model
             feature_size = self.config.feature_size
-            output_projection_size = patch_size * feature_size
+            output_projection_size = output_patch_size * feature_size
 
             if use_mlp:
                 print(f"INFO: Building MLP patch_merger (d_model -> {mlp_hidden_size} -> {output_projection_size}).")
-                self.patch_merger = nn.Sequential(
+                self.output_patch_reconstructor  = nn.Sequential(
                     nn.Linear(d_model, mlp_hidden_size),
                     nn.ReLU(),
                     nn.Linear(mlp_hidden_size, output_projection_size)
                 )
             else:
                 print(f"INFO: Building Linear patch_merger (d_model -> {output_projection_size}).")
-                self.patch_merger = nn.Linear(d_model, output_projection_size)
+                self.output_patch_reconstructor  = nn.Linear(d_model, output_projection_size)
         
         # 5. Loss function is not a module, but we assign it here.
         self.loss_fn = loss_fn
@@ -257,14 +258,12 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         if self.preprocessor.is_patched:
             
 
-            projected_patches = self.patch_merger(input_to_heads)
-            B, P, _ = projected_patches.shape
-            p_sz = self.preprocessor.patch_size
-            f_sz = self.config.feature_size
-
-            # The .view() operation flattens the patch dimension back into a time sequence.
-            # [B, P, patch_size * F] -> [B, P * patch_size, F]
-            input_to_heads = projected_patches.view(B, P * p_sz, f_sz)
+            projected_patches = self.output_patch_reconstructor(input_to_heads)
+            patch_preds = self.output_patch_reconstructor(input_to_heads)
+            # reshape into [B, T_tokens * output_patch_size, feature_size]
+            B, Ttok, _ = patch_preds.shape
+            op = self.config.value_embedding.output_patch_size
+            input_to_heads = patch_preds.view(B, Ttok * op, f_sz)
 
         # Step 3: Align head input with targets for loss calculation if needed.
         if (

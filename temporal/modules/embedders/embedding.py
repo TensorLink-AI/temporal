@@ -293,14 +293,17 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
         patch_size: int,
         feature_size: int,
         d_model: int,
+        output_patch_size: Optional[int] = None,
         stride: Optional[int] = None,
         pad_value: float = 0.0,
         use_mlp: bool = False,
         mlp_hidden_size: Optional[int] = None,
     ):
+
         super().__init__(d_model)
         # Store init parameters for later introspection
         self.patch_size = patch_size
+        self.output_patch_size = output_patch_size if output_patch_size is not None else patch_size
         self.feature_size = feature_size
         self.d_model = d_model
         self.stride = stride or patch_size

@@ -187,15 +187,17 @@ class AutoregressivePatchMixin:
 
         # 1. Apply the de-patching projection layer. No transpose needed.
         # [B, P_gen, D] -> [B, P_gen, patch_size * feature_size]
-        projected_patches = self.patch_merger(all_generated_patches)
+        projected_patches = self.output_patch_reconstructor(all_generated_patches)
 
         # 2. Reshape to get the final time-series output.
         B, P_gen, _ = projected_patches.shape
-        p_sz = self.preprocessor.patch_size
-        f_sz = self.config.feature_size
-        
-        # [B, P_gen, patch_size * F] -> [B, P_gen * patch_size, F]
-        point_predictions = projected_patches.view(B, P_gen * p_sz, f_sz)
+        # pull the output patch size
+        P_out = self.config.value_embedding.output_patch_size
+        f_sz  = self.config.feature_size
+
+        point_predictions = projected_patches.view(B, P_gen * P_out, f_sz)
+
+
         # --- Step 5: Apply final output heads (e.g., for probabilistic forecasts) ---
         final_output = self._get_head_output(point_predictions)
         
