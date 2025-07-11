@@ -106,9 +106,9 @@ class AutoregressivePatchMixin:
         if encoder_inputs is None and decoder_inputs is None:
             raise ValueError("You must provide either 'encoder_inputs' or 'decoder_inputs'.")
 
-        required_attrs = ['config', 'preprocessor', 'decoder', 'patch_merger', 'output_heads']
-        if not all(hasattr(self, attr) for attr in required_attrs):
-            raise AttributeError(f"Model must have {required_attrs} attributes for patch-based generation.")
+        #required_attrs = ['config', 'preprocessor', 'decoder', 'patch_merger', 'output_heads']
+        #if not all(hasattr(self, attr) for attr in required_attrs):
+        #    raise AttributeError(f"Model must have {required_attrs} attributes for patch-based generation.")
         
         # Determine batch_size and device from the available tensor
         # This also determines the data type for creating empty tensors later.
