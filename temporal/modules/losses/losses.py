@@ -532,3 +532,96 @@ class NegativeLogLikelihoodLoss(BaseLoss):
         # Apply reduction and loss_mask using the BaseLoss's helper
         # `elementwise_nll` is already of shape [B, T] or [B, T, F] (element-wise per sample/time/feature)
         return self._apply_reduction(elementwise_nll, loss_mask)
+
+
+import math
+from typing import Optional
+
+
+
+def huber_transform(x: torch.Tensor, delta: float) -> torch.Tensor:
+    """
+    Huber‐style transform: quadratic for |x|<=delta, linear beyond.
+    """
+    abs_x = x.abs()
+    quad  = 0.5 * abs_x.pow(2)
+    lin   = delta * (abs_x - 0.5 * delta)
+    return torch.where(abs_x <= delta, quad, lin)
+
+@register_module("loss", "crps_huber")
+class CRPSHuberLoss(BaseLoss):
+    """
+    CRPS Loss with an optional Huber‐style transform.
+
+    Args:
+        estimator:    which finite‐ensemble estimator to use ('pwm','nrg','fair')
+        axis:         ensemble dimension in preds (default last)
+        huber_delta:  if >0, applies a Huber transform with this knee;
+                      if 0 or None, no transform (pure CRPS)
+        spread_lambda / _type / _eps / _target:
+                      exactly as in your original CRPSLoss
+        reduction:    one of 'mean','sum','none'
+    """
+    def __init__(
+        self,
+        estimator: str = "pwm",
+        axis: int = -1,
+        huber_delta: Optional[float] = None,
+        spread_lambda: float = 0.0,
+        spread_penalty_type: str = "symmetric_log",
+        spread_penalty_epsilon: float = 1e-3,
+        spread_target_spread: float = 0.0,
+        reduction: str = "mean",
+        **kwargs
+    ):
+        super().__init__(reduction=reduction)
+        if estimator not in ("pwm","nrg","fair"):
+            raise ValueError(f"Unknown CRPS estimator '{estimator}'")
+        self.estimator = estimator
+        self.axis      = axis
+        self.huber_delta = float(huber_delta) if huber_delta and huber_delta > 0.0 else None
+
+        self.spread_lambda = spread_lambda
+        self.spread_penalty_fn = None
+        if spread_lambda > 0.0:
+            self.spread_penalty_fn = SpreadPenalty(
+                penalty_type=spread_penalty_type,
+                epsilon=spread_penalty_epsilon,
+                target_spread=spread_target_spread,
+                reduction="none"
+            )
+
+    def forward(
+        self,
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        loss_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        # ensure targets has the ensemble dim
+        if targets.ndim == preds.ndim - 1:
+            ax = self.axis if self.axis >= 0 else preds.ndim + self.axis
+            targets = targets.unsqueeze(ax)
+
+        # sort along ensemble dim
+        preds_sorted = torch.sort(preds, dim=self.axis)[0]
+
+        # raw per‐sample CRPS
+        crps_raw = crps_ensemble(
+            observations=targets,
+            forecasts=preds_sorted,
+            estimator=self.estimator,
+            axis=self.axis,
+            reduce=False
+        )
+
+        # optional spread penalty
+        if self.spread_lambda > 0.0:
+            spread_pen = self.spread_penalty_fn(preds_sorted)  # shape = crps_raw.shape
+            crps_raw = crps_raw + self.spread_lambda * spread_pen
+
+        # optional Huber transform
+        if self.huber_delta is not None:
+            crps_raw = huber_transform(crps_raw, delta=self.huber_delta)
+
+        # final reduction / masking
+        return self._apply_reduction(crps_raw, loss_mask)

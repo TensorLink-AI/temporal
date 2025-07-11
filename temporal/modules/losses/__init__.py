@@ -1,7 +1,8 @@
 # ---- Loss functions ------------------------------------------------
-from .losses import TimeSeriesLoss, CRPSLoss # Added CRPSLoss
+from .losses import TimeSeriesLoss, CRPSLoss, CRPSHuberLoss # Added CRPSLoss
 
 __all__ = [
     "TimeSeriesLoss",
-    "CRPSLoss", # Added CRPSLoss
+    "CRPSLoss", # Added CRPSLoss,
+    "CRPSHuberLoss"
 ]
