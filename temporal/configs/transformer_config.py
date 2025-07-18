@@ -71,17 +71,21 @@ class AttentionConfig:
         use_rope (bool): If True, enables Rotary Positional Embeddings.
         use_alibi (bool): If True, enables Attention with Linear Biases.
         rope_base (int): Base frequency for RoPE calculations if use_rope is True.
+        qk_layernorm (bool): If True, applies a LayerNorm to each head's Q and K before attention.
         kwargs (dict): Additional keyword arguments specific to the attention_type implementation.
     """
-    def __init__(self, 
-                 attention_type="full", 
-                 num_heads=4, 
-                 dropout=0.1, 
-                 bias=True,
-                 use_rope=False, 
-                 use_alibi=False, 
-                 rope_base=10000, 
-                 kwargs=None):
+    def __init__(
+        self,
+        attention_type: str = "full",
+        num_heads: int = 4,
+        dropout: float = 0.1,
+        bias: bool = True,
+        use_rope: bool = False,
+        use_alibi: bool = False,
+        rope_base: int = 10000,
+        qk_layernorm: bool = False,
+        kwargs: Optional[Dict[str, Any]] = None,
+    ):
         assert isinstance(dropout, (float, int)) and 0.0 <= dropout <= 1.0, \
             f"dropout must be in [0, 1], got {dropout}"
         self.attention_type = attention_type
@@ -91,9 +95,10 @@ class AttentionConfig:
         self.use_rope = use_rope
         self.use_alibi = use_alibi
         self.rope_base = rope_base
+        self.qk_layernorm = qk_layernorm
         self.kwargs = kwargs or {}
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, Any]:
         """
         Convert attention configuration to a dictionary.
         """
@@ -105,11 +110,12 @@ class AttentionConfig:
             "use_rope": self.use_rope,
             "use_alibi": self.use_alibi,
             "rope_base": self.rope_base,
-            "kwargs": self.kwargs
+            "qk_layernorm": self.qk_layernorm,
+            "kwargs": self.kwargs,
         }
 
     @classmethod
-    def from_dict(cls, d):
+    def from_dict(cls, d: Dict[str, Any]) -> "AttentionConfig":
         """
         Create an AttentionConfig from a dictionary.
         """
@@ -121,7 +127,8 @@ class AttentionConfig:
             use_rope=d.get("use_rope", False),
             use_alibi=d.get("use_alibi", False),
             rope_base=d.get("rope_base", 10000),
-            kwargs=d.get("kwargs", {})
+            qk_layernorm=d.get("qk_layernorm", False),
+            kwargs=d.get("kwargs", {}),
         )
 
     def validate(self):
@@ -131,7 +138,10 @@ class AttentionConfig:
         assert self.num_heads > 0, "num_heads must be > 0"
         assert 0.0 <= self.dropout <= 1.0, "dropout must be in [0, 1]"
         if self.use_rope and self.use_alibi:
-            print("Warning: Both use_rope and use_alibi are set to True in AttentionConfig. Behavior might be undefined depending on implementation.")
+            print(
+                "Warning: Both use_rope and use_alibi are set to True in AttentionConfig. "
+                "Behavior might be undefined depending on implementation."
+            )
 
 
 class OutputHeadConfig:
