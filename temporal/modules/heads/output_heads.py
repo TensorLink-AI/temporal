@@ -195,117 +195,103 @@ class DistPredHead(BaseOutputHead):
     Attributes:
         num_outputs (int): The number of prediction values (K) per feature.
         feature_size (int): The number of features.
+        use_tanh (bool): Whether to apply tanh-based output normalization.
+        tanh_scale (float): Scaling factor applied after tanh.
         proj (nn.Linear): The linear projection layer.
     """
+
     def __init__(self, hidden_size: int, output_size: int, **kwargs):
         """
         Initializes the DistPredHead.
 
         Args:
             hidden_size (int): The dimension of the input hidden state.
-            output_size (int): The total output dimension, which must equal
+            output_size (int): The total output dimension, must equal
                 `num_outputs * feature_size`.
-            **kwargs: Must contain 'num_outputs' and 'feature_size'.
+            **kwargs: Must contain 'num_outputs', and optionally 'feature_size',
+                      'use_tanh', and 'tanh_scale'.
         """
         super().__init__()
+
         if 'num_outputs' not in kwargs:
             raise ValueError("DistPredHead requires 'num_outputs' to be specified in the configuration.")
-        if 'feature_size' not in kwargs:
-            kwargs['feature_size'] = 1
-            print("Warning: 'feature_size' not found in DistPredHead config, defaulting to 1.")
-
         self.num_outputs = kwargs['num_outputs']
-        self.feature_size = kwargs['feature_size']
+        self.feature_size = kwargs.get('feature_size', 1)
 
         expected_output_size = self.num_outputs * self.feature_size
         if output_size != expected_output_size:
             raise ValueError(
                 f"DistPredHead output size mismatch: output_size ({output_size}) "
-                f"does not equal num_outputs ({self.num_outputs}) * feature_size ({self.feature_size})."
+                f"!= num_outputs ({self.num_outputs}) * feature_size ({self.feature_size})"
             )
+
         self.proj = nn.Linear(hidden_size, output_size)
+
+        # Optional tanh normalization
+        self.use_tanh = kwargs.get('use_tanh', False)
+        self.tanh_scale = kwargs.get('tanh_scale', 10.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Projects the hidden state to the ensemble predictions.
 
         Args:
-            x (torch.Tensor): Input tensor of shape `[B, T, hidden_size]`.
+            x (torch.Tensor): Input tensor of shape [B, T, hidden_size].
 
         Returns:
-            torch.Tensor: Output tensor of shape `[B, T, feature_size, num_outputs]`
-            or `[B, T, num_outputs]` for the univariate case.
+            torch.Tensor: Output tensor of shape [B, T, feature_size, num_outputs]
+                          or [B, T, num_outputs] if univariate.
         """
-
-        
         projected_output = self.proj(x)
-        if self.feature_size > 1:
-            return projected_output.view(*projected_output.shape[:-1], self.feature_size, self.num_outputs)
+
+        if self.use_tanh:
+            projected_output = self.tanh_scale * torch.tanh(projected_output)
+
+        return projected_output.view(*projected_output.shape[:-1], self.feature_size, self.num_outputs)
+
+    def predict(self, x: torch.Tensor, method: Union[str, float, int] = "median") -> torch.Tensor:
+        """
+        Collapse an ensemble head output [B, T, K] or [B, T, F, K] to [B, T, 1] or [B, T, F].
+
+        Args:
+            x (torch.Tensor): Head output of shape [B, T, K] or [B, T, F, K].
+            method (str|float|int): Collapse strategy — 'mean', 'median',
+                quantile (float), or direct index (int).
+
+        Returns:
+            torch.Tensor: Collapsed prediction tensor.
+        """
+        is_multi = (x.ndim == 4)  # [B, T, F, K]
+        K = x.shape[-1]
+
+        if isinstance(method, str):
+            if method == "mean":
+                return x.mean(dim=-1, keepdim=not is_multi)
+            elif method == "median":
+                idx = K // 2
+            else:
+                raise ValueError(f"Unsupported method string: {method!r}")
+        elif isinstance(method, float):
+            qs = getattr(self, "quantiles", None) or getattr(self.config, "quantiles", None)
+            if qs is None or len(qs) != K:
+                raise ValueError(f"No valid quantiles list of length {K} found.")
+            qt = torch.tensor(qs, device=x.device)
+            idx = (qt - method).abs().argmin().item()
+        elif isinstance(method, int):
+            idx = method if method >= 0 else K + method
+            if not (0 <= idx < K):
+                raise IndexError(f"Index {method} out of range for K={K}")
         else:
-            return projected_output.view(*projected_output.shape[:-1], self.feature_size, self.num_outputs) # projected_output
+            raise TypeError(f"method must be str|float|int, not {type(method)}")
 
-
-    def predict(
-            self,
-            x: torch.Tensor,
-            method: Union[str, float, int] = "median"
-        ) -> torch.Tensor:
-            """
-            Collapse an ensemble head x of shape [B, T, K] or [B, T, F, K]
-            down to [B, T, 1] or [B, T, F], via:
-
-            - method='mean'   → empirical mean across K
-            - method='median' → middle index (K//2)
-            - method=float    → nearest quantile to that fraction
-            - method=int      → direct index into the K dimension
-
-            Args:
-                x (torch.Tensor): head output, either
-                                [B, T, K] or [B, T, F, K].
-                method (str|float|int): which collapse strategy.
-
-            Returns:
-                torch.Tensor: [B, T, 1] if univariate, else [B, T, F].
-            """
-            # determine dims
-            is_multi = (x.ndim == 4)     # [B,T,F,K]
-            K = x.shape[-1]
-
-            # choose index or mean
-            if isinstance(method, str):
-                if method == "mean":
-                    return x.mean(dim=-1, keepdim=not is_multi)
-                elif method == "median":
-                    idx = K // 2
-                else:
-                    raise ValueError(f"Unsupported method string: {method!r}")
-            elif isinstance(method, float):
-                # nearest quantile fraction → use self.config.quantiles
-                qs = getattr(self, "quantiles", None) or getattr(self.config, "quantiles", None)
-                if qs is None or len(qs) != K:
-                    raise ValueError(f"No valid quantiles list of length {K} found")
-                qt = torch.tensor(qs, device=x.device)
-                idx = (qt - method).abs().argmin().item()
-            elif isinstance(method, int):
-                # direct index
-                idx = method if method >= 0 else K + method
-                if not (0 <= idx < K):
-                    raise IndexError(f"Index {method} out of range for K={K}")
-            else:
-                raise TypeError(f"method must be str|float|int, not {type(method)}")
-
-            # now slice at idx
-            if is_multi:
-                # x[..., idx] → [B, T, F]
-                return x[..., idx]
-            else:
-                # x[..., idx:idx+1] → [B, T, 1]
-                return x[..., idx: idx + 1]
-
+        return x[..., idx] if is_multi else x[..., idx:idx+1]
 
     def get_loss_fn(self) -> Optional[Callable]:
-        """Returns None, as loss is determined by the main training config."""
+        """
+        Returns None — the main training config defines the loss function.
+        """
         return None
+
 
 
 @register_module("output_head", "mixture")

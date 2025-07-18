@@ -114,9 +114,7 @@ class HybridAttention(nn.Module):
                 kernel_cls = resolve("attention", attn_type) # Resolve standard attention modules
                 # Pass standard MHA arguments. The kernel's __init__ should accept these.
                 kernel = kernel_cls(
-                    # --- MODIFICATION START ---
                     embed_dim=group_embed_dim, # Pass the calculated group embed_dim
-                    # --- MODIFICATION END ---
                     num_heads=split, # Pass the number of heads for THIS group
                     dropout=dropout,
                     is_decoder=is_decoder,
