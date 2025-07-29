@@ -3,6 +3,7 @@ from temporal.registry.core import resolve
 from temporal.configs.attention_config import AttentionConfig # Import specific AttentionConfig
 from temporal.configs.feedforward_config import FeedForwardConfig # Import specific FeedForwardConfig
 from temporal.configs.transformer_block_config import TransformerBlockConfig # Import specific TransformerBlockConfig
+from temporal.configs.normalization_config import NormalizationConfig # <-- ADDED THIS IMPORT
 import inspect
 from typing import Type
 
