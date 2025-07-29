@@ -8,7 +8,8 @@ class OutputHeadConfig(BaseConfig):
     """
     Configuration for the output head of the transformer model.
     """
-    type: str = "linear"
+    # Make 'type' a keyword-only argument to allow non-default arguments in subclasses
+    type: str = field(default="linear", kw_only=True)
     output_size: Optional[int] = None
     kwargs: Dict[str, Any] = field(default_factory=dict)
 
@@ -28,10 +29,10 @@ class DistPredOutputHeadConfig(OutputHeadConfig):
 
     # Inherited fields with default values, or new fields with default values,
     # must come after all non-default fields (both new and inherited).
-    # We explicitly re-declare them here to enforce the order in the subclass's signature.
-    type: str = "distpred" # Overrides the default from OutputHeadConfig
-    output_size: Optional[int] = None # Re-declare with its default from base
-    kwargs: Dict[str, Any] = field(default_factory=dict) # Re-declare with its default from base
+    # Since 'type' is now kw_only in the base, we don't strictly need to re-declare it
+    # for positional order, but re-declaring ensures its default is applied correctly
+    # for this specific subclass type string.
+    type: str = field(default="distpred", kw_only=True)
     use_tanh: bool = False # New field with default
 
     def __post_init__(self):
