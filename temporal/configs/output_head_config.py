@@ -22,17 +22,22 @@ class DistPredOutputHeadConfig(OutputHeadConfig):
     """
     Configuration for a distributional prediction head.
     """
-    # New non-default arguments must come first, before any inherited fields with defaults
-    # or any new fields with defaults.
+    # New non-default arguments MUST come first
     num_outputs: int
     feature_size: int
-    
-    # Now, inherited fields (or new fields with defaults) can follow
+
+    # Inherited fields with default values, or new fields with default values,
+    # must come after all non-default fields (both new and inherited).
+    # We explicitly re-declare them here to enforce the order in the subclass's signature.
     type: str = "distpred" # Overrides the default from OutputHeadConfig
-    use_tanh: bool = False
+    output_size: Optional[int] = None # Re-declare with its default from base
+    kwargs: Dict[str, Any] = field(default_factory=dict) # Re-declare with its default from base
+    use_tanh: bool = False # New field with default
 
     def __post_init__(self):
+        # Call parent's __post_init__ first to ensure base validations run
         super().__post_init__()
+        
         if self.num_outputs <= 0:
             raise ValueError("num_outputs must be a positive integer.")
         if self.feature_size <= 0:
