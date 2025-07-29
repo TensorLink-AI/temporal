@@ -22,11 +22,13 @@ class DistPredOutputHeadConfig(OutputHeadConfig):
     """
     Configuration for a distributional prediction head.
     """
-    # Non-default arguments must come first in the dataclass definition
+    # New non-default arguments must come first, before any inherited fields with defaults
+    # or any new fields with defaults.
     num_outputs: int
     feature_size: int
     
-    type: str = "distpred" # This now follows the non-default arguments
+    # Now, inherited fields (or new fields with defaults) can follow
+    type: str = "distpred" # Overrides the default from OutputHeadConfig
     use_tanh: bool = False
 
     def __post_init__(self):
