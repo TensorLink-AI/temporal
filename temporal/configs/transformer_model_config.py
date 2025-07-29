@@ -146,64 +146,84 @@ class BaseTimeSeriesConfig(BaseConfig, PretrainedConfig):
         
         return instance
 
+
 T = TypeVar("T", bound="TransformerTimeSeriesConfig")
+
 
 @register_config_type("transformer_time_series_config")
 @dataclass(frozen=True, kw_only=True)
 class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     """
     Configuration for a transformer-based time-series forecasting model.
-    Extends BaseTimeSeriesConfig with transformer-specific options.
     All fields are keyword-only to avoid dataclass ordering issues.
     """
-    type: str = field(default="transformer_time_series_config")
+    # Identity
+    type: str = "transformer_time_series_config"
+    model_type: str = "transformer"
 
-    model_type: str = field(default="transformer")
-    d_model: int = field(default=64)
-    hidden_dropout_prob: float = field(default=0.1)
-    max_position_embeddings: int = field(default=4096)
+    # Core dimensions & dropout
+    d_model: int = 64
+    hidden_dropout_prob: float = 0.1
+    max_position_embeddings: int = 4096
 
-    architecture: TransformerArchitectureConfig = field(
-        default_factory=TransformerArchitectureConfig
-    )
+    # Architecture
+    architecture: TransformerArchitectureConfig = field(default_factory=TransformerArchitectureConfig)
+
+    # Embeddings
     value_embedding_config: EmbeddingConfig = field(
         default_factory=lambda: embedding_config_from_dict({"type": "value"})
     )
     positional_embedding_config: EmbeddingConfig = field(
         default_factory=lambda: embedding_config_from_dict({"type": "sinusoidal"})
     )
-    encoder_blocks: Optional[List[TransformerBlockConfig]] = field(default=None)
-    decoder_blocks: Optional[List[TransformerBlockConfig]] = field(default=None)
 
+    # Transformer blocks
+    encoder_blocks: Optional[List[TransformerBlockConfig]] = None
+    decoder_blocks: Optional[List[TransformerBlockConfig]] = None
+
+    # Output head
     output_head_config: OutputHeadConfig = field(
         default_factory=lambda: output_head_config_from_dict({"type": "linear"})
     )
+
+    # Auxiliary modules
     norm_config: NormalizationConfig = field(
         default_factory=lambda: normalization_config_from_dict({"type": "layer"})
     )
     head_agg_config: HeadAggregationConfig = field(
         default_factory=lambda: head_aggregation_config_from_dict({"type": "mean"})
     )
-    quantizer_config: Optional[QuantizerConfig] = field(default=None)
-    vocab_size: Optional[int] = field(default=None)
-    decoder_start_token_id: Optional[int] = field(default=None)
-    output_attentions: bool = field(default=False)
-    output_hidden_states: bool = field(default=False)
-    use_teacher_forcing: bool = field(default=True)
-    aux_loss_weight: float = field(default=0.01)
-    use_cache: bool = field(default=True)
+    quantizer_config: Optional[QuantizerConfig] = None
 
-    # Deprecated
-    attention_blocks: Optional[Any] = field(default=None, repr=False, compare=False)
-    feedforward_config: Optional[Any] = field(default=None, repr=False, compare=False)
+    # Sequence / vocab
+    vocab_size: Optional[int] = None
+    decoder_start_token_id: Optional[int] = None
+
+    # Model outputs & training flags
+    output_attentions: bool = False
+    output_hidden_states: bool = False
+    use_teacher_forcing: bool = True
+    use_cache: bool = True
+    aux_loss_weight: float = 0.01
+
+    # Mixture‑of‑Experts (optional)
+    num_experts: Optional[int] = None
+    expert_dropout: Optional[float] = None
+
+    # Deprecated (ignored)
+    attention_blocks: Any = field(default=None, repr=False, compare=False)
+    feedforward_config: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
-        super().__post_init__()
-        if self.attention_blocks is not None:
-            print("Warning: `attention_blocks` is deprecated.")
-        if self.feedforward_config is not None:
-            print("Warning: `feedforward_config` is deprecated.")
+        super().__post_init__()  # base validations
 
+        # Deprecation warnings
+        if self.attention_blocks is not None:
+            print("Warning: `attention_blocks` is deprecated; use encoder_blocks/decoder_blocks.")
+        if self.feedforward_config is not None:
+            print("Warning: `feedforward_config` is deprecated; configure FFN within blocks.")
+
+        # Basic value checks
         if self.d_model <= 0:
             raise ValueError("d_model must be > 0.")
         if not (0.0 <= self.hidden_dropout_prob <= 1.0):
@@ -211,6 +231,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if self.max_position_embeddings <= 0:
             raise ValueError("max_position_embeddings must be > 0.")
 
+        # Nested‑config type checks
         if not isinstance(self.architecture, TransformerArchitectureConfig):
             raise ValueError("architecture must be a TransformerArchitectureConfig instance.")
         if not isinstance(self.value_embedding_config, EmbeddingConfig):
@@ -237,47 +258,68 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             raise ValueError("quantizer_config must be a QuantizerConfig instance.")
         if not isinstance(self.loss_config, LossConfig):
             raise ValueError("loss_config must be a LossConfig instance.")
+        if self.num_experts is not None and self.num_experts <= 0:
+            raise ValueError("num_experts must be > 0 if provided.")
+        if self.expert_dropout is not None and not (0 <= self.expert_dropout <= 1):
+            raise ValueError("expert_dropout must be in [0, 1] if provided.")
 
+        # Attention‑head divisibility checks
         blocks = (self.encoder_blocks or []) + (self.decoder_blocks or [])
-        for i, blk in enumerate(blocks):
+        for idx, blk in enumerate(blocks):
             if blk.attention_config:
-                heads = blk.attention_config.num_heads
-                if self.d_model % heads != 0:
+                h = blk.attention_config.num_heads
+                if self.d_model % h != 0:
                     raise ValueError(
-                        f"d_model ({self.d_model}) must be divisible by num_heads ({heads}) in block {i}."
+                        f"d_model ({self.d_model}) must be divisible by num_heads ({h}) in block {idx}."
                     )
-            if hasattr(blk, 'cross_attention_config') and blk.cross_attention_config:
-                heads = blk.cross_attention_config.num_heads
-                if self.d_model % heads != 0:
+            if hasattr(blk, "cross_attention_config") and blk.cross_attention_config:
+                h = blk.cross_attention_config.num_heads
+                if self.d_model % h != 0:
                     raise ValueError(
-                        f"d_model ({self.d_model}) must be divisible by cross num_heads ({heads}) in block {i}."
+                        f"d_model ({self.d_model}) must be divisible by cross num_heads ({h}) in block {idx}."
                     )
 
+        # Warnings for optional settings
         if self.quantizer_config and not self.vocab_size:
             print("Warning: quantizer_config provided but vocab_size not set.")
-        if self.architecture.layout != "encoder-only" and self.decoder_start_token_id is None and self.vocab_size is not None:
+        if (
+            self.architecture.layout != "encoder-only"
+            and self.decoder_start_token_id is None
+            and self.vocab_size is not None
+        ):
             print("Warning: decoder_start_token_id should be set when vocab_size is provided.")
 
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
+        # Handle deprecated aliases
         data = cls._handle_deprecated_keys(data)
+
+        # Backward‑compat: hidden_size → d_model
         if "hidden_size" in data and "d_model" not in data:
             data["d_model"] = data.pop("hidden_size")
+
+        # Feature vs input dimensions
         if "input_dim" not in data and "feature_size" in data:
             data["input_dim"] = data.pop("feature_size")
+
+        # Nested config dicts → dataclass
         if "architecture" in data and isinstance(data["architecture"], dict):
             data["architecture"] = TransformerArchitectureConfig.from_dict(data["architecture"])
         if "value_embedding_config" in data and isinstance(data["value_embedding_config"], dict):
             data["value_embedding_config"] = embedding_config_from_dict(data["value_embedding_config"])
-        if "positional_embedding_config" in data and isinstance(data["positional_embedding_config"], dict):
+        if "positional_embedding_config" in data and isinstance(
+            data["positional_embedding_config"], dict
+        ):
             data["positional_embedding_config"] = embedding_config_from_dict(data["positional_embedding_config"])
         if "encoder_blocks" in data and isinstance(data["encoder_blocks"], list):
             data["encoder_blocks"] = [
-                transformer_block_config_from_dict(b) if isinstance(b, dict) else b for b in data["encoder_blocks"]
+                transformer_block_config_from_dict(b) if isinstance(b, dict) else b
+                for b in data["encoder_blocks"]
             ]
         if "decoder_blocks" in data and isinstance(data["decoder_blocks"], list):
             data["decoder_blocks"] = [
-                transformer_block_config_from_dict(b) if isinstance(b, dict) else b for b in data["decoder_blocks"]
+                transformer_block_config_from_dict(b) if isinstance(b, dict) else b
+                for b in data["decoder_blocks"]
             ]
         if "output_head_config" in data and isinstance(data["output_head_config"], dict):
             data["output_head_config"] = output_head_config_from_dict(data["output_head_config"])
@@ -288,6 +330,6 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if "quantizer_config" in data and isinstance(data["quantizer_config"], dict):
             data["quantizer_config"] = quantizer_config_from_dict(data["quantizer_config"])
         if "loss_config" in data and isinstance(data["loss_config"], dict):
-            data["loss_config"] = loss_config_from_DICT(data["loss_config"])
+            data["loss_config"] = loss_config_from_dict(data["loss_config"])
 
         return super().from_dict(data)
