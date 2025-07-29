@@ -298,6 +298,7 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
         pad_value: float = 0.0,
         use_mlp: bool = False,
         mlp_hidden_size: Optional[int] = None,
+
     ):
 
         super().__init__(d_model)
@@ -326,7 +327,7 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
             # Simple linear projection
             self.proj = nn.Linear(self.flat_size, d_model, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, batch_size: int, seq_len: int, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x (torch.Tensor): Input tensor of shape [B, L, F].
