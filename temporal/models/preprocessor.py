@@ -3,7 +3,8 @@ import torch.nn as nn
 from typing import Optional, Tuple, Dict, Any
 
 from temporal.models.module_builder_helper import ModuleBuilder
-from temporal.configs.transformer_config import TransformerTimeSeriesConfig
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig # Corrected import path
+from temporal.modules.embedders.embedding import TimeSeriesPatchEmbedding # Import to check type
 
 class InputPreprocessor(nn.Module):
     """
@@ -30,18 +31,22 @@ class InputPreprocessor(nn.Module):
         """
         super().__init__()
         self.config = config
-        self.value_embedding = builder.build_value_embedding()
-        self.positional_embedding = builder.build_positional_embedding()
-        self.layernorm_embedding = builder.build_normalization()
+        # Pass value_embedding_config to builder
+        self.value_embedding = builder.build_value_embedding(self.config.value_embedding_config)
+        # Pass positional_embedding_config to builder
+        self.positional_embedding = builder.build_positional_embedding(self.config.positional_embedding_config)
+        # Pass norm_config to builder
+        self.layernorm_embedding = builder.build_normalization(self.config.norm_config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.is_patched = True if 'patch_size' in config.value_embedding_config.kwargs else False
-        self.patch_size = self.value_embedding.patch_size if self.is_patched else 1
-        # It's assumed TimeSeriesPatchEmbedding has a 'stride' attribute.
-        self.patch_stride = self.value_embedding.stride if self.is_patched else 1 
-        # It's assumed TimeSeriesPatchEmbedding has a 'pad_value' attribute.
-        self.embedding_pad_value = getattr(self.value_embedding, 'pad_value', 0.0)
-        print(f"[InputPreprocessor __init__] self.patch_size: {self.patch_size}") # ADD THIS
 
+        # Determine if patching is enabled based on the type of value embedding or its config
+        self.is_patched = isinstance(self.value_embedding, TimeSeriesPatchEmbedding)
+        
+        # Access patch_size and stride safely if patching is enabled
+        self.patch_size = self.value_embedding.patch_size if self.is_patched else 1
+        self.patch_stride = self.value_embedding.stride if self.is_patched else 1 
+        self.embedding_pad_value = getattr(self.value_embedding, 'pad_value', 0.0)
+        print(f"[InputPreprocessor __init__] self.patch_size: {self.patch_size}")
 
     def process(
         self,
@@ -104,14 +109,15 @@ class InputPreprocessor(nn.Module):
             # For non-patched models, pass the input directly.
             input_for_embedding = input_values
 
-
         # --- Value and Positional Embedding ---
-        value_embeds = self.value_embedding( input_for_embedding) # TimeSeriesPatchEmbedding handles its own internal padding if needed
+        # ONLY pass input_for_embedding to value_embedding
+        value_embeds = self.value_embedding(input_for_embedding)
         if verbose: print(f"[Preprocessor] Value embedding shape: {value_embeds.shape}")
         
         # The true sequence length for the transformer is derived from the value_embeds
         batch_size_embed, seq_len_after_patching, d_model = value_embeds.shape 
         
+        # ONLY pass batch_size, seq_len, past_key_values_length to positional_embedding
         pos_embed = self.positional_embedding(
             batch_size=batch_size_embed,
             seq_len=seq_len_after_patching,
@@ -149,7 +155,8 @@ class InputPreprocessor(nn.Module):
         past_key_values_length: int,
         is_causal: bool,
     ) -> Optional[torch.Tensor]:
-        """Creates a 4D attention mask, handling patching internally."""
+        """
+        Creates a 4D attention mask, handling patching internally."""
         bsz, seq_len = input_shape
         final_mask = None
         
