@@ -4,11 +4,13 @@ from typing import Optional
 from temporal.registry.core import resolve
 from temporal.registry.generate import resolve_generate
 from temporal.models.base_model import BaseTemporalModel
-from temporal.models.block_builder import BlockBuilder
+# from temporal.models.block_builder import BlockBuilder # No longer directly used
 from temporal.models.output_head_builder import OutputHeadBuilder
 from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
 from temporal.modules.decoders.decoders import TimeSeriesTransformerDecoder
-from temporal.configs.transformer_config import TransformerTimeSeriesConfig
+
+# Import the new TransformerTimeSeriesConfig from its new location
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.models.module_builder_helper import ModuleBuilder
 
 
@@ -22,8 +24,8 @@ def build_time_series_transformer(
     This function serves as the main entry point for model creation. It takes a
     comprehensive configuration object and orchestrates the entire build process,
     including:
-    1.  Validating the configuration.
-    2.  Initializing the necessary builders (`ModuleBuilder`, `BlockBuilder`, etc.).
+    1.  Validating the configuration (now handled by dataclass __post_init__).
+    2.  Initializing the necessary builders (`ModuleBuilder`, `OutputHeadBuilder`).
     3.  Building the encoder and/or decoder stacks based on the specified architecture.
     4.  Building the output head(s).
     5.  Building the primary loss function.
@@ -45,19 +47,18 @@ def build_time_series_transformer(
             (e.g., `encoder_blocks` for an encoder-based architecture).
         RuntimeError: If the loss function cannot be built from the configuration.
     """
-    if not hasattr(config, "validate_config"):
-        raise ValueError("The provided config object must have a `validate_config` method.")
-    config.validate_config()
+    # Config validation is now handled by TransformerTimeSeriesConfig's __post_init__
+    # upon its creation. So, no explicit call needed here.
 
     # Initialize the primitive and composite builders.
     builder = ModuleBuilder(config)
-    block_builder = BlockBuilder(config, builder)
-    output_head_builder = OutputHeadBuilder(config)
+    # BlockBuilder is no longer a separate class, its logic is integrated into Encoder/Decoder modules
+    output_head_builder = OutputHeadBuilder(config, builder) # Pass builder to OutputHeadBuilder
 
     # Conditionally build the encoder based on the architecture layout.
     encoder = None
     if config.architecture.layout in ("encoder", "encoder-decoder"):
-        if not getattr(config, "encoder_blocks", None):
+        if not config.encoder_blocks:
             raise ValueError("Config specifies an encoder, but 'encoder_blocks' are not defined.")
         encoder = TimeSeriesTransformerEncoder(
             config=config,
@@ -68,7 +69,7 @@ def build_time_series_transformer(
     # Conditionally build the decoder.
     decoder = None
     if config.architecture.layout in ("decoder", "encoder-decoder"):
-        if not getattr(config, "decoder_blocks", None):
+        if not config.decoder_blocks:
             raise ValueError("Config specifies a decoder, but 'decoder_blocks' are not defined.")
         decoder = TimeSeriesTransformerDecoder(
             config=config,
@@ -80,16 +81,17 @@ def build_time_series_transformer(
     output_head = output_head_builder.build()
 
     # Build the main loss function from the loss configuration.
-    if not hasattr(config, 'loss_config') or not config.loss_config.get('type'):
-        raise ValueError("Config must have a 'loss_config' dictionary with a 'type' key.")
-    loss_fn = builder.build_loss()
+    # loss_config is now a dataclass, check its type directly
+    if not config.loss_config or not config.loss_config.type:
+        raise ValueError("Config must have a 'loss_config' with a 'type' key.")
+    loss_fn = builder.build_loss(config.loss_config) # Pass the loss_config dataclass
     if loss_fn is None:
-        raise RuntimeError(f"Failed to build the loss function from config: {config.loss_config}")
+        raise RuntimeError(f"Failed to build the loss function from config: {config.loss_config.type}")
 
     # Build the head aggregator if multiple output tokens are used.
     head_aggregator = None
-    if config.output_token_lengths > 1:
-        head_aggregator = builder.build_head_aggregator()
+    if config.output_token_lengths > 1 and config.head_agg_config:
+        head_aggregator = builder.build_head_aggregator(config.head_agg_config) # Pass the head_agg_config dataclass
 
     # Resolve the final model class, which wraps the components and defines
     # the high-level forward and generate logic.

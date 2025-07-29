@@ -14,7 +14,15 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.nn.utils import clip_grad_norm_
 
 # Local project imports - assuming this script is run from the project root
-from temporal.configs.transformer_config import TransformerTimeSeriesConfig, TransformerBlockConfig, AttentionConfig, FeedForwardConfig, EmbeddingConfig, OutputHeadConfig, TransformerArchitectureConfig
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+from temporal.configs.transformer_block_config import EncoderBlockConfig, DecoderBlockConfig # Import specific block configs
+from temporal.configs.attention_config import FullAttentionConfig, LSEAttentionConfig # Import specific attention configs
+from temporal.configs.feedforward_config import StandardFeedForwardConfig # Import specific feedforward config (e.g., if you had GLUFeedForwardConfig)
+from temporal.configs.embedding_config import TimeSeriesValueEmbeddingConfig, SinusoidalPositionalEmbeddingConfig # Import specific embedding configs
+from temporal.configs.output_head_config import OutputHeadConfig # OutputHeadConfig is already a dataclass
+from temporal.configs.architecture_config import TransformerArchitectureConfig # ArchitectureConfig is already a dataclass
+from temporal.configs.loss_config import MSELossConfig # Import specific loss config
+
 from temporal.models.builder import build_time_series_transformer
 
 # --- Synthetic Data Generation ---
@@ -26,7 +34,7 @@ def generate_synthetic_data_list(num_series=500, min_len=150, max_len=300, noise
     data_list = []
     base_date = datetime(2023, 1, 1)
     for i in range(num_series):
-    does     seq_length = np.random.randint(min_len, max_len + 1)
+        seq_length = np.random.randint(min_len, max_len + 1)
         t = np.linspace(0, 4 * np.pi, seq_length)
         amp = np.random.rand() * 2 + 0.5
         freq = np.random.rand() * 0.5 + 0.5
@@ -36,15 +44,15 @@ def generate_synthetic_data_list(num_series=500, min_len=150, max_len=300, noise
         data_list.append({"target": target_tensor, "item_id": f"series_{i}"})
     return data_list
 
-class TimeSeriesIterableDataset(IterableDataset):
-    """An iterable dataset for time series data."""
+class TimeSeriesIterableDataset(IterableDataset):\
+    """An iterable dataset for time series data."""\
     def __init__(self, data_list, config, stride=1):
         self.data_list = data_list
         self.config = config
         self.total_length = config.context_length + config.prediction_length
         self.stride = stride
 
-    def __iter__(self):
+    def __iter__(self):\
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is None:
             # Single-process data loading
@@ -74,7 +82,7 @@ class TimeSeriesIterableDataset(IterableDataset):
 def timeseries_collate_fn(batch):
     """
     Custom collate function for an encoder-decoder architecture.
-    """
+    """\
     if not batch:
         return None
 
@@ -113,26 +121,40 @@ FEATURE_SIZE = 1 # Univariate
 NUM_ENCODER_LAYERS = 4
 NUM_DECODER_LAYERS = 4
 
-# Switched to a more powerful GLU-based feedforward network
-ffn_config = FeedForwardConfig(
-    type="glu", 
-    intermediate_size=HIDDEN_SIZE * 4, 
-    activation="gelu", 
-    dropout=0.1
+# Now instantiate specific config dataclasses
+ffn_config = StandardFeedForwardConfig( # Or MoEFeedForwardConfig if using MoE
+    intermediate_size=HIDDEN_SIZE * 4,
+    activation="gelu", # Direct field
+    dropout=0.1,       # Direct field
+    # Removed 'type' here as it's set by the class itself
 )
+# If you had a GLU specific FFN, it would be e.g. `GLUFeedForwardConfig(...)`
 
 encoder_blocks = [
-    TransformerBlockConfig(
-        block_type="default_encoder",
-        attention_config=AttentionConfig(attention_type="full", num_heads=NUM_HEADS, dropout=0.1, use_rope=True),
+    EncoderBlockConfig( # Use specific EncoderBlockConfig
+        attention_config=FullAttentionConfig( # Use specific FullAttentionConfig
+            num_heads=NUM_HEADS,
+            dropout=0.1,
+            use_rope=True,
+            # max_position_embeddings will be picked up by the builder from model config
+            # bias and qk_layernorm are default True/False in AttentionConfig base
+        ),
         ffn_config=ffn_config,
     ) for _ in range(NUM_ENCODER_LAYERS)
 ]
 
 decoder_blocks = [
-    TransformerBlockConfig(
-        block_type="default_decoder",
-        attention_config=AttentionConfig(attention_type="full", num_heads=NUM_HEADS, dropout=0.1, use_rope=True),
+    DecoderBlockConfig( # Use specific DecoderBlockConfig
+        attention_config=FullAttentionConfig(
+            num_heads=NUM_HEADS,
+            dropout=0.1,
+            use_rope=True,
+        ),
+        cross_attention_config=FullAttentionConfig( # Cross-attention also uses a specific config
+            num_heads=NUM_HEADS,
+            dropout=0.1,
+            # No use_rope/use_alibi for cross-attention generally, but depends on your model
+        ),
         ffn_config=ffn_config,
     ) for _ in range(NUM_DECODER_LAYERS)
 ]
@@ -140,22 +162,30 @@ decoder_blocks = [
 config = TransformerTimeSeriesConfig(
     model_type='transformer',
     input_dim=FEATURE_SIZE,
-    output_dim=FEATURE_SIZE,
+    output_dim=FEATURE_SIZE, # output_dim is passed to super().__init__ in config
     context_length=CONTEXT_LENGTH,
     prediction_length=PREDICTION_LENGTH,
     d_model=HIDDEN_SIZE,
-    # Switched to encoder-decoder architecture
-    architecture=TransformerArchitectureConfig(
-        layout="encoder-decoder", 
+    architecture=TransformerArchitectureConfig( # ArchitectureConfig is already a dataclass
+        layout="encoder-decoder",
         num_encoder_layers=len(encoder_blocks),
         num_decoder_layers=len(decoder_blocks)
     ),
     encoder_blocks=encoder_blocks,
     decoder_blocks=decoder_blocks,
-    value_embedding_config=EmbeddingConfig(type="value", kwargs={"feature_size": FEATURE_SIZE, "d_model": HIDDEN_SIZE}),
-    positional_embedding_config=EmbeddingConfig(type="sinusoidal"),
-    output_head_config=OutputHeadConfig(type="linear", output_size=FEATURE_SIZE),
-    loss_config={"type": "mse"},
+    value_embedding_config=TimeSeriesValueEmbeddingConfig( # Use specific TimeSeriesValueEmbeddingConfig
+        feature_size=FEATURE_SIZE,
+        # d_model (embedding_dim) will be automatically injected by ModuleBuilder
+        use_value_norm=False # Direct field
+    ),
+    positional_embedding_config=SinusoidalPositionalEmbeddingConfig( # Use specific SinusoidalPositionalEmbeddingConfig
+        # max_seq_len (max_position_embeddings) will be automatically injected by ModuleBuilder
+    ),
+    output_head_config=OutputHeadConfig( # OutputHeadConfig is already a dataclass
+        output_size=FEATURE_SIZE,
+        # type defaults to "linear"
+    ),
+    loss_config=MSELossConfig(), # Instantiate the specific MSELossConfig dataclass
     use_cache=True
 )
 
@@ -212,7 +242,7 @@ while batch_counter < MAX_BATCHES:
 
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast(enabled=(device.type == 'cuda')):
+        with autocast(enabled=(device.type == 'cuda')):\
             out = model(
                 encoder_inputs=batch["encoder_inputs"],
                 decoder_inputs=batch["decoder_inputs"],
@@ -256,7 +286,7 @@ while batch_counter < MAX_BATCHES:
             for k, v in val_batch.items():
                 if isinstance(v, torch.Tensor): val_batch[k] = v.to(device)
 
-            with autocast(enabled=(device.type == 'cuda')):
+            with autocast(enabled=(device.type == 'cuda')):\
                 vout = model(
                     encoder_inputs=val_batch["encoder_inputs"],
                     decoder_inputs=val_batch["decoder_inputs"],
