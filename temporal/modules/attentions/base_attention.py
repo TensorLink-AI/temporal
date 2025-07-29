@@ -78,6 +78,13 @@ class BaseMultiHeadAttention(nn.Module):
         self.is_decoder = is_decoder
         self.is_cross_attention = is_cross_attention
 
+    def _compute_attn_probs(self, scores: torch.Tensor) -> torch.Tensor:
+        """
+        Computes attention probabilities from scores.
+        Standard implementation uses softmax.
+        """
+        return F.softmax(scores, dim=-1)
+
     def compute_attention_scores(self, q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
         """
         Computes the attention scores.
@@ -181,7 +188,7 @@ class BaseMultiHeadAttention(nn.Module):
             scores = scores + attention_mask
 
         # --- 3) Softmax, dropout, head mask ---
-        probs = F.softmax(scores, dim=-1)
+        probs = self._compute_attn_probs(scores)
         probs = F.dropout(probs, p=self.dropout, training=self.training)
         if head_mask is not None:
             probs = probs * head_mask.view(1, -1, 1, 1)
