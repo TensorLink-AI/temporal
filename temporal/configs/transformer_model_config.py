@@ -156,18 +156,21 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     """
     Configuration for a transformer-based time-series forecasting model.
     All fields are keyword-only to avoid dataclass ordering issues.
+    Extends BaseTimeSeriesConfig with transformer-specific options.
     """
-    # Identity
+    # Identification
     type: str = "transformer_time_series_config"
     model_type: str = "transformer"
 
-    # Core dimensions & dropout
+    # Core model dimensions & dropout
     d_model: int = 64
     hidden_dropout_prob: float = 0.1
     max_position_embeddings: int = 4096
 
     # Architecture
-    architecture: TransformerArchitectureConfig = field(default_factory=TransformerArchitectureConfig)
+    architecture: TransformerArchitectureConfig = field(
+        default_factory=TransformerArchitectureConfig
+    )
 
     # Embeddings
     value_embedding_config: EmbeddingConfig = field(
@@ -178,8 +181,8 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     )
 
     # Transformer blocks
-    encoder_blocks: Optional[List[TransformerBlockConfig]] = None
-    decoder_blocks: Optional[List[TransformerBlockConfig]] = None
+    encoder_blocks: Optional[List[TransformerBlockConfig]] = field(default=None)
+    decoder_blocks: Optional[List[TransformerBlockConfig]] = field(default=None)
 
     # Output head
     output_head_config: OutputHeadConfig = field(
@@ -193,37 +196,37 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     head_agg_config: HeadAggregationConfig = field(
         default_factory=lambda: head_aggregation_config_from_dict({"type": "mean"})
     )
-    quantizer_config: Optional[QuantizerConfig] = None
+    quantizer_config: Optional[QuantizerConfig] = field(default=None)
 
-    # Sequence / vocab
-    vocab_size: Optional[int] = None
-    decoder_start_token_id: Optional[int] = None
+    # Vocabulary / sequence settings
+    vocab_size: Optional[int] = field(default=None)
+    decoder_start_token_id: Optional[int] = field(default=None)
 
     # Model outputs & training flags
-    output_attentions: bool = False
-    output_hidden_states: bool = False
-    use_teacher_forcing: bool = True
-    use_cache: bool = True
-    aux_loss_weight: float = 0.01
+    output_attentions: bool = field(default=False)
+    output_hidden_states: bool = field(default=False)
+    use_teacher_forcing: bool = field(default=True)
+    use_cache: bool = field(default=True)
+    aux_loss_weight: float = field(default=0.01)
 
-    # Mixture‑of‑Experts (optional)
-    num_experts: Optional[int] = None
-    expert_dropout: Optional[float] = None
+    # Mixture-of-Experts settings (optional)
+    num_experts: Optional[int] = field(default=None)
+    expert_dropout: Optional[float] = field(default=None)
 
-    # Deprecated (ignored)
+    # Deprecated (for compatibility only)
     attention_blocks: Any = field(default=None, repr=False, compare=False)
     feedforward_config: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
-        super().__post_init__()  # base validations
+        super().__post_init__()  # calls BaseTimeSeriesConfig validations
 
         # Deprecation warnings
         if self.attention_blocks is not None:
             print("Warning: `attention_blocks` is deprecated; use encoder_blocks/decoder_blocks.")
         if self.feedforward_config is not None:
-            print("Warning: `feedforward_config` is deprecated; configure FFN within blocks.")
+            print("Warning: `feedforward_config` is deprecated; configure within blocks.")
 
-        # Basic value checks
+        # Basic sanity checks
         if self.d_model <= 0:
             raise ValueError("d_model must be > 0.")
         if not (0.0 <= self.hidden_dropout_prob <= 1.0):
@@ -231,7 +234,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if self.max_position_embeddings <= 0:
             raise ValueError("max_position_embeddings must be > 0.")
 
-        # Nested‑config type checks
+        # Nested-config type checks
         if not isinstance(self.architecture, TransformerArchitectureConfig):
             raise ValueError("architecture must be a TransformerArchitectureConfig instance.")
         if not isinstance(self.value_embedding_config, EmbeddingConfig):
@@ -258,12 +261,14 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             raise ValueError("quantizer_config must be a QuantizerConfig instance.")
         if not isinstance(self.loss_config, LossConfig):
             raise ValueError("loss_config must be a LossConfig instance.")
+
+        # MoE sanity checks
         if self.num_experts is not None and self.num_experts <= 0:
             raise ValueError("num_experts must be > 0 if provided.")
-        if self.expert_dropout is not None and not (0 <= self.expert_dropout <= 1):
+        if self.expert_dropout is not None and not (0.0 <= self.expert_dropout <= 1.0):
             raise ValueError("expert_dropout must be in [0, 1] if provided.")
 
-        # Attention‑head divisibility checks
+        # Attention-head divisibility checks
         blocks = (self.encoder_blocks or []) + (self.decoder_blocks or [])
         for idx, blk in enumerate(blocks):
             if blk.attention_config:
@@ -279,7 +284,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
                         f"d_model ({self.d_model}) must be divisible by cross num_heads ({h}) in block {idx}."
                     )
 
-        # Warnings for optional settings
+        # Optional warnings
         if self.quantizer_config and not self.vocab_size:
             print("Warning: quantizer_config provided but vocab_size not set.")
         if (
@@ -291,18 +296,18 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
 
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        # Handle deprecated aliases
+        # Handle deprecated aliases, backward-compat fields, nested dicts...
         data = cls._handle_deprecated_keys(data)
 
-        # Backward‑compat: hidden_size → d_model
+        # hidden_size → d_model
         if "hidden_size" in data and "d_model" not in data:
             data["d_model"] = data.pop("hidden_size")
 
-        # Feature vs input dimensions
+        # feature_size → input_dim
         if "input_dim" not in data and "feature_size" in data:
             data["input_dim"] = data.pop("feature_size")
 
-        # Nested config dicts → dataclass
+        # Nested dict→config conversions
         if "architecture" in data and isinstance(data["architecture"], dict):
             data["architecture"] = TransformerArchitectureConfig.from_dict(data["architecture"])
         if "value_embedding_config" in data and isinstance(data["value_embedding_config"], dict):
@@ -310,7 +315,9 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if "positional_embedding_config" in data and isinstance(
             data["positional_embedding_config"], dict
         ):
-            data["positional_embedding_config"] = embedding_config_from_dict(data["positional_embedding_config"])
+            data["positional_embedding_config"] = embedding_config_from_dict(
+                data["positional_embedding_config"]
+            )
         if "encoder_blocks" in data and isinstance(data["encoder_blocks"], list):
             data["encoder_blocks"] = [
                 transformer_block_config_from_dict(b) if isinstance(b, dict) else b
