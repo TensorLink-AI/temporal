@@ -2,7 +2,7 @@
 import torch
 from torch import nn
 from temporal.modules.attentions.base_attention import BaseMultiHeadAttention
-from temporal.registry import register_module
+from temporal.registry.core import register_module
 
 @register_module("attention", "lse")
 class LSEAttention(BaseMultiHeadAttention):
