@@ -22,9 +22,11 @@ class DistPredOutputHeadConfig(OutputHeadConfig):
     """
     Configuration for a distributional prediction head.
     """
-    type: str = "distpred"
+    # Non-default arguments must come first in the dataclass definition
     num_outputs: int
     feature_size: int
+    
+    type: str = "distpred" # This now follows the non-default arguments
     use_tanh: bool = False
 
     def __post_init__(self):
