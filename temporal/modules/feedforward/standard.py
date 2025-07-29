@@ -1,4 +1,4 @@
-# Modified temporal/modules/feedforward/standard.py
+
 import torch
 from torch import nn
 from temporal.registry.core import register_module
@@ -13,6 +13,7 @@ _ACTIVATIONS = {
     "tanh": nn.Tanh,
     "sigmoid": nn.Sigmoid,
     "elu":  nn.ELU,
+    "prelu": nn.PReLU, # Added PReLU
 }
 
 def _resolve_activation(name: str) -> nn.Module:
@@ -52,6 +53,7 @@ class StandardFeedForward(nn.Module):
             hidden_size (int): The input and output dimension of the network (d_model).
             intermediate_size (int): The dimension of the hidden layer.
             activation (str): The name of the activation function to use.
+                              Supports 'relu', 'gelu', 'silu', 'swish', 'tanh', 'sigmoid', 'elu', 'prelu'.
             dropout (float): The dropout probability.
             bias (bool): Whether to include a bias term in the linear layers.
             **kwargs: Catches any other unused arguments.

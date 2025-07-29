@@ -258,7 +258,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         if self.preprocessor.is_patched:
             
 
-            projected_patches = self.output_patch_reconstructor(input_to_heads)
             patch_preds = self.output_patch_reconstructor(input_to_heads)
             # reshape into [B, T_tokens * output_patch_size, feature_size]
             B, Ttok, _ = patch_preds.shape

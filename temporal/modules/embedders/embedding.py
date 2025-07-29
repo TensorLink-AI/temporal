@@ -919,7 +919,7 @@ class NoneEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, **kwargs):
         super().__init__(d_model)
         # Register a dummy buffer to make the module device-aware.
-        self.register_buffer("dummy_buffer", torch.zeros(1), persistent=False)
+        self.register_buffer("dummy_buffer", torch.zeros(1), persistent=True)
 
     def forward(
         self,

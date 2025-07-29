@@ -2,12 +2,14 @@
 from .base_attention import FullAttention,  FlashAttention
 from .diff_attention    import DifferentialAttention
 from .hybrid_attention  import HybridAttention
+from .lse_attention import LSEAttention # Added LSEAttention
 
 
 __all__ = [
     "FullAttention",
     "FlashAttention",
     "DifferentialAttention",
-    "HybridAttention"
+    "HybridAttention",
+    "LSEAttention" # Added LSEAttention to __all__
 
 ]

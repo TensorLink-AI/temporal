@@ -115,7 +115,7 @@ class AutoregressivePatchMixin:
         reference_tensor = decoder_inputs if encoder_inputs is None else encoder_inputs
         batch_size, device = reference_tensor.shape[0], reference_tensor.device
 
-        num_patches_to_generate = prediction_length // self.preprocessor.value_embedding.patch_size
+        num_patches_to_generate = prediction_length // self.preprocessor.value_embedding.output_patch_size
 
         # --- 2. Architectural Path: Prepare context and initial decoder state ---
         if hasattr(self, 'encoder') and self.encoder is not None and encoder_inputs is not None:
