@@ -38,11 +38,11 @@ class MoEFeedForwardConfig(FeedForwardConfig):
     """
     Configuration for a Mixture-of-Experts (MoE) feed-forward network.
     """
-    type: str = "moe" # Override base type
     num_experts: int
     top_k: int
     expert_intermediate_size: Optional[int] = None
     load_balancing_coef: float = 0.01
+    type: str = "moe" # Override base type
 
     def __post_init__(self):
         super().__post_init__()
