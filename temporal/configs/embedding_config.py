@@ -1,31 +1,32 @@
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Union, Sequence, Callable
 from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class EmbeddingConfig(BaseConfig):
     """
     Base configuration for embedding layers.
     Specific embedding types should inherit from this class.
     """
-    dropout: float = 0.1
-    embedding_dim: Optional[int] = None # Will be d_model from overall config
+    dropout: float = field(default=0.1)
+    embedding_dim: Optional[int] = field(default=None) # Will be d_model from overall config
 
     def __post_init__(self):
+        super().__post_init__()
         if not (0.0 <= self.dropout <= 1.0):
             raise ValueError(f"dropout must be in [0, 1], got {self.dropout}")
 
 
 @register_config_type("value_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class TimeSeriesValueEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for a simple linear value embedding.
     """
-    type: str = "value"
-    feature_size: int = 1
-    use_value_norm: bool = False
+    type: str = field(default="value") # Override type and make it kw_only
+    feature_size: int = field(default=1)
+    use_value_norm: bool = field(default=False)
 
     def __post_init__(self):
         super().__post_init__()
@@ -34,16 +35,17 @@ class TimeSeriesValueEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("flexible_value_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class FlexibleValueEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for a flexible value embedding.
     """
-    type: str = "flexible_value"
-    input_dims: Union[int, Sequence[int]]
-    # proj_builder: Callable[[int, int, Dict[str, Any]], nn.Module] = None # Cannot be dataclass field
+    input_dims: Union[int, Sequence[int]] # Required kw-only field
+
+    type: str = field(default="flexible_value") # Override type and make it kw_only
+    # proj_builder: Callable[[int, int, Dict[str, Any]], nn.Module] = field(default=None) # Cannot be dataclass field
     proj_kwargs: Dict[str, Any] = field(default_factory=dict)
-    use_layer_norm: bool = False
+    use_layer_norm: bool = field(default=False)
 
     def __post_init__(self):
         super().__post_init__()
@@ -55,34 +57,35 @@ class FlexibleValueEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("sinusoidal_positional_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class SinusoidalPositionalEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for fixed sinusoidal positional embeddings.
     """
-    type: str = "sinusoidal"
-    max_seq_len: int = 2048
+    type: str = field(default="sinusoidal")
+    max_seq_len: int = field(default=2048)
 
     def __post_init__(self):
-        super().__post_init()
+        super().__post_init__() # Use () for super().__post_init__
         if self.max_seq_len <= 0:
             raise ValueError("max_seq_len must be a positive integer.")
 
 
 @register_config_type("patch_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class TimeSeriesPatchEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for patch embeddings.
     """
-    type: str = "patch"
-    patch_size: int
-    feature_size: int
-    output_patch_size: Optional[int] = None
-    stride: Optional[int] = None
-    pad_value: float = 0.0
-    use_mlp: bool = False
-    mlp_hidden_size: Optional[int] = None
+    patch_size: int   # Required kw-only field
+    feature_size: int # Required kw-only field
+
+    type: str = field(default="patch")
+    output_patch_size: Optional[int] = field(default=None)
+    stride: Optional[int] = field(default=None)
+    pad_value: float = field(default=0.0)
+    use_mlp: bool = field(default=False)
+    mlp_hidden_size: Optional[int] = field(default=None)
 
     def __post_init__(self):
         super().__post_init__()
@@ -99,14 +102,15 @@ class TimeSeriesPatchEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("global_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class TimeSeriesGlobalEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for global embedding.
     """
-    type: str = "global"
-    seq_len: int
-    feature_size: int
+    seq_len: int      # Required kw-only field
+    feature_size: int # Required kw-only field
+
+    type: str = field(default="global")
 
     def __post_init__(self):
         super().__post_init__()
@@ -117,14 +121,14 @@ class TimeSeriesGlobalEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("rotary_positional_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class RotaryPositionalEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for Rotary Positional Embedding.
     """
-    type: str = "rotary"
-    max_seq_len: int = 2048
-    base: int = 10000
+    type: str = field(default="rotary")
+    max_seq_len: int = field(default=2048)
+    base: int = field(default=10000)
 
     def __post_init__(self):
         super().__post_init__()
@@ -135,13 +139,13 @@ class RotaryPositionalEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("learned_absolute_positional_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class LearnedAbsolutePositionalEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for learned absolute positional embeddings.
     """
-    type: str = "learned_abs"
-    max_seq_len: int = 2048
+    type: str = field(default="learned_abs")
+    max_seq_len: int = field(default=2048)
 
     def __post_init__(self):
         super().__post_init__()
@@ -150,14 +154,15 @@ class LearnedAbsolutePositionalEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("shaw_relative_positional_bias")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ShawRelativePositionalBiasConfig(EmbeddingConfig):
     """
     Configuration for Shaw relative positional bias.
     """
-    type: str = "relative_shaw"
-    num_heads: int
-    max_distance: int = 128
+    num_heads: int # Required kw-only field
+
+    type: str = field(default="relative_shaw")
+    max_distance: int = field(default=128)
 
     def __post_init__(self):
         super().__post_init__()
@@ -168,13 +173,13 @@ class ShawRelativePositionalBiasConfig(EmbeddingConfig):
 
 
 @register_config_type("fourier_feature_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class FourierFeatureEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for Fourier Feature Embedding.
     """
-    type: str = "fourier"
-    num_features: int = 16
+    type: str = field(default="fourier")
+    num_features: int = field(default=16)
 
     def __post_init__(self):
         super().__post_init__()
@@ -183,13 +188,13 @@ class FourierFeatureEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("time2vec_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Time2VecEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for Time2Vec embedding.
     """
-    type: str = "time2vec"
-    use_cos: bool = True
+    type: str = field(default="time2vec")
+    use_cos: bool = field(default=True)
 
     def __post_init__(self):
         super().__post_init__()
@@ -198,14 +203,15 @@ class Time2VecEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("alibi_positional_bias")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ALiBiPositionalBiasConfig(EmbeddingConfig):
     """
     Configuration for ALiBi Positional Bias.
     """
-    type: str = "alibi"
-    num_heads: int
-    max_seq_len: int = 2048
+    num_heads: int # Required kw-only field
+
+    type: str = field(default="alibi")
+    max_seq_len: int = field(default=2048)
 
     def __post_init__(self):
         super().__post_init__()
@@ -216,15 +222,16 @@ class ALiBiPositionalBiasConfig(EmbeddingConfig):
 
 
 @register_config_type("bucketed_relative_bias")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class BucketedRelativeBiasConfig(EmbeddingConfig):
     """
     Configuration for Bucketed Relative Bias.
     """
-    type: str = "bucketed"
-    num_heads: int
-    num_buckets: int = 32
-    max_distance: int = 128
+    num_heads: int # Required kw-only field
+
+    type: str = field(default="bucketed")
+    num_buckets: int = field(default=32)
+    max_distance: int = field(default=128)
 
     def __post_init__(self):
         super().__post_init__()
@@ -237,14 +244,14 @@ class BucketedRelativeBiasConfig(EmbeddingConfig):
 
 
 @register_config_type("conv_pos_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ConvolutionalPositionalEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for Convolutional Positional Embedding.
     """
-    type: str = "conv_pos"
-    kernel_size: int = 3
-    max_seq_len: int = 2048
+    type: str = field(default="conv_pos")
+    kernel_size: int = field(default=3)
+    max_seq_len: int = field(default=2048)
 
     def __post_init__(self):
         super().__post_init__()
@@ -255,13 +262,13 @@ class ConvolutionalPositionalEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("time_delta_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class TimeDeltaEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for TimeDelta Embedding.
     """
-    type: str = "timedelta"
-    hidden_dim: int = 64
+    type: str = field(default="timedelta")
+    hidden_dim: int = field(default=64)
 
     def __post_init__(self):
         super().__post_init__()
@@ -270,12 +277,12 @@ class TimeDeltaEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("stacked_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class StackedPositionalEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for a Stacked Positional Embedding.
     """
-    type: str = "stacked_embedding"
+    type: str = field(default="stacked_embedding")
     embedding_configs: List[EmbeddingConfig] = field(default_factory=list)
 
     def __post_init__(self):
@@ -288,23 +295,23 @@ class StackedPositionalEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("none_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class NoneEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for a placeholder None Embedding.
     """
-    type: str = "none"
+    type: str = field(default="none")
 
 
 @register_config_type("s4_positional_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class S4PositionalEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for S4 Positional Embedding.
     """
-    type: str = "s4"
-    kernel_size: int = 512
-    max_seq_len: int = 4096
+    type: str = field(default="s4")
+    kernel_size: int = field(default=512)
+    max_seq_len: int = field(default=4096)
 
     def __post_init__(self):
         super().__post_init__()
@@ -315,15 +322,15 @@ class S4PositionalEmbeddingConfig(EmbeddingConfig):
 
 
 @register_config_type("wavelet_positional_embedding")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class WaveletPositionalEmbeddingConfig(EmbeddingConfig):
     """
     Configuration for Wavelet Positional Embedding.
     """
-    type: str = "wavelet"
-    wavelet: str = "db4"
-    level: int = 3
-    max_seq_len: int = 2048
+    type: str = field(default="wavelet")
+    wavelet: str = field(default="db4")
+    level: int = field(default=3)
+    max_seq_len: int = field(default=2048)
 
     def __post_init__(self):
         super().__post_init__()

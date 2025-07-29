@@ -1,19 +1,22 @@
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field
 from typing import Dict, Any
 from temporal.configs.base_config import BaseConfig, register_config_type
 
 @register_config_type("transformer_architecture")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class TransformerArchitectureConfig(BaseConfig):
     """
     Configuration for transformer architecture specifying layer layout and weight sharing.
     """
-    layout: str = "encoder-decoder"
-    num_encoder_layers: int = 4
-    num_decoder_layers: int = 2
-    share_weights: bool = False
+    # All fields are keyword-only, so order doesn't strictly matter, but good practice
+    # to put required fields first if there were any in the subclass.
+    layout: str = field(default="encoder-decoder")
+    num_encoder_layers: int = field(default=4)
+    num_decoder_layers: int = field(default=2)
+    share_weights: bool = field(default=False)
 
     def __post_init__(self):
+        super().__post_init__() # Call base class validation
         if self.layout not in ("encoder", "decoder", "encoder-decoder"):
             raise ValueError(f"layout must be 'encoder', 'decoder', or 'encoder-decoder', got {self.layout}")
         if self.num_encoder_layers <= 0 and self.layout in ("encoder", "encoder-decoder"):

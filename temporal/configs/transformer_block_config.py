@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY
 from temporal.configs.attention_config import AttentionConfig, attention_config_from_dict
@@ -6,7 +6,7 @@ from temporal.configs.feedforward_config import FeedForwardConfig, feedforward_c
 from temporal.configs.normalization_config import NormalizationConfig, normalization_config_from_dict
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class TransformerBlockConfig(BaseConfig):
     """
     Base configuration for a generic transformer block.
@@ -18,6 +18,7 @@ class TransformerBlockConfig(BaseConfig):
     kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
+        super().__post_init__()
         if not isinstance(self.attention_config, AttentionConfig):
             raise ValueError("attention_config must be an AttentionConfig instance.")
         if not isinstance(self.ffn_config, FeedForwardConfig):
@@ -27,22 +28,22 @@ class TransformerBlockConfig(BaseConfig):
 
 
 @register_config_type("encoder_block")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class EncoderBlockConfig(TransformerBlockConfig):
     """
     Configuration for a transformer encoder block.
     """
-    type: str = "default_encoder"
+    type: str = field(default="default_encoder") # Override base type and make it kw_only
 
 
 @register_config_type("decoder_block")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class DecoderBlockConfig(TransformerBlockConfig):
     """
     Configuration for a transformer decoder block.
     """
-    type: str = "default_decoder"
-    cross_attention_config: Optional[AttentionConfig] = None
+    type: str = field(default="default_decoder") # Override base type and make it kw_only
+    cross_attention_config: Optional[AttentionConfig] = field(default=None)
 
     def __post_init__(self):
         super().__post_init__()
@@ -51,22 +52,28 @@ class DecoderBlockConfig(TransformerBlockConfig):
 
 
 @register_config_type("adaptive_patch_transformer_block")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class AdaptivePatchTransformerBlockConfig(TransformerBlockConfig):
     """
     Configuration for an adaptive patch transformer block.
     """
-    type: str = "adaptive_patch_transformer"
-    expansion_factor: int
-    wrapped_block_type: str # e.g., "default_encoder" or "default_decoder"
+    expansion_factor: int # Required kw-only field
+    wrapped_block_type: str # Required kw-only field (e.g., "default_encoder" or "default_decoder")
+
+    type: str = field(default="adaptive_patch_transformer") # Override base type and make it kw_only
 
     def __post_init__(self):
         super().__post_init__()
         if self.expansion_factor <= 0:
             raise ValueError("expansion_factor must be a positive integer.")
-        if self.wrapped_block_type not in CONFIG_REGISTRY or \
-           not issubclass(CONFIG_REGISTRY[self.wrapped_block_type], TransformerBlockConfig):
-            raise ValueError(f"wrapped_block_type '{self.wrapped_block_type}' not found in registry or not a valid TransformerBlockConfig type.")
+        # wrapped_block_type can be a string or a config object after from_dict parsing.
+        # If it's a string, look it up in the registry.
+        if isinstance(self.wrapped_block_type, str):
+            if self.wrapped_block_type not in CONFIG_REGISTRY or \
+               not issubclass(CONFIG_REGISTRY[self.wrapped_block_type], TransformerBlockConfig):
+                raise ValueError(f"wrapped_block_type '{self.wrapped_block_type}' not found in registry or not a valid TransformerBlockConfig type.")
+        elif not isinstance(self.wrapped_block_type, TransformerBlockConfig):
+            raise ValueError(f"wrapped_block_type must be a string or a TransformerBlockConfig instance, got {type(self.wrapped_block_type).__name__}.")
 
 
 # Helper function for polymorphic creation
@@ -86,6 +93,7 @@ def transformer_block_config_from_dict(data: Dict[str, Any]) -> TransformerBlock
         raise ValueError(f"Unknown or invalid transformer block type: {block_type} (mapped to registry key: {registry_key})")
 
     # Manually handle nested configs if they are passed as dictionaries
+    # These will be passed to from_dict methods of their respective config types
     if "attention_config" in data and isinstance(data["attention_config"], dict):
         data["attention_config"] = attention_config_from_dict(data["attention_config"])
     if "cross_attention_config" in data and isinstance(data["cross_attention_config"], dict):

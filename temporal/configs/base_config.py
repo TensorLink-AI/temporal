@@ -1,4 +1,4 @@
-from dataclasses import dataclass, asdict, fields
+from dataclasses import dataclass, asdict, fields, field
 from typing import Type, TypeVar, Dict, Any
 
 T = TypeVar('T', bound='BaseConfig')
@@ -15,13 +15,13 @@ def register_config_type(config_type: str):
         return cls
     return decorator
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class BaseConfig:
     """
     Base class for all immutable configuration dataclasses.
     Provides common serialization/deserialization methods.
     """
-    type: str
+    type: str # This field is required and will be keyword-only
 
     def to_dict(self) -> Dict[str, Any]:
         """Converts the dataclass instance to a dictionary, handling nested BaseConfig objects."""
@@ -50,7 +50,8 @@ class BaseConfig:
 
         # Filter out keys not in the constructor's signature
         # This handles cases where `data` might contain extra keys (e.g., from old configs)
-        valid_keys = {f.name for f in fields(target_cls)}
+        # For kw_only=True dataclasses, all fields are in init=True by default unless specified
+        valid_keys = {f.name for f in fields(target_cls) if f.init}
         filtered_data = {k: v for k, v in data.items() if k in valid_keys}
 
         # Recursively build nested configs if they are dicts
@@ -67,14 +68,19 @@ class BaseConfig:
             elif f.name in filtered_data and isinstance(filtered_data[f.name], list):
                 # Handle lists of nested configs
                 list_items = []
+                # Determine the type of list elements from the field's type annotation
+                list_field_type = None
+                if hasattr(f.type, '__args__') and f.type.__args__:
+                    # This assumes homogeneous lists of BaseConfig types
+                    list_field_type = f.type.__args__[0]
+
                 for item in filtered_data[f.name]:
                     if isinstance(item, dict):
-                        # Attempt to find the correct config type from the registry or assume list item type
                         if "type" in item and item["type"] in CONFIG_REGISTRY:
                             list_items.append(CONFIG_REGISTRY[item["type"]].from_dict(item))
-                        elif hasattr(f.type, '__args__') and len(f.type.__args__) > 0 and \
-                             hasattr(f.type.__args__[0], "from_dict") and issubclass(f.type.__args__[0], BaseConfig):
-                            list_items.append(f.type.__args__[0].from_dict(item))
+                        elif list_field_type and hasattr(list_field_type, "from_dict") and issubclass(list_field_type, BaseConfig):
+                            # Fallback if item dict doesn't have a 'type' but list is typed
+                            list_items.append(list_field_type.from_dict(item))
                         else:
                             list_items.append(item)
                     else:

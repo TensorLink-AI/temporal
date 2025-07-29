@@ -1,48 +1,65 @@
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY
 
 #: List of loss types treated as probabilistic. Each requires valid quantile values in (0, 1).
 PROBABILISTIC_LOSSES = ["quantile", "mq", "crps"]
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class LossConfig(BaseConfig):
     """
     Base configuration for the loss function.
     """
     kwargs: Dict[str, Any] = field(default_factory=dict)
+    # `type` field is inherited from BaseConfig and is kw_only.
 
     def __post_init__(self):
+        super().__post_init__() # Call BaseConfig's post_init for its own validations
         pass # No common validation for all loss types here
 
 @register_config_type("mse_loss")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class MSELossConfig(LossConfig):
     """
     Configuration for Mean Squared Error loss.
     """
-    type: str = "mse"
+    type: str = field(default="mse") # Override type field and make it kw_only
 
 @register_config_type("crps_loss")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CRPSLossConfig(LossConfig):
     """
     Configuration for Continuous Ranked Probability Score (CRPS) loss.
     """
-    type: str = "crps"
+    type: str = field(default="crps") # Override type field and make it kw_only
     # CRPS might have specific kwargs, e.g., reduction, but for now just type
+    reduction: str = field(default="mean")
+    estimator: str = field(default="pinball") # Common estimator, change as needed
+    spread_lambda: float = field(default=0.0)
+    spread_penalty_type: str = field(default="log")
+    spread_penalty_epsilon: float = field(default=0.0)
+    spread_target_spread: float = field(default=0.0)
+
     def __post_init__(self):
         super().__post_init__()
-        # Add CRPS-specific validation if needed
+        # Add CRPS-specific validation here
+        if self.estimator not in ["pinball", "pwm"]:
+            raise ValueError(f"CRPS estimator must be 'pinball' or 'pwm', got {self.estimator}")
+        if not (0.0 <= self.spread_lambda <= 1.0):
+            raise ValueError(f"spread_lambda must be in [0, 1], got {self.spread_lambda}")
+        if self.spread_penalty_type not in ["log", "inverse", "symmetric_log", "none"]:
+            raise ValueError(f"spread_penalty_type must be 'log', 'inverse', 'symmetric_log', or 'none', got {self.spread_penalty_type}")
+        if self.spread_penalty_epsilon < 0:
+            raise ValueError("spread_penalty_epsilon cannot be negative.")
 
 @register_config_type("quantile_loss")
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class QuantileLossConfig(LossConfig):
     """
     Configuration for Quantile Loss.
     """
-    type: str = "quantile"
-    quantiles: List[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
+    type: str = field(default="quantile") # Override type field and make it kw_only
+    quantiles: List[float] = field(default_factory=list) # Required quantiles list
 
     def __post_init__(self):
         super().__post_init__()

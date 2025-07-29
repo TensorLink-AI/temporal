@@ -1,17 +1,18 @@
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Dict, Any
 from temporal.configs.base_config import BaseConfig, register_config_type
 
 @register_config_type("head_aggregation") # Generic type for HeadAggregationConfig if no specific type is given
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class HeadAggregationConfig(BaseConfig):
     """
     Configuration for combining multiple output heads.
     """
-    type: str = "mean"
+    type: str = field(default="mean")
     kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
+        super().__post_init__()
         # Add any validation for head aggregation types here
         pass
 

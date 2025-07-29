@@ -1,19 +1,20 @@
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Dict, Any
 from temporal.configs.base_config import BaseConfig, register_config_type
 
 @register_config_type("quantizer") # Generic type for QuantizerConfig
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class QuantizerConfig(BaseConfig):
     """
     Configuration for time series quantization.
     """
-    type: str = "mean_std_bins" # Renamed from quantization_type for consistency
-    vocab_size: int = 4096
-    num_features: int = 1
+    type: str = field(default="mean_std_bins") # Renamed from quantization_type for consistency
+    vocab_size: int = field(default=4096)
+    num_features: int = field(default=1)
     kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
+        super().__post_init__()
         if self.vocab_size <= 0:
             raise ValueError("vocab_size must be a positive integer.")
         if self.num_features <= 0:
