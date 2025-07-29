@@ -14,6 +14,7 @@ from temporal.configs.head_aggregation_config import HeadAggregationConfig, head
 from temporal.configs.normalization_config import NormalizationConfig, normalization_config_from_dict
 from temporal.configs.quantizer_config import QuantizerConfig, quantizer_config_from_dict
 from temporal.configs.loss_config import LossConfig, loss_config_from_dict, PROBABILISTIC_LOSSES
+from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig # <-- ADDED THIS IMPORT
 
 T = TypeVar('T', bound='TransformerTimeSeriesConfig')
 
@@ -105,7 +106,8 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
                         f"d_model ({self.d_model}) must be divisible by num_heads ({heads}) "
                         f"in self-attention of block {i}"
                     )
-            if isinstance(block_config, type(self)._field_defaults['decoder_blocks']).__args__[0] and block_config.cross_attention_config: # Check for DecoderBlockConfig type
+            # Use direct type check for DecoderBlockConfig since it's a specific class now
+            if isinstance(block_config, DecoderBlockConfig) and block_config.cross_attention_config:
                 cross_heads = block_config.cross_attention_config.num_heads
                 if self.d_model % cross_heads != 0:
                     raise ValueError(
