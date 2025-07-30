@@ -83,6 +83,17 @@ class ModuleBuilder:
         elif 'hidden_size' in accepted_params and 'hidden_size' not in kwargs:
              kwargs['hidden_size'] = self._model_dim
 
+        # Special handling for normalization layers: inject normalized_shape
+        if kind == "normalization" and 'normalized_shape' in accepted_params:
+            if module_config.type == "revin" or module_config.type == "revin2d":
+                # RevIN and RevIN2D use 'num_features'
+                if 'num_features' not in kwargs:
+                    kwargs['num_features'] = self._model_dim
+            else:
+                # Default LayerNorm, RMSNorm, ScaleNorm use 'normalized_shape'
+                if 'normalized_shape' not in kwargs:
+                    kwargs['normalized_shape'] = self._model_dim
+
         # Inject the builder instance if the constructor accepts it.
         # This is particularly relevant for block types which need the builder for sub-modules.
         if 'builder' in accepted_params:
@@ -103,10 +114,7 @@ class ModuleBuilder:
         return self._build("attention", cfg)
 
     def build_feedforward(self, cfg: FeedForwardConfig) -> nn.Module:
-        """
-        Builds a feed-forward network from a `FeedForwardConfig`.
-        Note: cfg is explicitly passed now, no need to get from self.config if None.
-        """
+        """Builds a feed-forward network from a `FeedForwardConfig`."""
         return self._build("feedforward", cfg)
 
     def build_value_embedding(self, cfg: EmbeddingConfig) -> nn.Module:
