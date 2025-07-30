@@ -3,7 +3,10 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple
 # Import the specific block config type hint
-from temporal.configs.transformer_config import TransformerBlockConfig, AttentionConfig, FeedForwardConfig, TransformerTimeSeriesConfig # Added main config
+from temporal.configs.transformer_block_config import TransformerBlockConfig
+from temporal.configs.attention_config import AttentionConfig
+from temporal.configs.feedforward_config import FeedForwardConfig
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig # Added main config
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.registry.core import register_module
 from temporal.models.outputs import DecoderLayerOutput
@@ -105,7 +108,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
             cross_attn_build_config.kwargs['is_decoder'] = True
             cross_attn_build_config.kwargs['is_cross_attention'] = True
             self.cross_attn = builder.build_attention(cross_attn_build_config)
-        # --- End Resolve Cross-Attention Config ---
+        # --- End Cross Attention ---
 
         # --- Resolve FFN Config ---
         resolved_ffn_config = config.ffn_config

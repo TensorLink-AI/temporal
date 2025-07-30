@@ -4,5 +4,5 @@ from .base_decoder_layer  import TimeSeriesTransformerDecoderLayer
 
 __all__ = [
     "TimeSeriesTransformerDecoder",
-    "TransformerDecoderLayer",
+    "TimeSeriesTransformerDecoderLayer",
 ]

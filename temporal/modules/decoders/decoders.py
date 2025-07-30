@@ -5,7 +5,7 @@ from typing import Optional, Tuple, List, Union
 
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.models.block_builder import BlockBuilder
-from temporal.configs.transformer_config import TransformerBlockConfig
+from temporal.configs.transformer_block_config import TransformerBlockConfig
 from temporal.models.outputs import DecoderLayerOutput
 
 class TimeSeriesTransformerDecoder(nn.Module):

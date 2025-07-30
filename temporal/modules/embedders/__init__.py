@@ -1,6 +1,5 @@
 # ---- Embedding modules --------------------------------------------
 from .embedding                   import TimeSeriesValueEmbedding
-# from .embedding                   import PositionalEmbedding # Commented out - was removed/commented in embedding.py
 from .embedding                   import SinusoidalPositionalEmbedding
 from .embedding                   import TimeSeriesPatchEmbedding
 from .embedding                   import TimeSeriesGlobalEmbedding
@@ -13,13 +12,12 @@ from .embedding                   import ALiBiPositionalBias
 from .embedding                   import BucketedRelativeBias
 from .embedding                   import ConvolutionalPositionalEmbedding
 from .embedding                   import TimeDeltaEmbedding
-from .embedding                   import StackedPositionalEmbedding # Add the new stacked embedding
-from .embedding                   import WaveletPositionalEmbedding # Add the new stacked embedding
-from .embedding                   import S4PositionalEmbedding # Add the new stacked embedding
+from .embedding                   import StackedPositionalEmbedding
+from .embedding                   import WaveletPositionalEmbedding
+from .embedding                   import S4PositionalEmbedding
 
 __all__ = [
     "TimeSeriesValueEmbedding",
-    # "PositionalEmbedding", # Commented out
     "SinusoidalPositionalEmbedding",
     "TimeSeriesPatchEmbedding",
     "TimeSeriesGlobalEmbedding",
@@ -32,7 +30,7 @@ __all__ = [
     "BucketedRelativeBias",
     "ConvolutionalPositionalEmbedding",
     "TimeDeltaEmbedding",
-    "StackedPositionalEmbedding", # Add the new stacked embedding class name
+    "StackedPositionalEmbedding",
     "S4PositionalEmbedding",
     "WaveletPositionalEmbedding"
 ]

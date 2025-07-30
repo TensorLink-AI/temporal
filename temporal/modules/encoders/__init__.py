@@ -4,5 +4,5 @@ from .transformer_encoder_layer  import TimeSeriesTransformerEncoderLayer
 
 __all__ = [
     "TimeSeriesTransformerEncoder",
-    "TransformerEncoderLayer",
+    "TimeSeriesTransformerEncoderLayer",
 ]

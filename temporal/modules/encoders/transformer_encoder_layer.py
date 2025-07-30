@@ -3,8 +3,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
-# Import necessary config types
-from temporal.configs.transformer_config import TransformerBlockConfig, AttentionConfig, FeedForwardConfig, TransformerTimeSeriesConfig
+# Import necessary config types individually
+from temporal.configs.transformer_block_config import TransformerBlockConfig
+from temporal.configs.attention_config import AttentionConfig
+from temporal.configs.feedforward_config import FeedForwardConfig
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.registry.core import register_module
 from temporal.models.outputs import EncoderLayerOutput

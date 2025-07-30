@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch
 from typing import Callable, Optional
 
 class BaseOutputHead(nn.Module):
@@ -13,23 +14,24 @@ class BaseOutputHead(nn.Module):
     to be used with the head's output.
     """
 
-    def forward(self, hidden_state: nn.Module) -> nn.Module:
+    def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
         """Processes the model's final hidden state to produce the output.
 
         This method must be implemented by all subclasses.
 
         Args:
-            hidden_state (nn.Module): The final hidden state from the model's
+            hidden_state (torch.Tensor): The final hidden state from the model's
                 backbone, typically of shape `[batch_size, seq_len, d_model]`.
 
         Returns:
-            nn.Module: The model's final output, with its shape and meaning
+            torch.Tensor: The model's final output, with its shape and meaning
                 determined by the specific head implementation.
         """
         raise NotImplementedError("Each head must implement the forward method.")
 
     def get_loss_fn(self) -> Optional[Callable]:
-        """Returns the default loss function associated with this head.
+        """
+        Returns the default loss function associated with this head.
 
         This method should be implemented by subclasses to provide a suitable
         loss function for the type of output they produce. For example, a
