@@ -39,12 +39,13 @@ class MoEFeedForwardConfig(FeedForwardConfig):
     """
     Configuration for a Mixture-of-Experts (MoE) feed-forward network.
     """
-    num_experts: int # Required kw-only field
-    top_k: int       # Required kw-only field
+    num_experts: int = field(default=8) # Default added for convenience
+    top_k: int = field(default=2)       # Default added for convenience
     
     type: str = field(default="moe") # Overriding type and making it kw_only
     expert_intermediate_size: Optional[int] = field(default=None) # Optional kw-only
     load_balancing_coef: float = field(default=0.01) # Defaulted kw-only
+    gate_dropout: Optional[float] = field(default=None) # ADDED: For gate dropout
 
     def __post_init__(self):
         super().__post_init__()
@@ -56,6 +57,8 @@ class MoEFeedForwardConfig(FeedForwardConfig):
             raise ValueError("expert_intermediate_size must be > 0 if specified.")
         if not (0.0 <= self.load_balancing_coef <= 1.0):
             raise ValueError(f"load_balancing_coef must be in [0, 1], got {self.load_balancing_coef}")
+        if self.gate_dropout is not None and not (0.0 <= self.gate_dropout <= 1.0):
+            raise ValueError(f"gate_dropout must be in [0, 1] or None, got {self.gate_dropout}")
 
 # Helper function for polymorphic creation
 def feedforward_config_from_dict(data: Dict[str, Any]) -> FeedForwardConfig:

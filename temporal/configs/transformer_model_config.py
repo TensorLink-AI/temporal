@@ -8,7 +8,7 @@ from temporal.configs.base_config import BaseConfig, register_config_type, CONFI
 from temporal.configs.architecture_config import TransformerArchitectureConfig
 from temporal.configs.attention_config import AttentionConfig, attention_config_from_dict
 from temporal.configs.output_head_config import OutputHeadConfig, output_head_config_from_dict
-from temporal.configs.transformer_block_config import TransformerBlockConfig, transformer_block_config_from_dict
+from temporal.configs.transformer_block_config import TransformerBlockConfig, transformer_block_config_from_dict, DecoderBlockConfig, EncoderBlockConfig # Added EncoderBlockConfig
 from temporal.configs.embedding_config import EmbeddingConfig, embedding_config_from_dict
 from temporal.configs.head_aggregation_config import HeadAggregationConfig, head_aggregation_config_from_dict
 from temporal.configs.normalization_config import NormalizationConfig, normalization_config_from_dict
