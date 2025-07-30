@@ -68,6 +68,11 @@ class ModuleBuilder:
             # Convert dataclass to dict; `to_dict` handles nested configs appropriately
             kwargs = module_config.to_dict()
             
+            # If the config has a 'kwargs' field, unpack it into the main kwargs
+            if 'kwargs' in kwargs:
+                extra_kwargs = kwargs.pop('kwargs')
+                kwargs.update(extra_kwargs)
+
             # Remove the 'type' key as it's used for registry lookup, not module init
             kwargs.pop('type', None)
 
