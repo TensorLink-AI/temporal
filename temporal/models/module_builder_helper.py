@@ -104,8 +104,11 @@ class ModuleBuilder:
         if 'builder' in accepted_params:
             kwargs['builder'] = self
         
+        # Filter out arguments not accepted by the module's __init__ method
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted_params}
+
         try:
-            return cls(**kwargs)
+            return cls(**filtered_kwargs)
         except TypeError as e:
              passed_args_str = ", ".join(f"{k}={type(v).__name__}" for k,v in kwargs.items())
              raise TypeError(
