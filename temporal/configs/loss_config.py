@@ -39,18 +39,28 @@ class CRPSLossConfig(LossConfig):
     spread_penalty_type: str = field(default="log")
     spread_penalty_epsilon: float = field(default=0.0)
     spread_target_spread: float = field(default=0.0)
+    # --- ADDED SCALING CONFIGURATION --- 
+    scaling_type: str = field(default="none")
+    scaling_dim: int = field(default=1)
+    scaling_eps: float = field(default=1e-8)
 
     def __post_init__(self):
         super().__post_init__()
         # Add CRPS-specific validation here
-        if self.estimator not in ["pinball", "pwm"]:
-            raise ValueError(f"CRPS estimator must be 'pinball' or 'pwm', got {self.estimator}")
+        if self.estimator not in ["pinball", "pwm", "nrg", "fair"]:
+            raise ValueError(f"CRPS estimator must be 'pinball', 'pwm', 'nrg', or 'fair', got {self.estimator}")
         if not (0.0 <= self.spread_lambda <= 1.0):
             raise ValueError(f"spread_lambda must be in [0, 1], got {self.spread_lambda}")
         if self.spread_penalty_type not in ["log", "inverse", "symmetric_log", "none"]:
             raise ValueError(f"spread_penalty_type must be 'log', 'inverse', 'symmetric_log', or 'none', got {self.spread_penalty_type}")
         if self.spread_penalty_epsilon < 0:
             raise ValueError("spread_penalty_epsilon cannot be negative.")
+        if self.scaling_type not in ["none", "std", "minmax"]:
+            raise ValueError(f"scaling_type must be 'none', 'std', or 'minmax', got {self.scaling_type}")
+        if self.scaling_dim <= 0:
+            raise ValueError("scaling_dim must be a positive integer.")
+        if self.scaling_eps < 0:
+            raise ValueError("scaling_eps cannot be negative.")
 
 @register_config_type("quantile_loss")
 @dataclass(frozen=True, kw_only=True)
