@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
-from temporal.configs.base_config import BaseConfig, register_config_type
+from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY # Added CONFIG_REGISTRY
 
 @register_config_type("normalization") # Generic type for NormalizationConfig if no specific type is given
 @dataclass(frozen=True, kw_only=True)

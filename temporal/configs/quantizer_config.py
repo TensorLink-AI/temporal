@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Dict, Any
-from temporal.configs.base_config import BaseConfig, register_config_type
+from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY # Added CONFIG_REGISTRY
 
 @register_config_type("quantizer") # Generic type for QuantizerConfig
 @dataclass(frozen=True, kw_only=True)

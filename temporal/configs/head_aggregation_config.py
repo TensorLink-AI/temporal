@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Dict, Any
-from temporal.configs.base_config import BaseConfig, register_config_type
+from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY # Added CONFIG_REGISTRY
 
 @register_config_type("head_aggregation") # Generic type for HeadAggregationConfig if no specific type is given
 @dataclass(frozen=True, kw_only=True)
