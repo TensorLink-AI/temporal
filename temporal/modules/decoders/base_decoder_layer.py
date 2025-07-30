@@ -73,7 +73,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         
         # Prepare build config for self-attention (always is_decoder=True, is_cross_attention=False)
         self_attn_build_config = copy.deepcopy(resolved_self_attn_config)
-        self_attn_build_config.kwargs = self_attn_build_config.kwargs or {}
+        # self_attn_build_config.kwargs = self_attn_build_config.kwargs or {} # REMOVED: kwargs is now guaranteed by BaseConfig
         self_attn_build_config.kwargs['is_decoder'] = True
         self_attn_build_config.kwargs['is_cross_attention'] = False
         self.self_attn = builder.build_attention(self_attn_build_config)
@@ -104,7 +104,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
             
             # Prepare build config for cross-attention (always is_decoder=True, is_cross_attention=True)
             cross_attn_build_config = copy.deepcopy(resolved_cross_attn_config)
-            cross_attn_build_config.kwargs = cross_attn_build_config.kwargs or {}
+            # cross_attn_build_config.kwargs = cross_attn_build_config.kwargs or {} # REMOVED: kwargs is now guaranteed by BaseConfig
             cross_attn_build_config.kwargs['is_decoder'] = True
             cross_attn_build_config.kwargs['is_cross_attention'] = True
             self.cross_attn = builder.build_attention(cross_attn_build_config)
@@ -125,9 +125,9 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         self.ffn = builder.build_feedforward(resolved_ffn_config)
         # --- End Resolve FFN Config ---
 
-        self.norm1 = builder.build_normalization()
-        self.norm2 = builder.build_normalization() if self.is_encoder_decoder and self.cross_attn is not None else None 
-        self.norm3 = builder.build_normalization()
+        self.norm1 = builder.build_normalization(config.norm_config)
+        self.norm2 = builder.build_normalization(config.norm_config) if self.is_encoder_decoder and self.cross_attn is not None else None 
+        self.norm3 = builder.build_normalization(config.norm_config)
         dropout_prob = getattr(main_config, 'hidden_dropout_prob', 0.1)
         self.dropout = nn.Dropout(dropout_prob)
 

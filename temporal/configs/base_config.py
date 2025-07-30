@@ -22,6 +22,7 @@ class BaseConfig:
     Provides common serialization/deserialization methods.
     """
     type: str # This field is required and will be keyword-only
+    kwargs: Dict[str, Any] = field(default_factory=dict) # Added kwargs to BaseConfig
 
     def to_dict(self) -> Dict[str, Any]:
         """Converts the dataclass instance to a dictionary, handling nested BaseConfig objects."""
@@ -49,7 +50,7 @@ class BaseConfig:
             target_cls = cls
 
         # Filter out keys not in the constructor's signature
-        # This handles cases where `data` might contain extra keys (e.g., from old configs)
+        # This handles cases where `data` might contain extra keys (e.e., from old configs)
         # For kw_only=True dataclasses, all fields are in init=True by default unless specified
         valid_keys = {f.name for f in fields(target_cls) if f.init}
         filtered_data = {k: v for k, v in data.items() if k in valid_keys}

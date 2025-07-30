@@ -14,6 +14,7 @@ class AttentionConfig(BaseConfig):
     dropout: float = field(default=0.1)
     bias: bool = field(default=True)
     qk_layernorm: bool = field(default=False)
+    kwargs: Dict[str, Any] = field(default_factory=dict) # Added kwargs field
 
     def __post_init__(self):
         super().__post_init__() # Call base class validation
@@ -152,4 +153,3 @@ def attention_config_from_dict(data: Dict[str, Any]) -> AttentionConfig:
         ]
 
     return config_class.from_dict(data)
-
