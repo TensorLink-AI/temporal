@@ -1,7 +1,7 @@
 import inspect
 from typing import Dict, Any, Type, Optional
 import torch.nn as nn
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field # Import dataclass and field here
 
 from temporal.registry.core import resolve
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
@@ -60,11 +60,16 @@ class ModuleBuilder:
         """
         cls = resolve(kind, module_config.type) # Use module_config.type as the name
         
-        # Convert dataclass to dict; `to_dict` handles nested configs appropriately
-        kwargs = module_config.to_dict()
-        
-        # Remove the 'type' key as it's used for registry lookup, not module init
-        kwargs.pop('type', None)
+        # Handle "block" kind specifically to pass the entire block_config as 'config'
+        # and inject the builder
+        if kind == "block":
+            kwargs = {"config": module_config}
+        else:
+            # Convert dataclass to dict; `to_dict` handles nested configs appropriately
+            kwargs = module_config.to_dict()
+            
+            # Remove the 'type' key as it's used for registry lookup, not module init
+            kwargs.pop('type', None)
 
         # Automatically add the model's hidden dimension if the module constructor accepts it
         # and it's not already provided by the config itself (e.g., embedding_dim for embeddings)
@@ -79,6 +84,7 @@ class ModuleBuilder:
              kwargs['hidden_size'] = self._model_dim
 
         # Inject the builder instance if the constructor accepts it.
+        # This is particularly relevant for block types which need the builder for sub-modules.
         if 'builder' in accepted_params:
             kwargs['builder'] = self
         
@@ -87,9 +93,9 @@ class ModuleBuilder:
         except TypeError as e:
              passed_args_str = ", ".join(f"{k}={type(v).__name__}" for k,v in kwargs.items())
              raise TypeError(
-                 f"Failed to instantiate '{module_config.type}' ({cls.__name__}) for kind '{kind}'."
-                 f"  > Provided args: {{{passed_args_str}}}"
-                 f"  > Original error: {e}"
+                 f"Failed to instantiate '{module_config.type}' ({cls.__name__}) for kind '{kind}'. "
+                 f" > Provided args: {{{passed_args_str}}}. "
+                 f" > Original error: {e}"
              ) from e
 
     def build_attention(self, cfg: AttentionConfig) -> nn.Module:
@@ -163,7 +169,7 @@ class ModuleBuilder:
             # Create a temporary config dataclass for _build method
             @dataclass(frozen=True)
             class TempLossConfig(LossConfig):
-                quantiles: Optional[List[float]] = field(default_factory=list)
+                quantiles: Optional[list[float]] = field(default_factory=list)
                 kwargs: Dict[str, Any] = field(default_factory=dict)
 
                 def __post_init__(self):
