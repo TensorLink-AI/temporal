@@ -2,6 +2,7 @@ from temporal.registry.core import resolve
 import inspect
 from typing import Type
 import torch.nn as nn
+from temporal.models.module_builder_helper import ModuleBuilder # Import ModuleBuilder
 
 class OutputHeadBuilder:
     """Constructs the output head module for a time series model.
@@ -14,15 +15,19 @@ class OutputHeadBuilder:
 
     Attributes:
         config: The main configuration object for the model.
+        builder: The main module builder helper.
     """
-    def __init__(self, config):
+    def __init__(self, config, builder: ModuleBuilder):
         """Initializes the OutputHeadBuilder.
 
         Args:
             config: The main model configuration object, which should contain
                 `output_head_config` and the model's hidden dimension (`d_model`).
+            builder (ModuleBuilder): The main module builder helper, for potentially
+                building sub-modules within complex heads.
         """
         self.config = config
+        self.builder = builder # Store the builder
 
     def build(self) -> nn.Module:
         """Instantiates and returns the configured output head module.
@@ -71,6 +76,12 @@ class OutputHeadBuilder:
         if head_config.kwargs:
             init_args.update(head_config.kwargs)
 
+        # Add explicitly defined fields from specific head configs
+        # This handles fields like num_outputs, use_tanh, tanh_scale, components, etc.
+        for f_name in head_config.__dataclass_fields__:
+            if f_name not in ["type", "output_size", "kwargs"]:
+                init_args[f_name] = getattr(head_config, f_name)
+
 
         # Filter the arguments to only those accepted by the head's constructor.
         signature = inspect.signature(head_class.__init__)
@@ -101,23 +112,27 @@ class OutputHeadBuilder:
             return feature_size * 2  # Mean and std dev
         elif head_type == "t_distribution":
             return feature_size * 3  # Mean, scale, and degrees of freedom
-        elif head_type in ("quantile_regression", "distpred"):
-            num_quantiles = getattr(self.config, 'num_quantiles', None)
-            num_outputs = head_config.kwargs.get('num_outputs', num_quantiles)
-            if num_outputs is None:
-                raise ValueError(
-                    f"Head type '{head_type}' requires 'num_quantiles' in the main "
-                    f"config or 'num_outputs' in the head's kwargs."
-                )
-            return feature_size * num_outputs
+        elif head_type == "quantile_regression": # Use the direct config field
+            if not hasattr(head_config, 'num_quantiles') or head_config.num_quantiles is None:
+                raise ValueError(f"Head type '{head_type}' requires 'num_quantiles' to be set in its config.")
+            return feature_size * head_config.num_quantiles
+        elif head_type == "distpred": # Use the direct config field
+            if not hasattr(head_config, 'num_outputs') or head_config.num_outputs is None:
+                raise ValueError(f"Head type '{head_type}' requires 'num_outputs' to be set in its config.")
+            return feature_size * head_config.num_outputs
         elif head_type == "mixture":
-            # The MixtureOutputHead calculates its own output size internally,
-            # so we can rely on its 'output_size' kwarg if provided for validation.
-            if head_config.kwargs.get("output_size") is not None:
-                return head_config.kwargs["output_size"]
-            # If not, it will be derived inside the head itself. We pass a dummy
-            # value which will be ignored if not in the signature.
-            return -1 # Placeholder, as the head itself calculates this.
+            # The MixtureOutputHead calculates its own output size internally based on components.
+            # We need to instantiate a dummy head to get its total_params_dim.
+            from temporal.modules.heads.output_heads import MixtureOutputHead # Local import to avoid circular
+            if not hasattr(head_config, 'components') or not head_config.components:
+                 raise ValueError(f"Head type '{head_type}' requires 'components' to be set in its config.")
+            
+            # Create a dummy instance to calculate output_size based on components
+            # This is a bit of a hack, but ensures output_size is correct for validation
+            # before the actual build.
+            dummy_head = MixtureOutputHead(hidden_size=1, components=head_config.components) # hidden_size doesn't matter for param count
+            return dummy_head.output_projection.out_features
+
         else:
             # For other custom heads, output_size must be set explicitly.
             output_size = getattr(head_config, 'output_size', None)
