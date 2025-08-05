@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
-from temporal.configs.attention_config import PatternedAttentionConfig
+from temporal.configs.attention_config import PatternedAttentionConfig, AttentionPatternConfig
 from temporal.modules.attentions.base_attention import FullAttention
 from temporal.registry.core import register_module
 
@@ -12,16 +12,15 @@ def combine_masks(
     attention_mask: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     """Combines the pattern mask with an optional existing attention mask."""
-    if attention_mask is None:
-        # The pattern mask is boolean and additive (True means attend).
-        # Attention scores are typically floats where -inf means "do not attend".
-        # So, we convert our boolean mask to the correct float format.
-        # True -> 0.0, False -> -inf
-        return torch.where(patt_mask, 0.0, -torch.inf)
-    
-    # The provided attention_mask is already in the float format (-inf for masked positions).
-    # We add our pattern mask to it.
+    # Convert the boolean pattern mask to the float format expected by PyTorch's attention mechanism.
+    # True (attend) becomes 0.0, and False (do not attend) becomes -infinity.
     patt_mask_float = torch.where(patt_mask, 0.0, -torch.inf)
+
+    if attention_mask is None:
+        return patt_mask_float
+    
+    # The provided attention_mask is already in the float format.
+    # We add our pattern mask to it; adding -inf to any position masks it.
     return patt_mask_float + attention_mask
 
 
@@ -32,24 +31,37 @@ class PatternedMultiHeadAttention(FullAttention):
     sliding, dilated) to the attention matrix.
 
     This class inherits from `FullAttention`, giving it full support for RoPE,
-    ALiBi, and other features of the standard attention mechanism. It extends
-    it by generating a pattern-based mask that is combined with any other
-    masks (like causal or padding masks) during the forward pass.
+    ALiBi, and other features. It extends `FullAttention` by generating a
+    pattern-based mask that is combined with any other masks during the forward pass.
     """
-    def __init__(self, cfg: PatternedAttentionConfig):
-        # Initialize the parent `FullAttention` with all relevant parameters from the config.
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        pattern: Dict,  # The builder passes the nested config as a dict
+        dropout: float = 0.1,
+        bias: bool = True,
+        qk_layernorm: bool = False,
+        use_rope: bool = False,
+        use_alibi: bool = False,
+        max_position_embeddings: int = 4096,
+        rope_base: int = 10000,
+        **kwargs,
+    ):
+        # Initialize the parent `FullAttention` with all relevant parameters.
         super().__init__(
-            embed_dim=cfg.d_model, # Assuming d_model is passed by the builder
-            num_heads=cfg.num_heads,
-            dropout=cfg.dropout,
-            bias=cfg.bias,
-            qk_layernorm=cfg.qk_layernorm,
-            use_rope=cfg.use_rope,
-            use_alibi=cfg.use_alibi,
-            max_position_embeddings=cfg.max_position_embeddings,
-            rope_base=cfg.rope_base,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            bias=bias,
+            qk_layernorm=qk_layernorm,
+            use_rope=use_rope,
+            use_alibi=use_alibi,
+            max_position_embeddings=max_position_embeddings,
+            rope_base=rope_base,
         )
-        p = cfg.pattern
+        # Instantiate the pattern config from the dictionary.
+        p = AttentionPatternConfig.from_dict(pattern)
         self.pattern_type = p.type
         self.window_size = p.window_size
         self.stride = p.stride or 1
@@ -61,7 +73,6 @@ class PatternedMultiHeadAttention(FullAttention):
         for i in range(seq_len):
             # Sliding and Local Patterns
             if self.pattern_type in ("sliding", "local"):
-                # 'local' is a sliding window centered on the query
                 half = self.window_size // 2 if self.pattern_type == "sliding" else 0
                 start = max(0, i - half)
                 end = min(seq_len, start + self.window_size)
@@ -69,11 +80,10 @@ class PatternedMultiHeadAttention(FullAttention):
             
             # Dilated Pattern
             if self.pattern_type == "dilated":
-                # Attend to every 'stride'-th token
                 for j in range(0, seq_len, self.stride):
                     mask[i, j] = True
             
-            # Global Indices (always attend to/from these tokens)
+            # Global Indices
             for g in self.global_indices:
                 if 0 <= g < seq_len:
                     mask[i, g] = True
@@ -88,26 +98,16 @@ class PatternedMultiHeadAttention(FullAttention):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
         Overrides the forward pass to inject the pattern mask.
-        
-        1. Generates the pattern mask based on the sequence length.
-        2. Combines it with any existing attention mask (e.g., for padding or causality).
-        3. Calls the parent `FullAttention.forward` method with the combined mask.
         """
         B, T, _ = hidden_states.size()
         
-        # 1. Generate the pattern mask.
         patt_mask = self.compute_pattern_mask(T, device=hidden_states.device)
         
-        # 2. Combine with any user-provided mask.
-        # The resulting mask will be of shape [T, T] or broadcastable.
         full_mask = combine_masks(patt_mask, attention_mask)
         
-        # Add dimensions to make it broadcastable with attention scores: [B, H, T, T]
-        # The parent forward expects a mask that can be added to scores [B, H, T_q, T_k]
         if full_mask.dim() == 2:
-            full_mask = full_mask.unsqueeze(0).unsqueeze(0) # -> [1, 1, T, T]
+            full_mask = full_mask.unsqueeze(0).unsqueeze(0)
         elif full_mask.dim() == 3:
-            full_mask = full_mask.unsqueeze(1) # -> [B, 1, T, T]
+            full_mask = full_mask.unsqueeze(1)
 
-        # 3. Call the parent's forward method with the new, combined mask.
         return super().forward(hidden_states=hidden_states, attention_mask=full_mask, **kwargs)
