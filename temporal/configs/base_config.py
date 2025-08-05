@@ -1,5 +1,5 @@
 from dataclasses import dataclass, asdict, fields, field
-from typing import Type, TypeVar, Dict, Any
+from typing import Type, TypeVar, Dict, Any, Optional
 
 T = TypeVar('T', bound='BaseConfig')
 
