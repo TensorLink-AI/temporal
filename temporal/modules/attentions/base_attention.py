@@ -200,6 +200,20 @@ class BaseMultiHeadAttention(nn.Module):
 
         return (out, probs if output_attentions else None, present)
 
+    def forward_with_mask(self, q, k, v, attention_mask, **kwargs):
+        B, T, _ = q.size()
+        scores = self.compute_attention_scores(q, k)
+        if attention_mask is not None:
+            scores = scores + attention_mask
+
+        probs = self._compute_attn_probs(scores)
+        probs = F.dropout(probs, p=self.dropout, training=self.training)
+
+        out = torch.matmul(probs, v)
+        out = out.transpose(1, 2).reshape(B, T, -1)
+        out = self.out_proj(out)
+        return out, probs, None
+
 
 @register_module("attention", "full")
 class FullAttention(BaseMultiHeadAttention):

@@ -1,7 +1,15 @@
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 
 from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY
+
+
+@dataclass(frozen=True, kw_only=True)
+class AttentionPatternConfig(BaseConfig):
+    type: Literal["global", "local", "sliding", "dilated"] = field(default="global")
+    window_size: int = field(default=0)
+    stride: Optional[int] = field(default=None)
+    global_indices: Optional[List[int]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -41,6 +49,19 @@ class FullAttentionConfig(AttentionConfig):
         if self.use_rope and self.use_alibi:
             # This is a warning, not an error, as some models might conceptually combine them
             print("Warning: Both use_rope and use_alibi are set to True. Behavior might be undefined.")
+
+
+@register_config_type("patterned_attention")
+@dataclass(frozen=True, kw_only=True)
+class PatternedAttentionConfig(AttentionConfig):
+    """
+    Configuration for attention with a fixed pattern (local, sliding, etc.).
+    """
+    type: str = field(default="patterned")
+    pattern: AttentionPatternConfig = field(default_factory=AttentionPatternConfig)
+
+    def __post_init__(self):
+        super().__post_init__()
 
 
 @register_config_type("flash_attention")
@@ -133,8 +154,9 @@ def attention_config_from_dict(data: Dict[str, Any]) -> AttentionConfig:
         "full": "full_attention",
         "flash": "flash_attention",
         "lse": "lse_attention",
-        "diffwist": "diffwist_attention", # ADDED
-        "hybrid": "hybrid_attention",     # ADDED
+        "diffwist": "diffwist_attention",
+        "hybrid": "hybrid_attention",
+        "patterned": "patterned_attention",
     }
     registry_key = type_to_registry_key.get(attention_type, attention_type + "_attention") # Fallback to type + _attention if not in map
 
