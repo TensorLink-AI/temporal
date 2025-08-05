@@ -55,13 +55,20 @@ class FullAttentionConfig(AttentionConfig):
 @dataclass(frozen=True, kw_only=True)
 class PatternedAttentionConfig(AttentionConfig):
     """
-    Configuration for attention with a fixed pattern (local, sliding, etc.).
+    Configuration for attention with a fixed pattern (local, sliding, etc.),
+    with support for RoPE and ALiBi.
     """
     type: str = field(default="patterned")
     pattern: AttentionPatternConfig = field(default_factory=AttentionPatternConfig)
+    use_rope: bool = field(default=False)
+    use_alibi: bool = field(default=False)
+    rope_base: int = field(default=10000)
+    max_position_embeddings: int = field(default=4096)
 
     def __post_init__(self):
         super().__post_init__()
+        if self.use_rope and self.use_alibi:
+            print("Warning: Both use_rope and use_alibi are set to True. Behavior might be undefined.")
 
 
 @register_config_type("flash_attention")
@@ -152,11 +159,11 @@ def attention_config_from_dict(data: Dict[str, Any]) -> AttentionConfig:
     # Map config type names to registry keys if they differ (e.g., "full" -> "full_attention")
     type_to_registry_key = {
         "full": "full_attention",
+        "patterned": "patterned_attention",
         "flash": "flash_attention",
         "lse": "lse_attention",
         "diffwist": "diffwist_attention",
         "hybrid": "hybrid_attention",
-        "patterned": "patterned_attention",
     }
     registry_key = type_to_registry_key.get(attention_type, attention_type + "_attention") # Fallback to type + _attention if not in map
 
@@ -164,7 +171,7 @@ def attention_config_from_dict(data: Dict[str, Any]) -> AttentionConfig:
 
     if not config_class or not issubclass(config_class, AttentionConfig):
         raise ValueError(f"Unknown or invalid attention_type: {attention_type} (mapped to registry key: {registry_key})")
-    
+
     # Special handling for nested configs within HybridAttentionConfig
     if registry_key == "hybrid_attention" and "head_types" in data and isinstance(data["head_types"], list):
         # Recursively parse nested attention configs if they are dicts
