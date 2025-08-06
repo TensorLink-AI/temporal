@@ -9,6 +9,7 @@ class AttentionPatternConfig(BaseConfig):
     type: Literal["global", "local", "sliding", "dilated"] = field(default="global")
     window_size: int = field(default=0)
     stride: Optional[int] = field(default=None)
+    dilation: int = field(default=1)
     global_indices: Optional[List[int]] = field(default_factory=list)
 
 

@@ -46,6 +46,7 @@ class PatternedMultiHeadAttention(FullAttention):
         use_alibi: bool = False,
         max_position_embeddings: int = 4096,
         rope_base: int = 10000,
+        is_causal: bool = False,
         **kwargs,
     ):
         # Initialize the parent `FullAttention` with all relevant parameters.
@@ -65,22 +66,32 @@ class PatternedMultiHeadAttention(FullAttention):
         self.pattern_type = p.type
         self.window_size = p.window_size
         self.stride = p.stride or 1
+        self.dilation = p.dilation or 1
         self.global_indices = p.global_indices or []
+        self.is_causal = is_causal
 
     def compute_pattern_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
         """Generates the boolean attention mask based on the configured pattern."""
         mask = torch.zeros(seq_len, seq_len, dtype=torch.bool, device=device)
         for i in range(seq_len):
+            # --- STRIDING LOGIC ---
+            # If the query index 'i' is not on a stride boundary, skip it.
+            if self.stride > 1 and i % self.stride != 0:
+                continue
+            
             # Sliding and Local Patterns
             if self.pattern_type in ("sliding", "local"):
                 half = self.window_size // 2 if self.pattern_type == "sliding" else 0
                 start = max(0, i - half)
                 end = min(seq_len, start + self.window_size)
-                mask[i, start:end] = True
+                # Apply dilation within the window
+                for j in range(start, end, self.dilation):
+                    mask[i, j] = True
             
-            # Dilated Pattern
+            # Dilated Pattern (Global Strided Attention)
             if self.pattern_type == "dilated":
-                for j in range(0, seq_len, self.stride):
+                # Use stride for global, fixed-step attention
+                for j in range(0, seq_len, self.dilation):
                     mask[i, j] = True
             
             # Global Indices
@@ -88,6 +99,10 @@ class PatternedMultiHeadAttention(FullAttention):
                 if 0 <= g < seq_len:
                     mask[i, g] = True
                     mask[g, i] = True
+        if self.is_causal:
+            # Apply a causal mask to prevent attention to future positions
+            causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=device))
+            mask = mask & causal_mask
         return mask
 
     def forward(
