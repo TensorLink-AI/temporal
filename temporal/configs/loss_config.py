@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
+
 from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY
 
 #: List of loss types treated as probabilistic. Each requires valid quantile values in (0, 1).
@@ -32,21 +33,18 @@ class CRPSLossConfig(LossConfig):
     Configuration for Continuous Ranked Probability Score (CRPS) loss.
     """
     type: str = field(default="crps") # Override type field and make it kw_only
-    # CRPS might have specific kwargs, e.g., reduction, but for now just type
     reduction: str = field(default="mean")
     estimator: str = field(default="pinball") # Common estimator, change as needed
     spread_lambda: float = field(default=0.0)
     spread_penalty_type: str = field(default="log")
     spread_penalty_epsilon: float = field(default=0.0)
     spread_target_spread: float = field(default=0.0)
-    # --- ADDED SCALING CONFIGURATION --- 
     scaling_type: str = field(default="none")
     scaling_dim: int = field(default=1)
     scaling_eps: float = field(default=1e-8)
 
     def __post_init__(self):
         super().__post_init__()
-        # Add CRPS-specific validation here
         if self.estimator not in ["pinball", "pwm", "nrg", "fair"]:
             raise ValueError(f"CRPS estimator must be 'pinball', 'pwm', 'nrg', or 'fair', got {self.estimator}")
         if not (0.0 <= self.spread_lambda <= 1.0):
@@ -76,18 +74,32 @@ class QuantileLossConfig(LossConfig):
         if not self.quantiles or not all(0 < q < 1 for q in self.quantiles):
             raise ValueError("Quantile loss requires a list of quantiles in the open interval (0, 1).")
 
+@register_config_type("timeflow_loss")
+@dataclass(frozen=True, kw_only=True)
+class TimeFlowLossConfig(LossConfig):
+    """
+    Configuration for the TimeFlow loss module.
+    """
+    type: Literal["timeflow"] = "timeflow"
+    target_channels: int
+    cond_channels: int
+    num_blocks: int
+    model_channels: int
+    num_sampling_steps: int = 10
+    reduction: str = "mean"
+
 
 # Helper function for polymorphic creation
 def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
     loss_type = data.get("type", "mse") # Default to 'mse' if type not specified
-    # Map config type names to registry keys if they differ
     type_to_registry_key = {
         "mse": "mse_loss",
         "crps": "crps_loss",
         "quantile": "quantile_loss",
-        "mq": "quantile_loss", # Multi-quantile loss usually uses the same config as quantile
+        "mq": "quantile_loss",
+        "timeflow": "timeflow_loss",
     }
-    registry_key = type_to_registry_key.get(loss_type, loss_type) # Fallback to type if not in map
+    registry_key = type_to_registry_key.get(loss_type, loss_type)
 
     config_class = CONFIG_REGISTRY.get(registry_key)
 
@@ -95,3 +107,4 @@ def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
         raise ValueError(f"Unknown or invalid loss_type: {loss_type} (mapped to registry key: {registry_key})")
 
     return config_class.from_dict(data)
+
