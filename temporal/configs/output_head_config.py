@@ -23,14 +23,11 @@ class DistPredOutputHeadConfig(OutputHeadConfig):
     """
     Configuration for a distributional prediction head.
     """
-    # New required fields (kw_only means order doesn't matter for init, but good practice)
     num_outputs: int
     feature_size: int
-
-    # Override type field from base, and new default fields
     type: str = field(default="distpred")
     use_tanh: bool = field(default=False)
-    tanh_scale: float = field(default=10.0) # ADDED: For DistPredHead
+    tanh_scale: float = field(default=10.0)
 
     def __post_init__(self):
         super().__post_init__()
@@ -41,15 +38,14 @@ class DistPredOutputHeadConfig(OutputHeadConfig):
         if self.tanh_scale <= 0:
             raise ValueError("tanh_scale must be a positive float.")
 
-
 @register_config_type("quantile_regression_output_head")
 @dataclass(frozen=True, kw_only=True)
 class QuantileRegressionOutputHeadConfig(OutputHeadConfig):
     """
     Configuration for a quantile regression output head.
     """
-    num_quantiles: int # ADDED: For QuantileRegressionOutputHead
-    feature_size: int = field(default=1) # ADDED: For QuantileRegressionOutputHead
+    num_quantiles: int
+    feature_size: int = field(default=1)
     type: str = field(default="quantile_regression")
 
     def __post_init__(self):
@@ -59,35 +55,51 @@ class QuantileRegressionOutputHeadConfig(OutputHeadConfig):
         if self.feature_size <= 0:
             raise ValueError("feature_size must be a positive integer.")
 
-
 @register_config_type("mixture_output_head")
 @dataclass(frozen=True, kw_only=True)
 class MixtureOutputHeadConfig(OutputHeadConfig):
     """
     Configuration for a Mixture Density Network (MDN) output head.
     """
-    components: List[str] = field(default_factory=list) # ADDED: For MixtureOutputHead
+    components: List[str] = field(default_factory=list)
     type: str = field(default="mixture")
 
     def __post_init__(self):
         super().__post_init__()
         if not self.components:
             raise ValueError("MixtureOutputHead requires at least one component.")
-        # Add validation for component names if necessary
+
+@register_config_type("timeflow_output_head")
+@dataclass(frozen=True, kw_only=True)
+class TimeFlowOutputHeadConfig(OutputHeadConfig):
+    """Configuration for the TimeFlowOutputHead."""
+    type: str = field(default="timeflow")
+    target_channels: int
+    cond_channels: int
+    num_blocks: int
+    model_channels: int
+    num_sampling_steps: int = 10
+    input_token_len: int = 1
+    diffusion_batch_mul: int = 1
+
+    def __post_init__(self):
+        # We override the base post_init because this head's output size
+        # is implicitly defined by target_channels and is not a direct parameter.
+        super(OutputHeadConfig, self).__post_init__()
 
 
 # Helper function for polymorphic creation
 def output_head_config_from_dict(data: Dict[str, Any]) -> OutputHeadConfig:
     output_head_type = data.get("type", "linear")
-    # Map config type names to registry keys if they differ
     type_to_registry_key = {
-        "linear": "output_head", # Default for the base OutputHeadConfig
+        "linear": "output_head",
         "gaussian": "output_head",
         "distpred": "distpred_output_head",
-        "quantile_regression": "quantile_regression_output_head", # ADDED
-        "mixture": "mixture_output_head", # ADDED
+        "quantile_regression": "quantile_regression_output_head",
+        "mixture": "mixture_output_head",
+        "timeflow": "timeflow_output_head",
     }
-    registry_key = type_to_registry_key.get(output_head_type, output_head_type) # Fallback to type if not in map
+    registry_key = type_to_registry_key.get(output_head_type, output_head_type)
 
     config_class = CONFIG_REGISTRY.get(registry_key)
     if not config_class or not issubclass(config_class, OutputHeadConfig):

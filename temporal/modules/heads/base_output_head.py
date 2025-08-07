@@ -1,45 +1,43 @@
+from typing import Dict, Optional
 import torch.nn as nn
 import torch
-from typing import Callable, Optional
 
 class BaseOutputHead(nn.Module):
-    """An abstract base class for all model output heads.
-
-    This class defines the common interface that all output head modules must
-    adhere to. An output head is responsible for taking the final hidden state
-    from the model's backbone and transforming it into the desired output format
-    (e.g., a point forecast, a probability distribution).
-
-    It also defines a method for retrieving the appropriate loss function
-    to be used with the head's output.
+    """
+    Abstract base class for all output heads.
+    An output head takes the final hidden state from the model's backbone
+    and produces the final output, which can be predictions, distribution parameters, etc.
+    It can also be responsible for calculating the loss if the loss is tightly coupled
+    with the output generation logic.
     """
 
-    def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
-        """Processes the model's final hidden state to produce the output.
+    def __init__(self):
+        super().__init__()
 
-        This method must be implemented by all subclasses.
-
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        **kwargs
+    ) -> Dict[str, Optional[torch.Tensor]]:
+        """
+        Processes the backbone's output.
         Args:
-            hidden_state (torch.Tensor): The final hidden state from the model's
-                backbone, typically of shape `[batch_size, seq_len, d_model]`.
-
+            hidden_states (torch.Tensor): The final hidden states from the model's backbone.
+            **kwargs: Additional arguments, which may include `labels`, `loss_mask`, etc.
         Returns:
-            torch.Tensor: The model's final output, with its shape and meaning
-                determined by the specific head implementation.
+            A dictionary containing at least 'preds' (the model's predictions) and
+            optionally 'loss' if the head calculates it directly.
         """
-        raise NotImplementedError("Each head must implement the forward method.")
+        raise NotImplementedError("Subclasses must implement the forward method.")
 
-    def get_loss_fn(self) -> Optional[Callable]:
+    def sample(self, hidden_states: torch.Tensor, **kwargs) -> torch.Tensor:
         """
-        Returns the default loss function associated with this head.
-
-        This method should be implemented by subclasses to provide a suitable
-        loss function for the type of output they produce. For example, a
-        point forecast head might return Mean Squared Error, while a
-        probabilistic head might return Negative Log-Likelihood.
-
-        Returns:
-            Optional[Callable]: A callable loss function, or None if the head
-            does not have a default loss.
+        Generates samples or predictions from the model's output.
+        This is used during inference/generation.
         """
-        raise NotImplementedError("Each head must provide its corresponding loss function.")
+        # A simple default for heads that don't have a special sampling method.
+        # More complex heads (like TimeFlow) will override this.
+        output = self.forward(hidden_states)
+        if "preds" not in output or output["preds"] is None:
+            raise NotImplementedError("The 'sample' method must be implemented for heads that don't return 'preds' in forward.")
+        return output["preds"]
