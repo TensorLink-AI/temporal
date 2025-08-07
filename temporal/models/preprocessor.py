@@ -4,7 +4,8 @@ from typing import Optional, Tuple, Dict, Any
 
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig # Corrected import path
-from temporal.modules.embedders.embedding import TimeSeriesPatchEmbedding # Import to check type
+# Import moved to __init__ to break circular dependency
+# from temporal.modules.embedders.embedding import TimeSeriesPatchEmbedding
 
 class InputPreprocessor(nn.Module):
     """
@@ -30,6 +31,9 @@ class InputPreprocessor(nn.Module):
             builder: The module builder helper.
         """
         super().__init__()
+        # Import here to avoid circular dependency
+        from temporal.modules.embedders.embedding import TimeSeriesPatchEmbedding
+        
         self.config = config
         # Pass value_embedding_config to builder
         self.value_embedding = builder.build_value_embedding(self.config.value_embedding_config)
@@ -297,4 +301,3 @@ class InputPreprocessor(nn.Module):
                 "hidden_states": hidden_states,
                 "attention_mask": final_attention_mask,
             }
-
