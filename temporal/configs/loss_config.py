@@ -106,7 +106,7 @@ class NLLLossConfig(LossConfig):
         if "distribution_type" not in self.kwargs:
             raise ValueError("NLLLossConfig requires 'distribution_type' to be specified in kwargs.")
         if self.kwargs["distribution_type"] not in ["gaussian", "mixture"]:
-            raise ValueError(f"Unsupported distribution_type for NLLLoss: {self.kwargs["distribution_type"]}. Supported types are 'gaussian', 'mixture'.")
+            raise ValueError(f"Unsupported distribution_type for NLLLoss: {self.kwargs['distribution_type']}. Supported types are 'gaussian', 'mixture'.")
 
 
 # Helper function for polymorphic creation
