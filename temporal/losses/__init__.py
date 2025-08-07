@@ -1,13 +1,11 @@
-from temporal.modules.losses import (
-    TimeSeriesLoss,
+from .losses import (
     CRPSLoss,
     NegativeLogLikelihoodLoss,
     CRPSHuberLoss,
+    TimeSeriesLoss
 )
 
 __all__ = [
-    "crps_ensemble",
-    "BaseLoss",
     "TimeSeriesLoss",
     "CRPSLoss",
     "NegativeLogLikelihoodLoss",
