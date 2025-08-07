@@ -26,15 +26,6 @@ class MSELossConfig(LossConfig):
     """
     type: str = field(default="mse") # Override type field and make it kw_only
 
-@register_config_type("nll_loss")
-@dataclass(frozen=True, kw_only=True)
-class NegativeLogLikelihoodLossConfig(LossConfig):
-    """
-    Configuration for Negative Log Likelihood loss for various distributions.
-    """
-    type: Literal["nll"] = "nll"
-    distribution_type: str = field(default="gaussian")
-
 @register_config_type("crps_loss")
 @dataclass(frozen=True, kw_only=True)
 class CRPSLossConfig(LossConfig):
@@ -98,6 +89,26 @@ class TimeFlowLossConfig(LossConfig):
     reduction: str = "mean"
 
 
+@register_config_type("nll_loss")
+@dataclass(frozen=True, kw_only=True)
+class NLLLossConfig(LossConfig):
+    """
+    Configuration for Negative Log Likelihood loss.
+    """
+    type: str = field(default="nll")
+    # All NLL-specific parameters should go into `kwargs` for module instantiation
+    # `distribution_type` is required for NegativeLogLikelihoodLoss.__init__
+    kwargs: Dict[str, Any] = field(default_factory=lambda: {"distribution_type": "gaussian"}) # Default distribution type if not specified
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Ensure distribution_type is set in kwargs
+        if "distribution_type" not in self.kwargs:
+            raise ValueError("NLLLossConfig requires 'distribution_type' to be specified in kwargs.")
+        if self.kwargs["distribution_type"] not in ["gaussian", "mixture"]:
+            raise ValueError(f"Unsupported distribution_type for NLLLoss: {self.kwargs["distribution_type"]}. Supported types are 'gaussian', 'mixture'.")
+
+
 # Helper function for polymorphic creation
 def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
     loss_type = data.get("type", "mse") # Default to 'mse' if type not specified
@@ -107,7 +118,7 @@ def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
         "quantile": "quantile_loss",
         "mq": "quantile_loss",
         "timeflow": "timeflow_loss",
-        "nll": "nll_loss",
+        "nll": "nll_loss", # Map 'nll' to the new config type
     }
     registry_key = type_to_registry_key.get(loss_type, loss_type)
 
