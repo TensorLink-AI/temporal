@@ -26,6 +26,15 @@ class MSELossConfig(LossConfig):
     """
     type: str = field(default="mse") # Override type field and make it kw_only
 
+@register_config_type("nll_loss")
+@dataclass(frozen=True, kw_only=True)
+class NegativeLogLikelihoodLossConfig(LossConfig):
+    """
+    Configuration for Negative Log Likelihood loss for various distributions.
+    """
+    type: Literal["nll"] = "nll"
+    distribution_type: str = field(default="gaussian")
+
 @register_config_type("crps_loss")
 @dataclass(frozen=True, kw_only=True)
 class CRPSLossConfig(LossConfig):
@@ -98,6 +107,7 @@ def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
         "quantile": "quantile_loss",
         "mq": "quantile_loss",
         "timeflow": "timeflow_loss",
+        "nll": "nll_loss",
     }
     registry_key = type_to_registry_key.get(loss_type, loss_type)
 
@@ -107,4 +117,3 @@ def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
         raise ValueError(f"Unknown or invalid loss_type: {loss_type} (mapped to registry key: {registry_key})")
 
     return config_class.from_dict(data)
-

@@ -336,7 +336,7 @@ class SpreadPenalty(nn.Module):
         if penalty_type not in ['log', 'inverse', 'symmetric_log']:
             raise ValueError("penalty_type must be 'log', 'inverse', or 'symmetric_log'")
         if reduction not in ['none', 'mean', 'sum']:
-            raise ValueError("reduction must be 'none', 'mean', or 'sum'")
+            raise ValueError("reduction must be 'none', 'mean', 'sum'")
 
         self.penalty_type = penalty_type
         self.epsilon = epsilon
