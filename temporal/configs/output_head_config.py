@@ -82,6 +82,7 @@ def output_head_config_from_dict(data: Dict[str, Any]) -> OutputHeadConfig:
     # Map config type names to registry keys if they differ
     type_to_registry_key = {
         "linear": "output_head", # Default for the base OutputHeadConfig
+        "gaussian": "output_head",
         "distpred": "distpred_output_head",
         "quantile_regression": "quantile_regression_output_head", # ADDED
         "mixture": "mixture_output_head", # ADDED
