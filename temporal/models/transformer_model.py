@@ -133,7 +133,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             else:
                  self.num_output_features = self.config.d_model  # Default case
 
-            output_projection_size = self.num_output_features
+            output_projection_size = output_patch_size * self.num_output_features
             if use_mlp:
                 print(f"INFO: Building MLP patch_merger (d_model -> {mlp_hidden_size} -> {output_projection_size}).")
                 self.output_patch_reconstructor = nn.Sequential(
