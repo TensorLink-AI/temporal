@@ -158,7 +158,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         output_hidden_states: Optional[bool] = None,
         validate_shapes: bool = False,
         verbose: bool = False,
-        **kwargs,
     ) -> TransformerOutput:
         """
         Performs a forward pass through the entire transformer model.
@@ -187,7 +186,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                 preprocessor to check for shape consistency.
             verbose (bool): If True, prints detailed shape information from
                 the preprocessor for debugging.
-            **kwargs: Additional keyword arguments passed to the output head.
 
         Returns:
             TransformerOutput: A structured object containing the model's outputs.
@@ -249,7 +247,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             )
             input_to_heads = decoder_outputs.last_hidden_state
         else:
-            # This handles encoder-only architectures
             if encoder_hidden_states is None:
                 raise ValueError("Model requires an encoder or decoder to produce output for the head.")
             input_to_heads = encoder_hidden_states
@@ -259,6 +256,8 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         # CORRECTED Step 4: Apply patch merger BEFORE the output head.
         # ─── Step 4: Merge or Expand Patch Tokens ───
         if self.preprocessor.is_patched:
+            
+
             patch_preds = self.output_patch_reconstructor(input_to_heads)
             # reshape into [B, T_tokens * output_patch_size, feature_size]
             B, Ttok, _ = patch_preds.shape
@@ -283,24 +282,12 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             input_to_heads = input_to_heads[:, -num_target_steps:, :]
         
         # Step 5: Project the final hidden states through the output head(s).
-        main_loss = None
-        logits = None
+        logits = self.output_heads(input_to_heads)
+        if self.head_aggregator is not None:
+            logits = self.head_aggregator(logits)
 
-        head_kwargs = {"labels": targets, "loss_mask": loss_mask, **kwargs}
-        # The forward pass now only handles cases where labels might be present.
-        head_output = self.output_heads(hidden_states=input_to_heads, **head_kwargs)
-        
-        # The head can optionally return a pre-computed loss.
-        main_loss = head_output.get("loss")
-        logits = head_output.get("preds")
-        
-        # If the head did not compute the loss, do it now (the standard path).
-        if main_loss is None and logits is not None and targets is not None:
-            if self.loss_fn is None:
-                raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
-            main_loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
-
-        # Step 6: Handle auxiliary loss from MoE layers.
+        # Step 6: Calculate the loss if targets are provided.
+        loss = None
         total_aux_loss = None
         if encoder_outputs and hasattr(encoder_outputs, 'aux_loss') and encoder_outputs.aux_loss is not None:
             total_aux_loss = encoder_outputs.aux_loss
@@ -309,16 +296,20 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                 total_aux_loss = decoder_outputs.aux_loss
             else:
                 total_aux_loss += decoder_outputs.aux_loss
-        
-        # Step 7: Combine main loss and auxiliary loss correctly.
-        final_loss = main_loss
-        if final_loss is not None and total_aux_loss is not None:
-            final_loss = final_loss + self.config.aux_loss_weight * total_aux_loss.mean()
 
+        if targets is not None:
+            if self.loss_fn is None:
+                raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
+            
+            loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
 
-        # Step 8: Construct and return the final output object.
+            if total_aux_loss is not None:
+                # Ensure aux loss is a scalar before adding
+                loss += self.config.aux_loss_weight * total_aux_loss.mean()
+
+        # Step 7: Construct and return the final output object.
         return TransformerOutput(
-            loss=final_loss,
+            loss=loss,
             logits=logits,
             aux_loss=total_aux_loss,
             past_key_values=decoder_outputs.past_key_values if decoder_outputs else None,
@@ -329,28 +320,3 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             encoder_hidden_states=encoder_outputs.hidden_states if encoder_outputs else None,
             encoder_attentions=encoder_outputs.attentions if encoder_outputs else None,
         )
-    
-    def predict(self, *args, **kwargs) -> torch.Tensor:
-        """
-        High-level prediction entry point that dispatches to the appropriate
-        generation mixin based on the configuration.
-        """
-        return super().predict(*args, **kwargs)
-        
-    def sample(self, hidden_states: torch.Tensor, **kwargs) -> torch.Tensor:
-        """
-        The core generation method called by the prediction mixins. It delegates
-        the actual sampling to the model's output head.
-
-        Args:
-            hidden_states (torch.Tensor): The final hidden states from the backbone.
-            **kwargs: Additional keyword arguments to be passed to the head's
-                      sample method (e.g., num_samples).
-
-        Returns:
-            torch.Tensor: The generated samples or predictions.
-        """
-        if not hasattr(self.output_heads, "sample"):
-            raise NotImplementedError("The model's output head does not have a 'sample' method for generation.")
-        
-        return self.output_heads.sample(hidden_states=hidden_states, **kwargs)
