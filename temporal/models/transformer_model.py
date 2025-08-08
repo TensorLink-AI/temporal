@@ -110,22 +110,21 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         self.decoder = decoder
 
         # 4. Output heads run last.
-        # Note: output_patch_reconstructor is the head for patched models.
         self.output_heads = output_heads
         self.head_aggregator = head_aggregator
-        self.output_patch_reconstructor = None
 
+        self.output_patch_reconstructor = None # Start as None
+        #  partion this out eventually to make it cleaner
         if self.preprocessor.is_patched:
             patch_size = self.preprocessor.patch_size
             output_patch_size = self.preprocessor.value_embedding.output_patch_size
             use_mlp = getattr(self.preprocessor.value_embedding, 'use_mlp', False)
             mlp_hidden_size = getattr(self.preprocessor.value_embedding, 'mlp_hidden_size', None) or (patch_size * 2)
             d_model = self.config.d_model
-            feature_size = self.config.feature_size
-            
-            # This projection is applied to EACH patch token's hidden state.
-            # So it maps d_model -> the representation of ONE output patch.
-            output_projection_size = output_patch_size * feature_size
+
+            # The reconstructor's job is to project each patch token's hidden state
+            # to a representation that can be reshaped into a sequence of hidden states.
+            output_projection_size = output_patch_size * d_model
 
             if use_mlp:
                 print(f"INFO: Building MLP patch_merger (d_model -> {mlp_hidden_size} -> {output_projection_size}).")
@@ -137,13 +136,14 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             else:
                 print(f"INFO: Building Linear patch_merger (d_model -> {output_projection_size}).")
                 self.output_patch_reconstructor = nn.Linear(d_model, output_projection_size)
-
+        
         # 5. Loss function is not a module, but we assign it here.
         self.loss_fn = loss_fn
 
         # Store dtypes for casting if necessary
         self._encoder_dtype = getattr(encoder, 'dtype', torch.float32) if encoder else torch.float32
         self._decoder_dtype = getattr(decoder, 'dtype', torch.float32) if decoder else torch.float32
+
 
     def forward(
         self,
@@ -206,7 +206,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             processed_encoder = self.preprocessor.process(
                 input_values=encoder_inputs,
                 attention_mask=attention_mask,
-                is_causal=False,
+                is_causal=False,  # Encoders are never causal
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
@@ -231,7 +231,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                 input_values=decoder_inputs,
                 past_key_values_length=past_kv_length,
                 attention_mask=decoder_attention_mask,
-                is_causal=True,
+                is_causal=True, # Decoders are always causal
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
@@ -253,33 +253,38 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             input_to_heads = encoder_hidden_states
             decoder_outputs = None
 
-        # Step 3 & 4: Generate Logits (handling patched vs. non-patched)
+        # Step 3: Reconstruct sequence from patches if necessary.
         if self.preprocessor.is_patched:
-            # For patched models, the reconstructor IS the head.
-            patch_preds = self.output_patch_reconstructor(input_to_heads)
+            reconstructed_output = self.output_patch_reconstructor(input_to_heads)
             
-            B, T_tok, _ = patch_preds.shape
-            f_sz = self.config.feature_size
+            B, T_tok, _ = reconstructed_output.shape
             output_patch_size = self.preprocessor.value_embedding.output_patch_size
-            
-            # Reshape from [B, T_tokens, patch_size * features] to [B, T_tokens * patch_size, features]
-            logits = patch_preds.view(B, T_tok * output_patch_size, f_sz)
-        else:
-            # For non-patched models, align and then use the standard output head.
-            if targets is not None and self.config.architecture.layout == "decoder":
-                num_target_steps = targets.size(1)
-                if input_to_heads.shape[1] < num_target_steps:
-                    raise ValueError(
-                        f"Input to heads ({input_to_heads.shape[1]} steps) is shorter than targets ({num_target_steps} steps). "
-                        f"Cannot align for loss calculation. Ensure your decoder_inputs or model's effective output length in 'forward' covers your targets."
-                    )
-                input_to_heads = input_to_heads[:, -num_target_steps:, :]
-            
-            logits = self.output_heads(input_to_heads)
-            if self.head_aggregator is not None:
-                logits = self.head_aggregator(logits)
+            d_model = self.config.d_model
 
-        # Step 5: Calculate the loss if targets are provided.
+            # Reshape from [B, T_tokens, patch_size * d_model] to [B, T_tokens * patch_size, d_model]
+            input_to_heads = reconstructed_output.view(B, T_tok * output_patch_size, d_model)
+
+        # Step 4: Align head input with targets for loss calculation if needed.
+        if (
+            targets is not None and 
+            self.config.architecture.layout == "decoder" 
+        ):
+            num_target_steps = targets.size(1)
+
+            # This check is crucial for catching data pipeline issues
+            if input_to_heads.shape[1] < num_target_steps:
+                 raise ValueError(
+                     f"Input to heads ({input_to_heads.shape[1]} steps) is shorter than targets ({num_target_steps} steps). "
+                     f"Cannot align for loss calculation. Ensure your decoder_inputs or model's effective output length in 'forward' covers your targets."
+                 )
+            input_to_heads = input_to_heads[:, -num_target_steps:, :]
+        
+        # Step 5: Project the final hidden states through the output head(s).
+        logits = self.output_heads(input_to_heads)
+        if self.head_aggregator is not None:
+            logits = self.head_aggregator(logits)
+
+        # Step 6: Calculate the loss if targets are provided.
         loss = None
         total_aux_loss = None
         if encoder_outputs and hasattr(encoder_outputs, 'aux_loss') and encoder_outputs.aux_loss is not None:
@@ -297,9 +302,10 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
 
             if total_aux_loss is not None:
+                # Ensure aux loss is a scalar before adding
                 loss += self.config.aux_loss_weight * total_aux_loss.mean()
 
-        # Step 6: Construct and return the final output object.
+        # Step 7: Construct and return the final output object.
         return TransformerOutput(
             loss=loss,
             logits=logits,
