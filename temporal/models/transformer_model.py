@@ -124,8 +124,16 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
 
             # The reconstructor's job is to project each patch token's hidden state
             # to a representation that can be reshaped into a sequence of hidden states.
-            output_projection_size = output_patch_size * d_model
+            # For DistPredHead, we want to reconstruct back to d_model to match the head's input
+            if self.output_heads.__class__.__name__ == 'DistPredHead':
+                 self.num_output_features = self.config.d_model
+            # For other heads, we check for a projection layer to determine the feature size
+            elif hasattr(self.output_heads, 'proj') and hasattr(self.output_heads.proj, 'in_features'):
+                 self.num_output_features = self.output_heads.proj.in_features
+            else:
+                 self.num_output_features = self.config.d_model  # Default case
 
+            output_projection_size = output_patch_size * self.num_output_features
             if use_mlp:
                 print(f"INFO: Building MLP patch_merger (d_model -> {mlp_hidden_size} -> {output_projection_size}).")
                 self.output_patch_reconstructor = nn.Sequential(
@@ -259,10 +267,10 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             
             B, T_tok, _ = reconstructed_output.shape
             output_patch_size = self.preprocessor.value_embedding.output_patch_size
-            d_model = self.config.d_model
+            
+            # Reshape from [B, T_tokens, patch_size * num_output_features] to [B, T_tokens * patch_size, num_output_features]
+            input_to_heads = reconstructed_output.view(B, T_tok * output_patch_size, self.num_output_features)
 
-            # Reshape from [B, T_tokens, patch_size * d_model] to [B, T_tokens * patch_size, d_model]
-            input_to_heads = reconstructed_output.view(B, T_tok * output_patch_size, d_model)
 
         # Step 4: Align head input with targets for loss calculation if needed.
         if (
