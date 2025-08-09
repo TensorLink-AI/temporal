@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 from temporal.configs.transformer_block_config import TransformerBlockConfig
 from temporal.configs.attention_config import AttentionConfig
 from temporal.configs.feedforward_config import FeedForwardConfig
+from temporal.configs.normalization_config import NormalizationConfig
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.registry.core import register_module
@@ -75,8 +76,20 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         self.ffn = builder.build_feedforward(resolved_ffn_config)
         # --- End Resolve FFN Config ---
 
-        self.norm1 = builder.build_normalization()
-        self.norm2 = builder.build_normalization()
+        # --- Resolve Normalization Config ---
+        resolved_norm_config = config.normalization_config
+        if resolved_norm_config is None:
+            # Fallback to a global config if a block-specific one isn't provided
+            if hasattr(main_config, 'normalization_config') and main_config.normalization_config:
+                resolved_norm_config = main_config.normalization_config
+            else:
+                 raise ValueError("No normalization configuration found for encoder layer (neither block-specific nor global).")
+        if not isinstance(resolved_norm_config, NormalizationConfig):
+             raise TypeError(f"Resolved normalization configuration is not a NormalizationConfig instance, got {type(resolved_norm_config)}")
+        self.norm1 = builder.build_normalization(resolved_norm_config)
+        self.norm2 = builder.build_normalization(resolved_norm_config)
+        # --- End Resolve Normalization Config ---
+        
         dropout_prob = getattr(main_config, 'hidden_dropout_prob', 0.1)
         self.dropout = nn.Dropout(dropout_prob)
 
