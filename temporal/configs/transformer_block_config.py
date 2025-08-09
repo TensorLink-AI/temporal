@@ -14,7 +14,7 @@ class TransformerBlockConfig(BaseConfig):
     """
     attention_config: AttentionConfig = field(default_factory=lambda: attention_config_from_dict({"type": "full"}))
     ffn_config: FeedForwardConfig = field(default_factory=lambda: feedforward_config_from_dict({"type": "standard"}))
-    norm_config: NormalizationConfig = field(default_factory=lambda: normalization_config_from_dict({"type": "layer"}))
+    normalization_config: NormalizationConfig = field(default_factory=lambda: normalization_config_from_dict({"type": "layer"}))
     kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -23,8 +23,8 @@ class TransformerBlockConfig(BaseConfig):
             raise ValueError("attention_config must be an AttentionConfig instance.")
         if not isinstance(self.ffn_config, FeedForwardConfig):
             raise ValueError("ffn_config must be a FeedForwardConfig instance.")
-        if not isinstance(self.norm_config, NormalizationConfig):
-            raise ValueError("norm_config must be a NormalizationConfig instance.")
+        if not isinstance(self.normalization_config, NormalizationConfig):
+            raise ValueError("normalization_config must be a NormalizationConfig instance.")
 
 
 @register_config_type("encoder_block")
@@ -100,8 +100,8 @@ def transformer_block_config_from_dict(data: Dict[str, Any]) -> TransformerBlock
         data["cross_attention_config"] = attention_config_from_dict(data["cross_attention_config"])
     if "ffn_config" in data and isinstance(data["ffn_config"], dict):
         data["ffn_config"] = feedforward_config_from_dict(data["ffn_config"])
-    if "norm_config" in data and isinstance(data["norm_config"], dict):
-        data["norm_config"] = normalization_config_from_dict(data["norm_config"])
+    if "normalization_config" in data and isinstance(data["normalization_config"], dict):
+        data["normalization_config"] = normalization_config_from_dict(data["normalization_config"])
     
     # For AdaptivePatchTransformerBlockConfig, ensure the wrapped_block_type is resolved if it's a dict
     if registry_key == "adaptive_patch_transformer_block" and "wrapped_block_type" in data and isinstance(data["wrapped_block_type"], dict):
