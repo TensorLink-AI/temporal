@@ -1,12 +1,11 @@
-# temporal/modules/losses/timeflow_loss.py
+# temporal/modules/heads/timeflow_head.py
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import math
 from typing import Optional
 
-from temporal.modules.losses.losses import BaseTemporalLoss
+from temporal.modules.heads.base_output_head import BaseOutputHead
 from temporal.registry.core import register_module
 
 def _modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
@@ -135,13 +134,8 @@ class TimeFlowMLPAdaLN(nn.Module):
             h = block(h, ctx)
         return self.final(h, ctx)
 
-@register_module("loss", "timeflow")
-class TimeFlowLoss(BaseTemporalLoss):
-    """
-    The TimeFlow loss module for temporal forecasting.
-    Given target sequences and a conditioning vector z, computes a diffusion-style MSE loss.
-    This loss is stateful and contains its own neural network.
-    """
+@register_module("output_head", "timeflow")
+class TimeFlowHead(BaseOutputHead):
     def __init__(
         self,
         target_channels: int,
@@ -149,9 +143,8 @@ class TimeFlowLoss(BaseTemporalLoss):
         num_blocks: int,
         model_channels: int,
         num_sampling_steps: int = 10,
-        reduction: str = "mean",
     ):
-        super().__init__(reduction=reduction)
+        super().__init__()
         self.net = TimeFlowMLPAdaLN(
             in_channels=target_channels,
             model_channels=model_channels,
@@ -161,14 +154,8 @@ class TimeFlowLoss(BaseTemporalLoss):
         )
         self.num_sampling_steps = num_sampling_steps
 
-    def forward(
-        self,
-        preds: torch.Tensor, # Expected to be the conditioning vector `z`
-        targets: torch.Tensor,
-        loss_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    def forward(self, cond: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         # preds are the conditioning vector z, targets are the ground truth y
-        cond = preds
         
         # 1) sample mixing coefficient t ∈ [0,1]
         noise = torch.randn_like(targets)
@@ -179,20 +166,7 @@ class TimeFlowLoss(BaseTemporalLoss):
 
         # 3) predict target from noised + cond
         pred_denoised = self.net(noised, t * 1000, cond)
-
-        # 4) weighted MSE over channels
-        weights = 1.0 / torch.arange(
-            1, targets.size(-1) + 1,
-            device=targets.device, dtype=torch.float32
-        )
-        err = (pred_denoised - targets) ** 2
-        
-        # This loss assumes channel-last, so weights are applied to the last dim.
-        err = weights * err
-        loss = err.sum(dim=-1)
-
-        # 5) apply sequence mask (if any) and reduction
-        return self._apply_reduction(loss, loss_mask)
+        return pred_denoised
 
     @torch.no_grad()
     def sample(self, cond: torch.Tensor, num_samples: int = 1) -> torch.Tensor:
@@ -220,4 +194,3 @@ class TimeFlowLoss(BaseTemporalLoss):
         self.train()
         # reshape to (B, num_samples, C)
         return x.view(B, num_samples, -1)
-

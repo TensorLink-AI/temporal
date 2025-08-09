@@ -80,13 +80,8 @@ class TimeFlowLossConfig(LossConfig):
     """
     Configuration for the TimeFlow loss module.
     """
-    type: Literal["timeflow"] = "timeflow"
-    target_channels: int
-    cond_channels: int
-    num_blocks: int
-    model_channels: int
-    num_sampling_steps: int = 10
-    reduction: str = "mean"
+    type: str = field(default="timeflow")
+    reduction: str = field(default="mean")
 
 
 @register_config_type("nll_loss")

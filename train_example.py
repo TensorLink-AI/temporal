@@ -17,7 +17,8 @@ from temporal.configs.transformer_config import (
     TransformerBlockConfig,
     AttentionConfig,
     FeedForwardConfig,
-    OutputHeadConfig, # Keep this import
+    OutputHeadConfig,
+    NormalizationConfig,
 )
 from temporal.models.builder import build_time_series_transformer
 from temporal.utils.hf_accessors import save_hf
@@ -42,6 +43,7 @@ encoder_blocks = [
         block_type="default_encoder",
         attention_config=AttentionConfig(attention_type="full", num_heads=NUM_HEADS, dropout=0.1),
         ffn_config=FeedForwardConfig(type="standard", intermediate_size=64, activation="gelu", dropout=0.1),
+        normalization_config=NormalizationConfig(type="layer"),
     ) for _ in range(2)
 ]
 decoder_blocks = [
@@ -49,6 +51,7 @@ decoder_blocks = [
         block_type="default_decoder",
         attention_config=AttentionConfig(attention_type="full", num_heads=NUM_HEADS, dropout=0.1),
         ffn_config=FeedForwardConfig(type="standard", intermediate_size=64, activation="gelu", dropout=0.1),
+        normalization_config=NormalizationConfig(type="layer"),
     ) for _ in range(2)
 ]
 stacked_pos_embed_config = EmbeddingConfig(
@@ -255,4 +258,3 @@ try:
     print(f"Model saved locally to {local_save_dir}")
     if save_to_hub: print(f"Model potentially pushed to Hugging Face Hub: {hub_repo_id}")
 except Exception as e: print(f"Error saving model: {e}")
-

@@ -76,6 +76,30 @@ class MixtureOutputHeadConfig(OutputHeadConfig):
         # Add validation for component names if necessary
 
 
+@register_config_type("timeflow_output_head")
+@dataclass(frozen=True, kw_only=True)
+class TimeFlowOutputHeadConfig(OutputHeadConfig):
+    """
+    Configuration for a TimeFlow output head.
+    """
+    target_channels: int
+    cond_channels: int
+    num_blocks: int
+    model_channels: int
+    num_sampling_steps: int = field(default=10)
+    type: str = field(default="timeflow")
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.target_channels <= 0:
+            raise ValueError("target_channels must be a positive integer.")
+        if self.cond_channels <= 0:
+            raise ValueError("cond_channels must be a positive integer.")
+        if self.num_blocks <= 0:
+            raise ValueError("num_blocks must be a positive integer.")
+        if self.model_channels <= 0:
+            raise ValueError("model_channels must be a positive integer.")
+
 # Helper function for polymorphic creation
 def output_head_config_from_dict(data: Dict[str, Any]) -> OutputHeadConfig:
     output_head_type = data.get("type", "linear")
@@ -86,6 +110,7 @@ def output_head_config_from_dict(data: Dict[str, Any]) -> OutputHeadConfig:
         "distpred": "distpred_output_head",
         "quantile_regression": "quantile_regression_output_head", # ADDED
         "mixture": "mixture_output_head", # ADDED
+        "timeflow": "timeflow_output_head",
     }
     registry_key = type_to_registry_key.get(output_head_type, output_head_type) # Fallback to type if not in map
 

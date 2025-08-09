@@ -625,3 +625,32 @@ class CRPSHuberLoss(BaseLoss):
 
         # final reduction / masking
         return self._apply_reduction(crps_raw, loss_mask)
+
+
+@register_module("loss", "timeflow")
+class TimeFlowLoss(BaseLoss):
+    """
+    The TimeFlow loss module for temporal forecasting.
+    Given target sequences and a conditioning vector z, computes a diffusion-style MSE loss.
+    This loss is stateful and contains its own neural network.
+    """
+
+    def forward(
+        self,
+        preds: torch.Tensor, # Expected to be the conditioning vector `z`
+        targets: torch.Tensor,
+        loss_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        # 4) weighted MSE over channels
+        weights = 1.0 / torch.arange(
+            1, targets.size(-1) + 1,
+            device=targets.device, dtype=torch.float32
+        )
+        err = (preds - targets) ** 2
+        
+        # This loss assumes channel-last, so weights are applied to the last dim.
+        err = weights * err
+        loss = err.sum(dim=-1)
+
+        # 5) apply sequence mask (if any) and reduction
+        return self._apply_reduction(loss, loss_mask)
