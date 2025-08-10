@@ -52,7 +52,7 @@ class RevIN(nn.Module):
         self.affine_bias = nn.Parameter(torch.zeros(1, self.num_features, 1))
 
     def _get_statistics(self, x):
-        dim2reduce = tuple(range(2, x.ndim))
+        dim2reduce = (1,)
         if self.subtract_last:
             self.last = x[:,:,-1].unsqueeze(-1).detach()
         else:
@@ -124,7 +124,7 @@ class RevIN2d(nn.Module):
         self.affine_bias = nn.Parameter(torch.zeros(1, self.num_features, 1, 1))
 
     def _get_statistics(self, x):
-        dim2reduce = tuple(range(2, x.ndim))
+        dim2reduce = (1, 2, 3)
         if self.subtract_last:
             self.last = x[:,:,-1].unsqueeze(-1).detach()
         else:
