@@ -38,7 +38,12 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     encoder_blocks: Optional[List[TransformerBlockConfig]] = field(default=None)
     decoder_blocks: Optional[List[TransformerBlockConfig]] = field(default=None)
     output_head_config: OutputHeadConfig = field(default_factory=lambda: output_head_config_from_dict({"type": "linear"}))
-    norm_config: NormalizationConfig = field(default_factory=lambda: normalization_config_from_dict({"type": "layer"}))
+    
+    # --- Refactored Normalization Configs ---
+    layer_norm_config: NormalizationConfig = field(default_factory=lambda: normalization_config_from_dict({"type": "layer"}))
+    instance_norm_config: Optional[NormalizationConfig] = field(default=None)
+    # --- End Refactor ---
+
     head_agg_config: HeadAggregationConfig = field(default_factory=lambda: head_aggregation_config_from_dict({"type": "mean"}))
     quantizer_config: Optional[QuantizerConfig] = field(default=None)
     vocab_size: Optional[int] = field(default=None)
@@ -56,7 +61,6 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     def __post_init__(self):
         super().__post_init__()
         
-        # Use object.__setattr__ for frozen dataclass to set attributes from base that might be determined later
         if "input_dim" not in self.__dict__ and hasattr(self, 'feature_size'):
             object.__setattr__(self, "input_dim", self.feature_size)
         
@@ -72,7 +76,6 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if self.max_position_embeddings <= 0:
             raise ValueError("max_position_embeddings must be > 0")
 
-        # Ensure nested configs are instances of their dataclass types
         if not isinstance(self.architecture, TransformerArchitectureConfig):
             raise ValueError("architecture must be a TransformerArchitectureConfig instance.")
         if not isinstance(self.value_embedding_config, EmbeddingConfig):
@@ -87,8 +90,10 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
                 raise ValueError("All items in decoder_blocks must be TransformerBlockConfig instances.")
         if not isinstance(self.output_head_config, OutputHeadConfig):
             raise ValueError("output_head_config must be an OutputHeadConfig instance.")
-        if not isinstance(self.norm_config, NormalizationConfig):
-            raise ValueError("norm_config must be a NormalizationConfig instance.")
+        if not isinstance(self.layer_norm_config, NormalizationConfig):
+            raise ValueError("layer_norm_config must be a NormalizationConfig instance.")
+        if self.instance_norm_config is not None and not isinstance(self.instance_norm_config, NormalizationConfig):
+             raise ValueError("instance_norm_config must be a NormalizationConfig instance or None.")
         if not isinstance(self.head_agg_config, HeadAggregationConfig):
             raise ValueError("head_agg_config must be a HeadAggregationConfig instance.")
         if self.quantizer_config is not None and not isinstance(self.quantizer_config, QuantizerConfig):
@@ -96,7 +101,6 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if not isinstance(self.loss_config, LossConfig):
             raise ValueError("loss_config must be a LossConfig instance.")
 
-        # Specific validation for blocks and attention heads (moved from old validate_config)
         all_blocks = (self.encoder_blocks or []) + (self.decoder_blocks or [])
         for i, block_config in enumerate(all_blocks):
             if block_config.attention_config:
@@ -106,7 +110,6 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
                         f"d_model ({self.d_model}) must be divisible by num_heads ({heads}) "
                         f"in self-attention of block {i}"
                     )
-            # Use direct type check for DecoderBlockConfig since it's a specific class now
             if isinstance(block_config, DecoderBlockConfig) and block_config.cross_attention_config:
                 cross_heads = block_config.cross_attention_config.num_heads
                 if self.d_model % cross_heads != 0:
@@ -119,11 +122,18 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             print("Warning: Quantizer configured but vocab_size not set.")
         if self.architecture.layout != "encoder-only" and self.decoder_start_token_id is None and self.vocab_size is not None:
             print("Warning: Decoder model needs decoder_start_token_id if tokenized.")
-        # Quantiles validation is now in BaseTimeSeriesConfig's __post_init__
 
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        # Process deprecated fields and aliases first
+        if "norm_config" in data and "layer_norm_config" not in data:
+            norm_type = data["norm_config"].get("type", "layer") if isinstance(data["norm_config"], dict) else "layer"
+            if norm_type == "revin":
+                data["instance_norm_config"] = data.pop("norm_config")
+                if "layer_norm_config" not in data:
+                    data["layer_norm_config"] = {"type": "layer"}
+            else:
+                data["layer_norm_config"] = data.pop("norm_config")
+        
         if "attention_blocks" in data:
             print("Warning: `attention_blocks` config key is deprecated. Configure attention within `encoder_blocks`/`decoder_blocks`.")
             data.pop("attention_blocks")
@@ -143,24 +153,22 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         elif "feature_size" in data:
             data.pop("feature_size")
 
-        # Handle nested configurations using their from_dict helpers
         if "architecture" in data and isinstance(data["architecture"], dict):
             data["architecture"] = TransformerArchitectureConfig.from_dict(data["architecture"])
-
         if "value_embedding_config" in data and isinstance(data["value_embedding_config"], dict):
             data["value_embedding_config"] = embedding_config_from_dict(data["value_embedding_config"])
         if "positional_embedding_config" in data and isinstance(data["positional_embedding_config"], dict):
             data["positional_embedding_config"] = embedding_config_from_dict(data["positional_embedding_config"])
-        
         if "encoder_blocks" in data and isinstance(data["encoder_blocks"], list):
             data["encoder_blocks"] = [transformer_block_config_from_dict(b) if isinstance(b, dict) else b for b in data["encoder_blocks"]]
         if "decoder_blocks" in data and isinstance(data["decoder_blocks"], list):
             data["decoder_blocks"] = [transformer_block_config_from_dict(b) if isinstance(b, dict) else b for b in data["decoder_blocks"]]
-
         if "output_head_config" in data and isinstance(data["output_head_config"], dict):
             data["output_head_config"] = output_head_config_from_dict(data["output_head_config"])
-        if "norm_config" in data and isinstance(data["norm_config"], dict):
-            data["norm_config"] = normalization_config_from_dict(data["norm_config"])
+        if "layer_norm_config" in data and isinstance(data["layer_norm_config"], dict):
+            data["layer_norm_config"] = normalization_config_from_dict(data["layer_norm_config"])
+        if "instance_norm_config" in data and data["instance_norm_config"] and isinstance(data["instance_norm_config"], dict):
+            data["instance_norm_config"] = normalization_config_from_dict(data["instance_norm_config"])
         if "head_agg_config" in data and isinstance(data["head_agg_config"], dict):
             data["head_agg_config"] = head_aggregation_config_from_dict(data["head_agg_config"])
         if "quantizer_config" in data and isinstance(data["quantizer_config"], dict):
@@ -168,5 +176,4 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if "loss_config" in data and isinstance(data["loss_config"], dict):
             data["loss_config"] = loss_config_from_dict(data["loss_config"])
         
-        # Call super().from_dict to handle instantiation via BaseConfig (which handles PretrainedConfig)
         return super().from_dict(data)

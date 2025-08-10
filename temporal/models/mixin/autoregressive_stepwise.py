@@ -176,14 +176,9 @@ class AutoregressiveStepwiseMixin:
         if encoder_inputs is None and decoder_inputs is None:
             raise ValueError("You must provide either 'encoder_inputs' or 'decoder_inputs'.")
 
-        # Determine batch_size and device from the available tensor
-        if decoder_inputs is not None:
-            batch_size, device = decoder_inputs.shape[0], decoder_inputs.device
-        else:
-            # This branch will be taken by encoder-decoder models
-            batch_size, device = encoder_inputs.shape[0], encoder_inputs.device
+        ref_tensor = decoder_inputs if encoder_inputs is None else encoder_inputs
+        batch_size, device, dtype = ref_tensor.shape[0], ref_tensor.device, ref_tensor.dtype
 
-        # Step 1: Run the encoder if it exists.
         encoder_outputs = None
         if self.encoder and encoder_inputs is not None:
             processed_encoder = self.preprocessor.process(
@@ -201,39 +196,27 @@ class AutoregressiveStepwiseMixin:
                 return_dict=True,
             )
 
-        # Step 2: Initialize for Decoder.
         encoder_hidden_states = encoder_outputs.last_hidden_state if encoder_outputs else None
         
-        # Cache output_heads type and primary head for hoisting checks
-        is_multi_head = isinstance(self.output_heads, nn.ModuleList)
-        primary_output_head = self.output_heads[0] if is_multi_head else self.output_heads
+        primary_output_head = self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
         
-        # Initialize decoder inputs
         if decoder_inputs is None:
-            if decoder_start_token_id is None:
-                decoder_start_token_id = getattr(self.config, "decoder_start_token_id", 0)
-            
-            start_val = self._get_scalar_value(decoder_start_token_id, "decoder_start_token_id")
-            decoder_start_tensor = torch.full(
-                (batch_size, 1, self.config.feature_size), 
-                start_val, 
-                device=device, 
-                dtype=encoder_inputs.dtype
-            )
-            decoder_inputs = decoder_start_tensor
+            start_token_id = getattr(self.config, "decoder_start_token_id", 0) if decoder_start_token_id is None else decoder_start_token_id
+            start_val = self._get_scalar_value(start_token_id, "decoder_start_token_id")
+            decoder_inputs = torch.full((batch_size, 1, self.config.feature_size), start_val, device=device, dtype=dtype)
 
         predictions = []
         past_key_values = None
         eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
 
-        # Step 3: Autoregressive Loop
         for _ in range(prediction_length):
             past_kv_length = past_key_values[0][0][0].shape[2] if past_key_values is not None else 0
 
+            step_input = decoder_inputs[:, -1:, :] if use_cache and past_key_values is not None else decoder_inputs
+            
             processed_decoder = self.preprocessor.process(
-                input_values=decoder_inputs[:, -1:, :] if use_cache and past_key_values is not None else decoder_inputs,
+                input_values=step_input,
                 past_key_values_length=past_kv_length,
-                attention_mask=decoder_attention_mask,
                 is_causal=True,
                 validate_shapes=validate_shapes,
                 verbose=verbose,
@@ -273,20 +256,22 @@ class AutoregressiveStepwiseMixin:
                 past_key_values = decoder_outputs.past_key_values
 
             if early_stopping and eos_value_scalar is not None:
-                if torch.is_tensor(next_decoder_input_value) and next_decoder_input_value.ndim >= 3 and \
-                   torch.isclose(next_decoder_input_value[:, :, 0], torch.tensor(eos_value_scalar, device=device)).all():
+                if torch.isclose(next_decoder_input_value.squeeze(), torch.tensor(eos_value_scalar, device=device)).all():
                     logger.info(f"Early stopping triggered at step {_ + 1} due to EOS token prediction.")
                     break
         
         if not predictions:
-            # Handle empty predictions if prediction_length is 0
             return torch.empty((batch_size, 0, self.config.feature_size), device=device)
 
         if isinstance(predictions[0], Dict):
-            logger.info("AutoregressiveMixin returning a list of dictionaries as prediction output.")
+            logger.info("AutoregressiveMixin returning a list of dictionaries. Skipping denormalization.")
             return predictions
         else:
-            return torch.cat(predictions, dim=1)
+            final_predictions = torch.cat(predictions, dim=1)
+            if hasattr(self.preprocessor, 'denormalize'):
+                logger.info("Denormalizing final predictions.")
+                final_predictions = self.preprocessor.denormalize(final_predictions)
+            return final_predictions
 
     @torch.no_grad()
     def forecast(
@@ -312,10 +297,7 @@ class AutoregressiveStepwiseMixin:
             **kwargs: Additional arguments to be passed directly to the
                       underlying `generate` method (e.g., `prediction_strategy`).
         """
-        # This wrapper inspects the model's architecture and calls `generate` correctly.
         if hasattr(self, 'encoder') and self.encoder is not None:
-            # Encoder-Decoder Path
-            logger.info("Encoder-Decoder model detected. Using `inputs` as `encoder_inputs` for forecasting.")
             return self.generate(
                 encoder_inputs=inputs,
                 prediction_length=prediction_length,
@@ -323,8 +305,6 @@ class AutoregressiveStepwiseMixin:
                 **kwargs,
             )
         else:
-            # Decoder-Only Path
-            logger.info("Decoder-Only model detected. Using `inputs` as `decoder_inputs` for forecasting.")
             return self.generate(
                 decoder_inputs=inputs,
                 prediction_length=prediction_length,

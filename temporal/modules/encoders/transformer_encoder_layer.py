@@ -80,11 +80,11 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         # --- Resolve Normalization Config ---
         resolved_norm_config = config.normalization_config
         if resolved_norm_config is None:
-            # Fallback to a global config if a block-specific one isn't provided
-            if hasattr(main_config, 'normalization_config') and main_config.normalization_config:
-                resolved_norm_config = main_config.normalization_config
+            # Fallback to the new global layer_norm_config
+            if hasattr(main_config, 'layer_norm_config') and main_config.layer_norm_config:
+                resolved_norm_config = main_config.layer_norm_config
             else:
-                 raise ValueError("No normalization configuration found for encoder layer (neither block-specific nor global).")
+                 raise ValueError("No layer normalization configuration found for encoder layer (neither block-specific nor global).")
         if not isinstance(resolved_norm_config, NormalizationConfig):
              raise TypeError(f"Resolved normalization configuration is not a NormalizationConfig instance, got {type(resolved_norm_config)}")
         self.norm1 = builder.build_normalization(resolved_norm_config)

@@ -106,12 +106,6 @@ class AutoregressivePatchMixin:
         if encoder_inputs is None and decoder_inputs is None:
             raise ValueError("You must provide either 'encoder_inputs' or 'decoder_inputs'.")
 
-        #required_attrs = ['config', 'preprocessor', 'decoder', 'patch_merger', 'output_heads']
-        #if not all(hasattr(self, attr) for attr in required_attrs):
-        #    raise AttributeError(f"Model must have {required_attrs} attributes for patch-based generation.")
-        
-        # Determine batch_size and device from the available tensor
-        # This also determines the data type for creating empty tensors later.
         reference_tensor = decoder_inputs if encoder_inputs is None else encoder_inputs
         batch_size, device = reference_tensor.shape[0], reference_tensor.device
 
@@ -125,7 +119,8 @@ class AutoregressivePatchMixin:
             )
             context_patches = processed_encoder["hidden_states"]
             encoder_outputs = self.encoder(
-                hidden_states=context_patches, attention_mask=processed_encoder["attention_mask"], return_dict=True
+                hidden_states=context_patches, attention_mask=processed_encoder["attention_mask"], return_dict=True,
+                output_attentions=output_attentions, output_hidden_states=output_hidden_states
             )
             encoder_hidden_states = encoder_outputs.last_hidden_state
             
@@ -168,6 +163,8 @@ class AutoregressivePatchMixin:
                 encoder_attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
                 return_dict=True,
             )
 
@@ -179,19 +176,13 @@ class AutoregressivePatchMixin:
                 past_key_values = decoder_outputs.past_key_values       
 
         if not generated_patches:
-            return torch.empty((encoder_inputs.shape[0], 0, encoder_inputs.shape[-1]), device=encoder_inputs.device)
+            return torch.empty((reference_tensor.shape[0], 0, reference_tensor.shape[-1]), device=device)
 
         # --- Step 4: Merge generated patches into final predictions ---
         all_generated_patches = torch.cat(generated_patches, dim=1)
-        # Shape of all_generated_patches: [B, P_gen, D]
-
-        # 1. Apply the de-patching projection layer. No transpose needed.
-        # [B, P_gen, D] -> [B, P_gen, patch_size * feature_size]
         projected_patches = self.output_patch_reconstructor(all_generated_patches)
 
-        # 2. Reshape to get the final time-series output.
         B, P_gen, _ = projected_patches.shape
-        # pull the output patch size
         P_out = self.preprocessor.value_embedding.output_patch_size
         f_sz  = self.config.feature_size
 
@@ -201,6 +192,11 @@ class AutoregressivePatchMixin:
         # --- Step 5: Apply final output heads (e.g., for probabilistic forecasts) ---
         final_output = self._get_head_output(point_predictions)
         
+        # --- Step 6: Denormalize the final output if necessary ---
+        if hasattr(self.preprocessor, 'denormalize'):
+            logger.info("Denormalizing final patch-based predictions.")
+            final_output = self.preprocessor.denormalize(final_output)
+
         return final_output
 
     @torch.no_grad()
