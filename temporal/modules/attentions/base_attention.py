@@ -49,7 +49,6 @@ class BaseMultiHeadAttention(nn.Module):
         is_decoder: bool = False,
         is_cross_attention: bool = False,
         bias: bool = True,
-        qk_layernorm: bool = False,               # ← new flag
         **kwargs
     ):
         super().__init__()
@@ -68,7 +67,7 @@ class BaseMultiHeadAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
 
         # --- query/key LayerNorm ---
-        self.use_qk_layernorm = qk_layernorm
+        self.use_qk_layernorm = kwargs.get('qk_layernorm', False)
         if self.use_qk_layernorm:
             # normalize each head's vector of size head_dim
             self.q_norm = nn.LayerNorm(self.head_dim)
@@ -152,9 +151,9 @@ class BaseMultiHeadAttention(nn.Module):
 
         # reshape to heads
         q = q.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)  # [B, H, T, D]
-        k_len = (past_key_value[0].size(2) if past_key_value else kv_source.size(1))
-        k = k.view(B, k_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, k_len, self.num_heads, self.head_dim).transpose(1, 2)
+        kv_len = k.size(1)
+        k = k.view(B, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         # optional Q/K LayerNorm
         if self.use_qk_layernorm:
@@ -200,20 +199,6 @@ class BaseMultiHeadAttention(nn.Module):
 
         return (out, probs if output_attentions else None, present)
 
-    def forward_with_mask(self, q, k, v, attention_mask, **kwargs):
-        B, T, _ = q.size()
-        scores = self.compute_attention_scores(q, k)
-        if attention_mask is not None:
-            scores = scores + attention_mask
-
-        probs = self._compute_attn_probs(scores)
-        probs = F.dropout(probs, p=self.dropout, training=self.training)
-
-        out = torch.matmul(probs, v)
-        out = out.transpose(1, 2).reshape(B, T, -1)
-        out = self.out_proj(out)
-        return out, probs, None
-
 
 @register_module("attention", "full")
 class FullAttention(BaseMultiHeadAttention):
@@ -235,42 +220,18 @@ class FullAttention(BaseMultiHeadAttention):
         self,
         embed_dim: int,
         num_heads: int,
-        dropout: float = 0.1,
-        is_decoder: bool = False,
-        is_cross_attention: bool = False,
-        bias: bool = True,
-        use_rope: bool = False,
-        use_alibi: bool = False,
-        max_position_embeddings: int = 4096,
-        rope_base: int = 10000,
-        qk_layernorm: bool = False,          # ← pass it through
         **kwargs
     ):
         """
         Initializes the FullAttention module.
-
-        Args:
-            embed_dim (int): The embedding dimension of the model.
-            num_heads (int): The number of attention heads.
-            dropout (float): The dropout rate.
-            is_decoder (bool): Whether this module is used in a decoder.
-            is_cross_attention (bool): Whether this module is used for cross-attention.
-            bias (bool): Whether to include a bias in the linear projections.
-            use_rope (bool): Whether to use RoPE.
-            use_alibi (bool): Whether to use ALiBi.
-            max_position_embeddings (int): The maximum sequence length for RoPE and ALiBi.
-            rope_base (int): The base for RoPE frequencies.
-            **kwargs: Additional keyword arguments for the parent class.
         """
-        super().__init__(
-            embed_dim, num_heads, dropout,
-            is_decoder, is_cross_attention,
-            bias,
-            qk_layernorm=qk_layernorm,
-            **kwargs
-        )
-        self.use_rope = use_rope
-        self.use_alibi = use_alibi
+        super().__init__(embed_dim=embed_dim, num_heads=num_heads, **kwargs)
+
+        # Retrieve optional parameters in a backward-compatible way
+        self.use_rope = kwargs.get('use_rope', False)
+        self.use_alibi = kwargs.get('use_alibi', False)
+        max_position_embeddings = kwargs.get('max_position_embeddings', 4096)
+        rope_base = kwargs.get('rope_base', 10000)
 
         self.rotary_proj = None
         if self.use_rope:
@@ -305,29 +266,6 @@ class FullAttention(BaseMultiHeadAttention):
 
         This method calls the `forward` method of the `BaseMultiHeadAttention`
         class, passing the RoPE and ALiBi modules if they are enabled.
-
-        Args:
-            hidden_states (torch.Tensor): The input hidden states.
-            key_value_states (Optional[torch.Tensor]): The key and value states for
-                cross-attention. Defaults to None.
-            past_key_value (Optional[Tuple[torch.Tensor, torch.Tensor]]): The cached
-                key and value states from previous steps. Defaults to None.
-            attention_mask (Optional[torch.Tensor]): The attention mask.
-                Defaults to None.
-            head_mask (Optional[torch.Tensor]): The mask for attention heads.
-                Defaults to None.
-            output_attentions (bool): Whether to output attention probabilities.
-                Defaults to False.
-            use_cache (bool): Whether to use caching for the key and value states.
-                Defaults to False.
-            position_ids (Optional[torch.LongTensor]): The position IDs for RoPE.
-                Defaults to None.
-
-        Returns:
-            Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-                A tuple containing the attention output, the attention probabilities
-                (if output_attentions is True), and the updated key and value states
-                (if use_cache is True).
         """
         return super().forward(
             hidden_states=hidden_states,
@@ -359,21 +297,17 @@ class FlashAttention(BaseMultiHeadAttention):
         self,
         embed_dim: int,
         num_heads: int,
-        dropout: float = 0.1,
-        is_decoder: bool = False,
-        is_cross_attention: bool = False,
-        bias: bool = True,
-        softmax_scale: Optional[float] = None,
-        causal: bool = False,
         **kwargs
     ):
-        super().__init__(embed_dim, num_heads, dropout, is_decoder, is_cross_attention, bias, **kwargs)
-        self.softmax_scale = softmax_scale
-        self.causal = causal or (is_decoder and not is_cross_attention)
+        super().__init__(embed_dim=embed_dim, num_heads=num_heads, **kwargs)
         if not _flash_attn_available:
             raise ImportError("FlashAttention requires flash_attn.")
-        if is_cross_attention:
-            print("Warning: FlashAttention cross-attention NYI.")
+        
+        self.softmax_scale = kwargs.get('softmax_scale', None)
+        self.causal = kwargs.get('causal', self.is_decoder and not self.is_cross_attention)
+        
+        if self.is_cross_attention:
+            print("Warning: FlashAttention cross-attention not fully supported.")
 
     def forward(
         self,
@@ -389,43 +323,13 @@ class FlashAttention(BaseMultiHeadAttention):
         alibi_bias_generator=None
     ):
         """
-        Performs the forward pass of the attention layer.
-
-        This method uses the `flash_attn_func` from the `flash_attn` library
-        to perform the attention calculation. It does not support all the
-        features of the `BaseMultiHeadAttention` class, such as RoPE and ALiBi.
-
-        Args:
-            hidden_states (torch.Tensor): The input hidden states.
-            key_value_states (Optional[torch.Tensor]): The key and value states for
-                cross-attention. Ignored.
-            past_key_value: Ignored.
-            attention_mask: Ignored.
-            head_mask: Ignored.
-            output_attentions: Ignored.
-            use_cache: Ignored.
-            position_ids: Ignored.
-            rotary_proj: Ignored.
-            alibi_bias_generator: Ignored.
-
-        Returns:
-            Tuple[torch.Tensor, None, None]: A tuple containing the attention
-            output, None for the attention probabilities, and None for the
-            key and value states.
+        Performs the forward pass of the attention layer using flash_attn_func.
         """
         if flash_attn_func is None:
             raise ImportError("flash_attn_func is not available.")
-        if use_cache:
-            print("Warning: FlashAttention KV caching NYI.")
-        if rotary_proj is not None or alibi_bias_generator is not None:
-            print("Warning: FlashAttention ignores RoPE/ALiBi.")
-        if attention_mask is not None:
-            print("Warning: FlashAttention ignores mask; use causal flag.")
-        if head_mask is not None:
-            print("Warning: FlashAttention ignores head_mask.")
-        if output_attentions:
-            print("Warning: FlashAttention doesn't return probs.")
-
+        if use_cache or past_key_value is not None:
+            print("Warning: FlashAttention KV caching is not implemented.")
+        
         B, T, _ = hidden_states.shape
         kv_source = key_value_states if self.is_cross_attention and key_value_states is not None else hidden_states
         q, k, v = self.q_proj(hidden_states), self.k_proj(kv_source), self.v_proj(kv_source)

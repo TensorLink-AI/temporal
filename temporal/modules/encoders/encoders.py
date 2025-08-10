@@ -28,7 +28,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
         config: The main configuration object for the model.
         layers (nn.ModuleList): The stack of encoder layers.
     """
-    def __init__(self, config, builder: ModuleBuilder, block_configs: List[TransformerBlockConfig]):
+    def __init__(self, config, builder: ModuleBuilder, block_configs: List[TransformerBlockConfig], **kwargs):
         """
         Initializes the TimeSeriesTransformerEncoder.
 
@@ -38,6 +38,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
                 sub-modules for the layers based on the config.
             block_configs (List[TransformerBlockConfig]): A list of configurations,
                 where each configuration defines a single encoder layer in the stack.
+            **kwargs: Catches unused arguments to ensure backward compatibility.
         """
         super().__init__()
         self.config = config

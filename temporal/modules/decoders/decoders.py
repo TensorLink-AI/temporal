@@ -34,6 +34,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
         config,
         builder: ModuleBuilder,
         block_configs: List[TransformerBlockConfig],
+        **kwargs,
     ):
         """
         Initializes the TimeSeriesTransformerDecoder.
@@ -44,6 +45,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
                 sub-modules for the layers based on the config.
             block_configs (List[TransformerBlockConfig]): A list of configurations,
                 where each configuration defines a single decoder layer in the stack.
+            **kwargs: Catches unused arguments to ensure backward compatibility.
         """
         super().__init__()
         self.config = config

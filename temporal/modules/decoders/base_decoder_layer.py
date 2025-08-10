@@ -41,7 +41,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         norm3 (nn.Module): Layer normalization after the FFN.
         dropout (nn.Dropout): Dropout layer.
     """
-    def __init__(self, config: TransformerBlockConfig, builder: ModuleBuilder):
+    def __init__(self, config: TransformerBlockConfig, builder: ModuleBuilder, **kwargs):
         """
         Initializes the TimeSeriesTransformerDecoderLayer.
 
@@ -50,6 +50,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
                 layer, defining the types of attention and FFN to be used.
             builder (ModuleBuilder): A helper class that constructs the sub-modules
                 (attention, FFN, normalization) based on the main model configuration.
+            **kwargs: Catches unused arguments to ensure backward compatibility.
         """
         super().__init__()
         self.config = config # Stores the block config
@@ -74,7 +75,6 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         
         # Prepare build config for self-attention (always is_decoder=True, is_cross_attention=False)
         self_attn_build_config = copy.deepcopy(resolved_self_attn_config)
-        # self_attn_build_config.kwargs = self_attn_build_config.kwargs or {} # REMOVED: kwargs is now guaranteed by BaseConfig
         self_attn_build_config.kwargs['is_decoder'] = True
         self_attn_build_config.kwargs['is_cross_attention'] = False
         self.self_attn = builder.build_attention(self_attn_build_config)
@@ -105,7 +105,6 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
             
             # Prepare build config for cross-attention (always is_decoder=True, is_cross_attention=True)
             cross_attn_build_config = copy.deepcopy(resolved_cross_attn_config)
-            # cross_attn_build_config.kwargs = cross_attn_build_config.kwargs or {} # REMOVED: kwargs is now guaranteed by BaseConfig
             cross_attn_build_config.kwargs['is_decoder'] = True
             cross_attn_build_config.kwargs['is_cross_attention'] = True
             self.cross_attn = builder.build_attention(cross_attn_build_config)

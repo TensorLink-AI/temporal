@@ -36,7 +36,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         norm2 (nn.Module): Layer normalization after the FFN.
         dropout (nn.Dropout): Dropout layer.
     """
-    def __init__(self, config: TransformerBlockConfig, builder: ModuleBuilder):
+    def __init__(self, config: TransformerBlockConfig, builder: ModuleBuilder, **kwargs):
         """Initializes the TimeSeriesTransformerEncoderLayer.
 
         Args:
@@ -45,6 +45,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
                 layer, defining the types of attention and FFN to be used.
             builder (ModuleBuilder): A helper class that constructs the sub-modules
                 (attention, FFN, normalization) based on the main model configuration.
+            **kwargs: Catches unused arguments to ensure backward compatibility.
         """
         super().__init__()
         self.config = config

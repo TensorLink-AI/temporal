@@ -21,18 +21,16 @@ class BaseConfig:
     Base class for all immutable configuration dataclasses.
     Provides common serialization/deserialization methods.
     """
-    type: str # This field is required and will be keyword-only
-    kwargs: Dict[str, Any] = field(default_factory=dict) # Added kwargs to BaseConfig
+    type: str
+    kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Converts the dataclass instance to a dictionary, handling nested BaseConfig objects."""
         data = asdict(self)
-        # Recursively convert nested BaseConfig objects to dictionaries
         for f in fields(self):
             if isinstance(getattr(self, f.name), BaseConfig):
                 data[f.name] = getattr(self, f.name).to_dict()
             elif isinstance(getattr(self, f.name), list):
-                # Handle lists of BaseConfig objects
                 data[f.name] = [
                     item.to_dict() if isinstance(item, BaseConfig) else item
                     for item in getattr(self, f.name)
@@ -42,53 +40,58 @@ class BaseConfig:
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
         """
-        Creates a dataclass instance from a dictionary, using the registry for polymorphic types.
+        Creates a dataclass instance from a dictionary. It's designed to be
+        forward-compatible by ignoring unknown keys and allowing new fields
+        to be added to dataclasses with default values.
         """
         if "type" in data and data["type"] in CONFIG_REGISTRY:
             target_cls = CONFIG_REGISTRY[data["type"]]
         else:
             target_cls = cls
 
-        # Filter out keys not in the constructor's signature
-        # This handles cases where `data` might contain extra keys (e.e., from old configs)
-        # For kw_only=True dataclasses, all fields are in init=True by default unless specified
-        valid_keys = {f.name for f in fields(target_cls) if f.init}
-        filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+        # Get all fields of the target dataclass that can be initialized.
+        # This is the set of "known" parameters for the target version.
+        known_keys = {f.name for f in fields(target_cls) if f.init}
 
-        # Recursively build nested configs if they are dicts
+        # Separate known keys from unknown keys. Unknown keys will be stored in 'kwargs'.
+        known_data = {k: v for k, v in data.items() if k in known_keys}
+        unknown_data = {k: v for k, v in data.items() if k not in known_keys}
+
+        # If the target class has a 'kwargs' field, store the unknown data there.
+        if 'kwargs' in known_keys:
+            known_data['kwargs'] = unknown_data
+        elif unknown_data:
+            # If there are unknown keys but no 'kwargs' field, you might want to log this.
+            print(f"Warning: Discarding unknown keys for {target_cls.__name__}: {list(unknown_data.keys())}")
+
+
+        # Recursively build nested configs
         for f in fields(target_cls):
-            if f.name in filtered_data and isinstance(filtered_data[f.name], dict):
-                # If the field's type is a BaseConfig subclass, use its from_dict
-                if hasattr(f.type, "from_dict") and issubclass(f.type, BaseConfig):
-                    filtered_data[f.name] = f.type.from_dict(filtered_data[f.name])
-                # Handle Optional[BaseConfig]
-                elif hasattr(f.type, '__origin__') and f.type.__origin__ is Optional and \
-                     hasattr(f.type.__args__[0], "from_dict") and issubclass(f.type.__args__[0], BaseConfig):
-                    filtered_data[f.name] = f.type.__args__[0].from_dict(filtered_data[f.name])
+            if f.name in known_data:
+                field_value = known_data[f.name]
+                field_type = f.type
 
-            elif f.name in filtered_data and isinstance(filtered_data[f.name], list):
-                # Handle lists of nested configs
-                list_items = []
-                # Determine the type of list elements from the field's type annotation
-                list_field_type = None
-                if hasattr(f.type, '__args__') and f.type.__args__:
-                    # This assumes homogeneous lists of BaseConfig types
-                    list_field_type = f.type.__args__[0]
+                # Handle Optional[Type]
+                if hasattr(field_type, '__origin__') and field_type.__origin__ is Optional:
+                    field_type = field_type.__args__[0]
 
-                for item in filtered_data[f.name]:
-                    if isinstance(item, dict):
-                        if "type" in item and item["type"] in CONFIG_REGISTRY:
-                            list_items.append(CONFIG_REGISTRY[item["type"]].from_dict(item))
-                        elif list_field_type and hasattr(list_field_type, "from_dict") and issubclass(list_field_type, BaseConfig):
-                            # Fallback if item dict doesn't have a 'type' but list is typed
-                            list_items.append(list_field_type.from_dict(item))
+                if isinstance(field_value, dict) and hasattr(field_type, "from_dict") and issubclass(field_type, BaseConfig):
+                    known_data[f.name] = field_type.from_dict(field_value)
+                elif isinstance(field_value, list):
+                    list_items = []
+                    # Determine the type of list elements
+                    list_item_type = None
+                    if hasattr(f.type, '__args__') and f.type.__args__:
+                        list_item_type = f.type.__args__[0]
+                    
+                    for item in field_value:
+                        if isinstance(item, dict) and list_item_type and hasattr(list_item_type, "from_dict") and issubclass(list_item_type, BaseConfig):
+                            list_items.append(list_item_type.from_dict(item))
                         else:
                             list_items.append(item)
-                    else:
-                        list_items.append(item)
-                filtered_data[f.name] = list_items
+                    known_data[f.name] = list_items
 
-        return target_cls(**filtered_data)
+        return target_cls(**known_data)
 
     def __post_init__(self):
         """

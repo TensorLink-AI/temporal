@@ -142,8 +142,7 @@ class TimeFlowHead(BaseOutputHead):
         cond_channels: int,
         num_blocks: int,
         model_channels: int,
-        num_sampling_steps: int = 10,
-        num_samples_for_quantiles: int = 100,
+        **kwargs,
     ):
         super().__init__()
         self.net = TimeFlowMLPAdaLN(
@@ -153,8 +152,8 @@ class TimeFlowHead(BaseOutputHead):
             cond_channels=cond_channels,
             num_blocks=num_blocks,
         )
-        self.num_sampling_steps = num_sampling_steps
-        self.num_samples_for_quantiles = num_samples_for_quantiles
+        self.num_sampling_steps = kwargs.get('num_sampling_steps', 10)
+        self.num_samples_for_quantiles = kwargs.get('num_samples_for_quantiles', 100)
 
     def forward(self, cond: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         # preds are the conditioning vector z, targets are the ground truth y
