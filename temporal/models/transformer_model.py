@@ -306,7 +306,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             # Normalize targets before loss calculation if instance norm is configured
             normalized_targets = targets
             if self.config.instance_norm_config is not None:
-                normalized_targets = self.preprocessor.instance_norm(targets, mode='norm')
+                normalized_targets = self.preprocessor.instance_norm.transform(targets)
 
             loss = self.loss_fn(preds=logits, targets=normalized_targets, loss_mask=loss_mask)
 

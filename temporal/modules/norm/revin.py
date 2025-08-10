@@ -81,6 +81,11 @@ class RevIN(nn.Module):
             x = x + self.mean
         return x
 
+    def transform(self, x):
+        return self._normalize(x)
+
+    def inverse_transform(self, x):
+        return self._denormalize(x)
 
 @register_module("normalization", "revin2d")
 class RevIN2d(nn.Module):
@@ -147,3 +152,9 @@ class RevIN2d(nn.Module):
         else:
             x = x + self.mean
         return x
+
+    def transform(self, x):
+        return self._normalize(x)
+
+    def inverse_transform(self, x):
+        return self._denormalize(x)
