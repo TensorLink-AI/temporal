@@ -15,6 +15,7 @@ class AttentionPatternConfig(BaseConfig):
 
 @dataclass(frozen=True, kw_only=True)
 class DestationaryProjectorConfig(BaseConfig):
+    type: str = field(default="destationary_projector")
     hidden_dims: List[int] = field(default_factory=lambda: [64, 128])
     hidden_layers: int = field(default=2)
     kernel_size: int = field(default=3)
