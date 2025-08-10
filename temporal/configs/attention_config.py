@@ -14,6 +14,13 @@ class AttentionPatternConfig(BaseConfig):
 
 
 @dataclass(frozen=True, kw_only=True)
+class DestationaryProjectorConfig(BaseConfig):
+    hidden_dims: List[int] = field(default_factory=lambda: [64, 128])
+    hidden_layers: int = field(default=2)
+    kernel_size: int = field(default=3)
+
+
+@dataclass(frozen=True, kw_only=True)
 class AttentionConfig(BaseConfig):
     """
     Base configuration for a transformer attention mechanism.
@@ -23,6 +30,7 @@ class AttentionConfig(BaseConfig):
     dropout: float = field(default=0.1)
     bias: bool = field(default=True)
     qk_layernorm: bool = field(default=False)
+    destationary_projector: Optional[DestationaryProjectorConfig] = field(default=None)
     kwargs: Dict[str, Any] = field(default_factory=dict) # Added kwargs field
 
     def __post_init__(self):
@@ -156,6 +164,9 @@ class HybridAttentionConfig(AttentionConfig):
 
 # Helper function for polymorphic creation
 def attention_config_from_dict(data: Dict[str, Any]) -> AttentionConfig:
+    if "destationary_projector" in data and isinstance(data["destationary_projector"], dict):
+        data["destationary_projector"] = DestationaryProjectorConfig.from_dict(data["destationary_projector"])
+
     attention_type = data.get("type", "full") # Default to 'full' if type not specified
     # Map config type names to registry keys if they differ (e.g., "full" -> "full_attention")
     type_to_registry_key = {

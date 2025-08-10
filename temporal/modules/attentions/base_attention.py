@@ -10,6 +10,8 @@ from temporal.modules.embedders.embedding import (
     apply_rotary_pos_emb,
     rotate_half,
 )
+from temporal.modules.attentions.destationary import Projector
+from temporal.configs.attention_config import DestationaryProjectorConfig
 
 # --- Attempt to import flash attention ---
 try:
@@ -49,6 +51,7 @@ class BaseMultiHeadAttention(nn.Module):
         is_decoder: bool = False,
         is_cross_attention: bool = False,
         bias: bool = True,
+        destationary_projector: Optional[DestationaryProjectorConfig] = None,
         **kwargs
     ):
         super().__init__()
@@ -72,6 +75,12 @@ class BaseMultiHeadAttention(nn.Module):
             # normalize each head's vector of size head_dim
             self.q_norm = nn.LayerNorm(self.head_dim)
             self.k_norm = nn.LayerNorm(self.head_dim)
+        
+        self.destationary_projector = destationary_projector
+        if self.destationary_projector is not None:
+            self.tau_learner   = Projector(enc_in=kwargs['enc_in'], seq_len=kwargs['seq_len'], hidden_dims=self.destationary_projector.hidden_dims, hidden_layers=self.destationary_projector.hidden_layers, output_dim=1)
+            self.delta_learner = Projector(enc_in=kwargs['enc_in'], seq_len=kwargs['seq_len'], hidden_dims=self.destationary_projector.hidden_dims, hidden_layers=self.destationary_projector.hidden_layers, output_dim=kwargs['seq_len'])
+
 
         self.dropout = dropout
         self.is_decoder = is_decoder
@@ -84,7 +93,7 @@ class BaseMultiHeadAttention(nn.Module):
         """
         return F.softmax(scores, dim=-1)
 
-    def compute_attention_scores(self, q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+    def compute_attention_scores(self, q: torch.Tensor, k: torch.Tensor, x_raw: torch.Tensor = None) -> torch.Tensor:
         """
         Computes the attention scores.
 
@@ -95,7 +104,17 @@ class BaseMultiHeadAttention(nn.Module):
         Returns:
             torch.Tensor: The attention scores.
         """
-        return torch.matmul(q * self.scaling, k.transpose(-1, -2))
+        scores = torch.matmul(q * self.scaling, k.transpose(-1, -2))
+        if self.destationary_projector is not None and x_raw is not None:
+            mean_enc = x_raw.mean(1, keepdim=True).detach()
+            std_enc = torch.sqrt(torch.var(x_raw, dim=1, keepdim=True, unbiased=False) + 1e-5).detach()
+            tau = self.tau_learner(x_raw, std_enc).exp()
+            delta = self.delta_learner(x_raw, mean_enc)
+            tau = 1.0 if tau is None else tau.unsqueeze(1).unsqueeze(1)  # B x 1 x 1 x 1
+            delta = 0.0 if delta is None else delta.unsqueeze(1).unsqueeze(1)
+            scores = scores * tau + delta
+        return scores
+
 
     def forward(
         self,
@@ -109,6 +128,7 @@ class BaseMultiHeadAttention(nn.Module):
         position_ids: Optional[torch.LongTensor] = None,
         rotary_proj: Optional[nn.Module] = None,
         alibi_bias_generator: Optional[nn.Module] = None,
+        x_raw: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
         Performs the forward pass of the attention layer.
@@ -133,6 +153,7 @@ class BaseMultiHeadAttention(nn.Module):
                 Defaults to None.
             alibi_bias_generator (Optional[nn.Module]): The ALiBi bias generator.
                 Defaults to None.
+            x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
 
         Returns:
             Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
@@ -179,7 +200,7 @@ class BaseMultiHeadAttention(nn.Module):
                 k = k * cos + rotate_half(k) * sin
 
         # --- 2) compute scores + optional ALiBi + mask ---
-        scores = self.compute_attention_scores(q, k)
+        scores = self.compute_attention_scores(q, k, x_raw=x_raw)
         if alibi_bias_generator is not None:
             bias = alibi_bias_generator(batch_size=B, seq_len=k.size(-2))
             scores = scores + bias
@@ -260,6 +281,7 @@ class FullAttention(BaseMultiHeadAttention):
         output_attentions: bool = False,
         use_cache: bool = False,
         position_ids: Optional[torch.LongTensor] = None,
+        x_raw: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
         Performs the forward pass of the attention layer.
@@ -278,6 +300,7 @@ class FullAttention(BaseMultiHeadAttention):
             position_ids=position_ids,
             rotary_proj=self.rotary_proj,
             alibi_bias_generator=self.alibi_bias_generator,
+            x_raw=x_raw,
         )
 
 
@@ -320,7 +343,8 @@ class FlashAttention(BaseMultiHeadAttention):
         use_cache=False,
         position_ids=None,
         rotary_proj=None,
-        alibi_bias_generator=None
+        alibi_bias_generator=None,
+        x_raw: Optional[torch.Tensor] = None,
     ):
         """
         Performs the forward pass of the attention layer using flash_attn_func.

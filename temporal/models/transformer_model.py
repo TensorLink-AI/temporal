@@ -159,6 +159,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         output_hidden_states: Optional[bool] = None,
         validate_shapes: bool = False,
         verbose: bool = False,
+        x_raw: Optional[torch.Tensor] = None,
     ) -> TransformerOutput:
         """
         Performs a forward pass through the entire transformer model.
@@ -187,6 +188,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                 preprocessor to check for shape consistency.
             verbose (bool): If True, prints detailed shape information from
                 the preprocessor for debugging.
+            x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
 
         Returns:
             TransformerOutput: A structured object containing the model's outputs.
@@ -216,6 +218,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=True,
+                x_raw=x_raw,
             )
 
         # Step 2: Run the decoder.
@@ -245,6 +248,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=True,
+                x_raw=x_raw,
             )
             input_to_heads = decoder_outputs.last_hidden_state
         else:

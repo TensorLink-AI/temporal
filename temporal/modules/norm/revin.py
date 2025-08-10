@@ -13,7 +13,9 @@
 
 import torch
 from torch import nn
+from temporal.registry.core import register_module
 
+@register_module("normalization", "revin")
 class RevIN(nn.Module):
     """
     Reversible Instance Normalization for time-series.
@@ -80,6 +82,7 @@ class RevIN(nn.Module):
         return x
 
 
+@register_module("normalization", "revin2d")
 class RevIN2d(nn.Module):
     """
     Reversible Instance Normalization for time-series with 2D spatial dimensions.

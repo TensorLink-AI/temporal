@@ -152,6 +152,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[Optional[Tuple], Optional[Tuple]]] = None, # ((past_self_k, past_self_v), (past_cross_k, past_cross_v))
         output_attentions: bool = False,
         use_cache: bool = False, # Standard HF argument
+        x_raw: Optional[torch.Tensor] = None,
     ) -> DecoderLayerOutput:
         """
         Performs the forward pass of the decoder layer.
@@ -170,6 +171,7 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
             output_attentions (bool): Whether to return the attention weights.
             use_cache (bool): If True, the layer will return the updated key-value
                 states for future decoding steps.
+            x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
 
         Returns:
             DecoderLayerOutput: An object containing the output hidden states,
@@ -191,7 +193,8 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
             past_key_value=self_attn_past_key_value,
             attention_mask=attention_mask,
             output_attentions=output_attentions,
-            use_cache=use_cache
+            use_cache=use_cache,
+            x_raw=x_raw,
         )
         self_attention_output = self_attention_outputs[0]
         if output_attentions:
@@ -211,7 +214,8 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
                 past_key_value=cross_attn_past_key_value,
                 attention_mask=encoder_attention_mask,
                 output_attentions=output_attentions,
-                use_cache=use_cache
+                use_cache=use_cache,
+                x_raw=x_raw,
             )
             cross_attention_output = cross_attention_outputs[0]
             if output_attentions:

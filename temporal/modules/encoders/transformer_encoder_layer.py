@@ -99,6 +99,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         output_attentions: Optional[bool] = False,
+        x_raw: Optional[torch.Tensor] = None,
     ) -> EncoderLayerOutput:
         """Performs the forward pass of the encoder layer.
 
@@ -110,6 +111,7 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
                 to padding tokens, shape `(batch, 1, seq_len, seq_len)`.
             output_attentions (Optional[bool]): Whether to return the attention
                 probabilities.
+            x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
 
         Returns:
         
@@ -128,7 +130,8 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
             past_key_value=None,        # Not used in encoder
             attention_mask=attention_mask,
             output_attentions=output_attentions,
-            use_cache=False             # Not used in encoder
+            use_cache=False,             # Not used in encoder
+            x_raw=x_raw,
         )
         attention_output = attention_outputs[0]
         # Capture attention probabilities if requested and returned

@@ -56,6 +56,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = True,
+        x_raw: Optional[torch.Tensor] = None,
     ) -> Union[BaseModelOutput, Tuple]:
         """
         Performs the forward pass of the Transformer encoder.
@@ -69,6 +70,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
             output_attentions (bool): Whether to return attention weights.
             output_hidden_states (bool): Whether to return all hidden states.
             return_dict (bool): Whether to return a structured model output.
+            x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
 
         Returns:
             Union[BaseModelOutput, Tuple]: The encoder's output, either as a
@@ -89,6 +91,7 @@ class TimeSeriesTransformerEncoder(nn.Module):
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
                 output_attentions=output_attentions,
+                x_raw=x_raw,
             )
 
             hidden_states = layer_outputs.hidden_states

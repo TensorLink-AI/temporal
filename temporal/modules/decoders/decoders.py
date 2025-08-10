@@ -67,6 +67,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
         output_hidden_states: bool = False,
         use_cache: bool = False,
         return_dict: bool = True,
+        x_raw: Optional[torch.Tensor] = None,
     ) -> Union[BaseModelOutputWithPastAndCrossAttentions, Tuple]:
         """
         Performs the forward pass of the Transformer decoder.
@@ -87,6 +88,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
             output_hidden_states (bool): Whether to return all hidden states.
             use_cache (bool): Whether to use and return the KV cache.
             return_dict (bool): Whether to return a structured model output.
+            x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
 
         Returns:
             Union[BaseModelOutputWithPastAndCrossAttentions, Tuple]: The decoder's
@@ -118,6 +120,7 @@ class TimeSeriesTransformerDecoder(nn.Module):
                 past_key_value=layer_past_key_value,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
+                x_raw=x_raw,
             )
 
             hidden_states = layer_outputs.hidden_states
