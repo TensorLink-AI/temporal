@@ -303,7 +303,12 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             if self.loss_fn is None:
                 raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
             
-            loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
+            # Normalize targets before loss calculation if instance norm is configured
+            normalized_targets = targets
+            if self.config.instance_norm_config is not None:
+                normalized_targets = self.preprocessor.instance_norm(targets, mode='norm')
+
+            loss = self.loss_fn(preds=logits, targets=normalized_targets, loss_mask=loss_mask)
 
             if total_aux_loss is not None:
                 # Ensure aux loss is a scalar before adding
