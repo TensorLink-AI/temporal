@@ -31,6 +31,7 @@ class AutoregressiveDispatchMixin:
         self,
         inputs: torch.Tensor,
         prediction_length: int,
+        quantiles: Optional[List[float]] = None,
         **kwargs,
     ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
@@ -40,13 +41,13 @@ class AutoregressiveDispatchMixin:
             logger.info("Patch-based model detected. Dispatching to AutoregressivePatchMixin.forecast.")
             # CORRECT WAY: Call the parent method directly by name
             return AutoregressivePatchMixin.forecast(
-                self, inputs=inputs, prediction_length=prediction_length, **kwargs
+                self, inputs=inputs, prediction_length=prediction_length, quantiles=quantiles, **kwargs
             )
         else:
             logger.info("Stepwise model detected. Dispatching to AutoregressiveStepwiseMixin.forecast.")
             # CORRECT WAY: Call the parent method directly by name
             return AutoregressiveStepwiseMixin.forecast(
-                self, inputs=inputs, prediction_length=prediction_length, **kwargs
+                self, inputs=inputs, prediction_length=prediction_length, quantiles=quantiles, **kwargs
             )
 
     @torch.no_grad()

@@ -285,6 +285,40 @@ class DistPredHead(BaseOutputHead):
             raise TypeError(f"method must be str|float|int, not {type(method)}")
 
         return x[..., idx] if is_multi else x[..., idx:idx+1]
+        
+    def sample_quantiles(self, x: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
+        """
+        Computes quantiles from the ensemble output.
+        Args:
+            x (torch.Tensor): Head output of shape [B, T, K] or [B, T, F, K].
+            quantile_levels (List[float]): List of quantile levels to compute.
+        Returns:
+            torch.Tensor: Quantile predictions of shape [B, T, F, Q].
+        """
+        # Sort the ensemble members along the last dimension
+        sorted_x, _ = torch.sort(x, dim=-1)
+
+        # Ensure quantile_levels is a tensor
+        q_tensor = torch.tensor(quantile_levels, device=x.device, dtype=x.dtype)
+        q_tensor = q_tensor.view(1, 1, 1, -1)  # Reshape for broadcasting
+
+        # Get the number of ensemble members
+        num_outputs = sorted_x.shape[-1]
+
+        # Calculate the indices for the desired quantiles
+        indices = (q_tensor * (num_outputs - 1)).round().long()
+
+        # Gather the quantile values
+        # The shape of indices is [1, 1, 1, Q]
+        # The shape of sorted_x is [B, T, F, K]
+        # We need to expand indices to match the dimensions of sorted_x
+        indices = indices.expand(sorted_x.shape[0], sorted_x.shape[1], sorted_x.shape[2], -1)
+        
+        # Gather the quantiles
+        quantiles = torch.gather(sorted_x, -1, indices)
+
+        return quantiles
+
 
     def get_loss_fn(self) -> Optional[Callable]:
         """

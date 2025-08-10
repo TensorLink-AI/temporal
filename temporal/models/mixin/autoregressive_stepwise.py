@@ -293,6 +293,7 @@ class AutoregressiveStepwiseMixin:
         self,
         inputs: torch.Tensor,
         prediction_length: int,
+        quantiles: Optional[List[float]] = None,
         **kwargs,
     ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
@@ -307,6 +308,7 @@ class AutoregressiveStepwiseMixin:
                 - For Encoder-Decoder models: This is the historical context sequence.
                 - For Decoder-Only models: This is the initial prompt sequence.
             prediction_length (int): The number of future steps to forecast.
+            quantiles (Optional[List[float]]): A list of quantile levels to sample.
             **kwargs: Additional arguments to be passed directly to the
                       underlying `generate` method (e.g., `prediction_strategy`).
         """
@@ -317,6 +319,7 @@ class AutoregressiveStepwiseMixin:
             return self.generate(
                 encoder_inputs=inputs,
                 prediction_length=prediction_length,
+                quantile_levels=quantiles,
                 **kwargs,
             )
         else:
@@ -325,5 +328,6 @@ class AutoregressiveStepwiseMixin:
             return self.generate(
                 decoder_inputs=inputs,
                 prediction_length=prediction_length,
+                quantile_levels=quantiles,
                 **kwargs,
             )

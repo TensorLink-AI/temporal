@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 import math
-from typing import Optional
+from typing import Optional, List
 
 from temporal.modules.heads.base_output_head import BaseOutputHead
 from temporal.registry.core import register_module
@@ -143,6 +143,7 @@ class TimeFlowHead(BaseOutputHead):
         num_blocks: int,
         model_channels: int,
         num_sampling_steps: int = 10,
+        num_samples_for_quantiles: int = 100,
     ):
         super().__init__()
         self.net = TimeFlowMLPAdaLN(
@@ -153,6 +154,7 @@ class TimeFlowHead(BaseOutputHead):
             num_blocks=num_blocks,
         )
         self.num_sampling_steps = num_sampling_steps
+        self.num_samples_for_quantiles = num_samples_for_quantiles
 
     def forward(self, cond: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         # preds are the conditioning vector z, targets are the ground truth y
@@ -194,3 +196,42 @@ class TimeFlowHead(BaseOutputHead):
         self.train()
         # reshape to (B, num_samples, C)
         return x.view(B, num_samples, -1)
+
+    @torch.no_grad()
+    def sample_quantiles(self, cond: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
+        """
+        Computes quantiles from generated samples.
+
+        Args:
+            cond (torch.Tensor): The conditioning tensor of shape [B, C].
+            quantile_levels (List[float]): List of quantile levels to compute.
+
+        Returns:
+            torch.Tensor: Quantile predictions of shape [B, Q, C].
+        """
+        # Generate samples
+        samples = self.sample(cond, num_samples=self.num_samples_for_quantiles)
+        
+        # Sort the samples along the num_samples dimension
+        sorted_samples, _ = torch.sort(samples, dim=1)
+
+        # Ensure quantile_levels is a tensor
+        q_tensor = torch.tensor(quantile_levels, device=cond.device, dtype=cond.dtype)
+        q_tensor = q_tensor.view(1, -1, 1) # Reshape for broadcasting
+
+        # Get the number of samples
+        num_samples = sorted_samples.shape[1]
+
+        # Calculate the indices for the desired quantiles
+        indices = (q_tensor * (num_samples - 1)).round().long()
+
+        # Gather the quantile values
+        # The shape of indices is [1, Q, 1]
+        # The shape of sorted_samples is [B, S, C]
+        # We need to expand indices to match the dimensions of sorted_samples
+        indices = indices.expand(sorted_samples.shape[0], -1, sorted_samples.shape[2])
+        
+        # Gather the quantiles
+        quantiles = torch.gather(sorted_samples, 1, indices)
+
+        return quantiles

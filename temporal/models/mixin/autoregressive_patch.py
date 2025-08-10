@@ -208,6 +208,7 @@ class AutoregressivePatchMixin:
         self,
         inputs: torch.Tensor,
         prediction_length: int,
+        quantiles: Optional[List[float]] = None,
         **kwargs,
     ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
@@ -222,6 +223,7 @@ class AutoregressivePatchMixin:
                 - For Encoder-Decoder models: This is the historical context sequence.
                 - For Decoder-Only models: This is the initial prompt sequence.
             prediction_length (int): The number of future steps to forecast.
+            quantiles (Optional[List[float]]): A list of quantile levels to sample.
             **kwargs: Additional arguments passed to the underlying `generate` method.
         """
         # This wrapper function is identical to the one from the stepwise mixin.
@@ -232,6 +234,7 @@ class AutoregressivePatchMixin:
             return self.generate(
                 encoder_inputs=inputs,
                 prediction_length=prediction_length,
+                quantile_levels=quantiles,
                 **kwargs,
             )
         else:
@@ -240,5 +243,6 @@ class AutoregressivePatchMixin:
             return self.generate(
                 decoder_inputs=inputs,
                 prediction_length=prediction_length,
+                quantile_levels=quantiles,
                 **kwargs,
             )
