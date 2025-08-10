@@ -67,7 +67,7 @@ class InputPreprocessor(nn.Module):
 
         # --- Apply Instance Normalization if configured ---
         if self.instance_norm is not None:
-            input_values = self.instance_norm.normalize(input_values)
+            input_values = self.instance_norm(input_values, mode='norm')
 
         batch_size, original_seq_len, num_features = input_values.shape
         
@@ -126,7 +126,7 @@ class InputPreprocessor(nn.Module):
             torch.Tensor: The denormalized data in the original scale.
         """
         if self.instance_norm is not None:
-            return self.instance_norm.denormalize(data)
+            return self.instance_norm(data, mode='denorm')
         return data
 
     def _prepare_attention_mask(
