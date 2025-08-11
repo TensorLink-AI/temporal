@@ -21,8 +21,12 @@ class RevIN(nn.Module):
     Reversible Instance Normalization for time-series.
     It is described in https://openreview.net/forum?id=cGDAkQo1C0p
 
+    This implementation assumes the input tensor is of shape (N, L, C), where
+    N is the batch size, L is the sequence length, and C is the number of features.
+    Normalization is applied over the L dimension.
+
     Args:
-        num_features (int): The number of features or channels.
+        num_features (int): The number of features or channels (C).
         eps (float): A value added for numerical stability. Default: 1e-5.
         affine (bool): If True, this module has learnable affine parameters. Default: True.
         subtract_last (bool): If True, subtracts the last element of the sequence from the input. Default: False.
@@ -47,11 +51,12 @@ class RevIN(nn.Module):
         return x
 
     def _init_params(self):
-        # Initialize affine parameters
-        self.affine_weight = nn.Parameter(torch.ones(1, self.num_features, 1))
-        self.affine_bias = nn.Parameter(torch.zeros(1, self.num_features, 1))
+        # Initialize affine parameters to be broadcastable for input of shape (N, L, C)
+        self.affine_weight = nn.Parameter(torch.ones(1, 1, self.num_features))
+        self.affine_bias = nn.Parameter(torch.zeros(1, 1, self.num_features))
 
     def _get_statistics(self, x):
+        # The dimension to reduce is the sequence length dimension (L)
         dim2reduce = (1,)
         if self.subtract_last:
             self.last = x[:,:,-1].unsqueeze(-1).detach()
@@ -82,7 +87,19 @@ class RevIN(nn.Module):
         return x
 
     def transform(self, x):
-        return self._normalize(x)
+        # Use stored statistics to normalize a new input
+        # Create a temporary copy of x to avoid in-place modification issues if x is a leaf variable
+        x_normalized = x.clone()
+        if self.subtract_last:
+            x_normalized = x_normalized - self.last
+        else:
+            x_normalized = x_normalized - self.mean
+        x_normalized = x_normalized / self.stdev
+        if self.affine:
+            x_normalized = x_normalized * self.affine_weight
+            x_normalized = x_normalized + self.affine_bias
+        return x_normalized
+
 
     def inverse_transform(self, x):
         return self._denormalize(x)
