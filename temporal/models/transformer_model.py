@@ -297,18 +297,25 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             if self.loss_fn is None:
                 raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
             
-            # De-normalize logits back to the original scale before loss calculation
-            denormalized_logits = self.preprocessor.denormalize(logits)
-
-            loss = self.loss_fn(preds=denormalized_logits, targets=targets, loss_mask=loss_mask)
+            # If instance normalization is used, calculate loss on normalized values for stability.
+            if self.preprocessor.instance_norm is not None:
+                normalized_targets = self.preprocessor.instance_norm.transform(targets)
+                loss = self.loss_fn(preds=logits, targets=normalized_targets, loss_mask=loss_mask)
+            else:
+                # Otherwise, calculate loss on the original scale.
+                # In this case, logits are already in the original scale because no normalization was applied.
+                loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
 
             if total_aux_loss is not None:
                 loss += self.config.aux_loss_weight * total_aux_loss.mean()
 
+        # Always denormalize logits for the final output. If no normalizer was used, this is a no-op.
+        final_logits = self.preprocessor.denormalize(logits)
+
         # Step 7: Construct and return the final output object.
         return TransformerOutput(
             loss=loss,
-            logits=logits,
+            logits=final_logits,
             aux_loss=total_aux_loss,
             past_key_values=decoder_outputs.past_key_values if decoder_outputs else None,
             decoder_hidden_states=decoder_outputs.hidden_states if decoder_outputs else None,

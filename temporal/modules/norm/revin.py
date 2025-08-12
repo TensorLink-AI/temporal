@@ -91,14 +91,36 @@ class RevIN(nn.Module):
         return x
 
     def _denormalize(self, x):
+        # Prepare stats, unsqueezing if x has extra dims (e.g. for quantiles)
+        stdev = self.stdev
+        mean = self.mean if not self.subtract_last else None
+        affine_weight = self.affine_weight if self.affine else None
+        affine_bias = self.affine_bias if self.affine else None
+        last = self.last if self.subtract_last else None
+
+        if x.ndim > stdev.ndim:
+            extra_dims = (1,) * (x.ndim - stdev.ndim)
+            stdev = stdev.view(stdev.shape + extra_dims)
+            if mean is not None:
+                mean = mean.view(mean.shape + extra_dims)
+            if affine_weight is not None:
+                affine_weight = affine_weight.view(affine_weight.shape + extra_dims)
+            if affine_bias is not None:
+                affine_bias = affine_bias.view(affine_bias.shape + extra_dims)
+            if last is not None:
+                last = last.view(last.shape + extra_dims)
+
         if self.affine:
-            x = x - self.affine_bias
-            x = x / (self.affine_weight + self.eps*self.eps)
-        x = x * self.stdev
+            x = x - affine_bias
+            x = x / (affine_weight + self.eps*self.eps)
+        
+        x = x * stdev
+        
         if self.subtract_last:
-            x = x + self.last
+            x = x + last
         else:
-            x = x + self.mean
+            x = x + mean
+            
         return x
 
     def transform(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
