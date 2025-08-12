@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import math
 from typing import Dict, Union, Optional
 
 from temporal.registry.core import register_module
@@ -39,17 +40,33 @@ class DynamicRevIN(nn.Module):
                 )
             else:
                 raise ValueError("dynamic mapper must be 'linear' or 'mlp'")
-            # init mapper to identity: gamma=1, beta=0
-            with torch.no_grad():
-                last = self.mapper[-1] if isinstance(self.mapper, nn.Sequential) else self.mapper
-                last.weight.zero_()
-                last.bias.zero_()
-                if self.gamma_positive:
-                    last.bias[0].fill_(0.541324854)
-                else:
-                    last.bias[0].fill_(1.0)
-                last.bias[1].fill_(0.0)
 
+            # Initialize mapper to be near-identity at the start of training
+            with torch.no_grad():
+                # For MLP, initialize all layers with a standard method
+                if isinstance(self.mapper, nn.Sequential):
+                    for i in range(len(self.mapper) - 1): # All but the last layer
+                        if isinstance(self.mapper[i], nn.Linear):
+                            nn.init.kaiming_uniform_(self.mapper[i].weight, a=math.sqrt(5))
+                            if self.mapper[i].bias is not None:
+                                fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.mapper[i].weight)
+                                bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+                                nn.init.uniform_(self.mapper[i].bias, -bound, bound)
+
+                # For the final layer (or the only layer if linear),
+                # initialize weights to be near-zero and bias for identity transform
+                last_layer = self.mapper[-1] if isinstance(self.mapper, nn.Sequential) else self.mapper
+                
+                # Small random weights to ensure it's trainable and doesn't start at zero
+                nn.init.uniform_(last_layer.weight, -1e-6, 1e-6) 
+                
+                # Set bias for identity transform (gamma=1, beta=0)
+                last_layer.bias.zero_()
+                if self.gamma_positive:
+                    last_layer.bias[0].fill_(0.541324854)  # softplus_inverse(1.0)
+                else:
+                    last_layer.bias[0].fill_(1.0)
+                last_layer.bias[1].fill_(0.0) # beta = 0
         else:
             raise ValueError("affine_mode must be 'fixed' or dict(type='dynamic', ...)")
 
