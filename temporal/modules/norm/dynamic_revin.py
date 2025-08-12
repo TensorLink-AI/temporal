@@ -131,7 +131,7 @@ class DynamicRevIN(nn.Module):
         x = x * self.stdev + self.mean
         return x
 
-    def transform(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def transform(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         # reuse last stats & affine (for targets)
         assert self.mean is not None and self.stdev is not None, "Call mode='norm' first."
         assert self.last_gamma is not None and self.last_beta is not None, "Affine not set. Call mode='norm' first."
@@ -139,8 +139,8 @@ class DynamicRevIN(nn.Module):
         x_transformed = (x - self.mean) / self.stdev
         x_transformed = x_transformed * self.last_gamma + self.last_beta
 
-        if mask is not None:
-            mask_expanded = mask.to(dtype=x.dtype, device=x.device).unsqueeze(-1)
+        if attention_mask is not None:
+            mask_expanded = attention_mask.to(dtype=x.dtype, device=x.device).unsqueeze(-1)
             # Where mask is True, use transformed values. Where False, use original values.
             return torch.where(mask_expanded.bool(), x_transformed, x)
 
