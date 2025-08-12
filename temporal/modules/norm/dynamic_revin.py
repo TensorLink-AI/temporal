@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from typing import Dict, Union, Optional
+from typing import Dict, Union
 
 from temporal.registry.core import register_module
 
@@ -44,12 +44,7 @@ class DynamicRevIN(nn.Module):
                 last = self.mapper[-1] if isinstance(self.mapper, nn.Sequential) else self.mapper
                 last.weight.zero_()
                 last.bias.zero_()
-                if self.gamma_positive:
-                    last.bias[0].fill_(0.541324854)
-                else:
-                    last.bias[0].fill_(1.0)
-                last.bias[1].fill_(0.0)
-
+                last.bias[0].fill_(1.0)
         else:
             raise ValueError("affine_mode must be 'fixed' or dict(type='dynamic', ...)")
 
@@ -59,7 +54,7 @@ class DynamicRevIN(nn.Module):
         self.register_buffer('last_gamma', None, persistent=False) # [B,1,F]
         self.register_buffer('last_beta',  None, persistent=False) # [B,1,F]
 
-    def forward(self, x: torch.Tensor, mode: str, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mode: str, mask: torch.Tensor = None) -> torch.Tensor:
         if mode == 'norm':
             return self._norm_compute(x, mask)
         elif mode == 'denorm':
@@ -67,27 +62,21 @@ class DynamicRevIN(nn.Module):
         else:
             raise NotImplementedError(f"mode must be 'norm' | 'denorm'")
 
-    def _compute_stats(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
+    def _compute_stats(self, x: torch.Tensor, mask: torch.Tensor = None):
         if mask is None:
             self.mean = torch.mean(x, dim=1, keepdim=True).detach()
             var = torch.var(x, dim=1, unbiased=False, keepdim=True)
             self.stdev = (var + self.eps).sqrt().detach().clamp_min(self.eps)
         else:
-            mask = mask.to(dtype=x.dtype, device=x.device).unsqueeze(-1)
+            mask = mask.unsqueeze(-1).float()
             masked_sum = torch.sum(x * mask, dim=1, keepdim=True)
             num_non_masked = torch.sum(mask, dim=1, keepdim=True)
-
-            all_pad = (num_non_masked == 0)
             num_non_masked = torch.clamp(num_non_masked, min=1)
             
             self.mean = (masked_sum / num_non_masked).detach()
             
             variance = torch.sum(((x - self.mean) * mask)**2, dim=1, keepdim=True) / num_non_masked
-            self.stdev = torch.sqrt(variance + self.eps).detach().clamp_min(self.eps)
-
-            self.mean  = torch.where(all_pad, torch.zeros_like(self.mean), self.mean)
-            self.stdev = torch.where(all_pad, torch.ones_like(self.stdev), self.stdev)
-
+            self.stdev = torch.sqrt(variance + self.eps).detach()
 
     def _compute_affine_shared(self):
         B, _, F = self.mean.shape
@@ -99,7 +88,7 @@ class DynamicRevIN(nn.Module):
             gamma = torch.nn.functional.softplus(gamma)
         return gamma, beta
 
-    def _norm_compute(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _norm_compute(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         # compute stats & affine ON x, then normalize and store affine
         self._compute_stats(x, mask)
         if self.affine_type == 'fixed':
@@ -125,7 +114,6 @@ class DynamicRevIN(nn.Module):
         x = x * self.stdev + self.mean
         return x
 
-t
     def transform(self, x: torch.Tensor) -> torch.Tensor:
         # reuse last stats & affine (for targets)
         assert self.mean is not None and self.stdev is not None, "Call mode='norm' first."
