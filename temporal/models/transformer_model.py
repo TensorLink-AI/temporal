@@ -92,9 +92,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         Initializes the TransformerTemporalModel in an order that matches the
         forward pass for clearer model summaries.
         """
-        # We manually initialize the base class and then assign modules in the
-        # desired order for printing.
-        super(BaseTemporalModel, self).__init__()
+        super().__init__()
         self.config = config
 
         if builder is None:
@@ -262,11 +260,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             reconstructed_output = self.output_patch_reconstructor(input_to_heads)
             
             B, T_tok, _ = reconstructed_output.shape
-            output_patch_size = self.preprocessor.value_embedding.output_patch_size
-            d_model = self.config.d_model
-
-            # Reshape from [B, T_tokens, patch_size * d_model] to [B, T_tokens * patch_size, d_model]
-            input_to_heads = reconstructed_output.view(B, T_tok * output_patch_size, d_model)
+            output_patch_.reshape(B, T_tok * output_patch_size, d_model)
 
         # Step 4: Align head input with targets for loss calculation if needed.
         if (
