@@ -67,7 +67,7 @@ class InputPreprocessor(nn.Module):
 
         # --- Apply Instance Normalization if configured ---
         if self.instance_norm is not None:
-            input_values = self.instance_norm(input_values, mode='norm')
+            input_values = self.instance_norm(input_values, mode='norm', mask=attention_mask)
 
         batch_size, original_seq_len, num_features = input_values.shape
         

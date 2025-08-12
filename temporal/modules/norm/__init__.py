@@ -1,5 +1,3 @@
-# Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -13,6 +11,9 @@
 # limitations under the License.
 
 from .layer_norm import LayerNorm
+from .revin import RevIN, RevIN2d
+from .dynamic_revin import DynamicRevIN
 from .rms_norm import RMSNorm
 from .scale_norm import ScaleNorm
-from .revin import RevIN, RevIN2d
+
+__all__ = ["LayerNorm", "RevIN", "RevIN2d", "DynamicRevIN", "RMSNorm", "ScaleNorm"]

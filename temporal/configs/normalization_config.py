@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY
 
 @register_config_type("normalization") # Generic type for NormalizationConfig if no specific type is given
@@ -36,6 +36,21 @@ class RevINConfig(NormalizationConfig):
         if self.num_features <= 0:
             raise ValueError("num_features must be a positive integer for RevIN.")
 
+@register_config_type("dynamic_revin_normalization")
+@dataclass(frozen=True, kw_only=True)
+class DynamicRevINConfig(NormalizationConfig):
+    """
+    Configuration for Dynamic Reversible Instance Normalization (DynamicRevIN).
+    """
+    type: str = field(default="dynamic_revin")
+    num_features: int
+    affine_mode: Union[str, Dict[str, Any]] = field(default_factory=lambda: {"type": "fixed"})
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.num_features <= 0:
+            raise ValueError("num_features must be a positive integer for DynamicRevIN.")
+
 @register_config_type("revin2d_normalization")
 @dataclass(frozen=True, kw_only=True)
 class RevIN2dConfig(NormalizationConfig):
@@ -60,6 +75,7 @@ def normalization_config_from_dict(data: Dict[str, Any]) -> NormalizationConfig:
     type_to_registry_key = {
         "layer": "normalization", # Default for the base NormalizationConfig
         "revin": "revin_normalization",
+        "dynamic_revin": "dynamic_revin_normalization",
         "revin2d": "revin2d_normalization",
         "rms": "normalization", # RMSNorm uses the base NormalizationConfig type for now as its specific fields match
         "scale": "normalization", # ScaleNorm also uses base

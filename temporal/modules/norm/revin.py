@@ -40,9 +40,9 @@ class RevIN(nn.Module):
         if self.affine:
             self._init_params()
 
-    def forward(self, x: torch.Tensor, mode: str):
+    def forward(self, x: torch.Tensor, mode: str, mask: torch.Tensor = None):
         if mode == 'norm':
-            self._get_statistics(x)
+            self._get_statistics(x, mask)
             x = self._normalize(x)
         elif mode == 'denorm':
             x = self._denormalize(x)
@@ -55,14 +55,28 @@ class RevIN(nn.Module):
         self.affine_weight = nn.Parameter(torch.ones(1, 1, self.num_features))
         self.affine_bias = nn.Parameter(torch.zeros(1, 1, self.num_features))
 
-    def _get_statistics(self, x):
-        # The dimension to reduce is the sequence length dimension (L)
-        dim2reduce = (1,)
+    def _get_statistics(self, x, mask=None):
         if self.subtract_last:
-            self.last = x[:,:,-1].unsqueeze(-1).detach()
+            self.last = x[:, -1, :].unsqueeze(1).detach()
         else:
-            self.mean = torch.mean(x, dim=dim2reduce, keepdim=True).detach()
-        self.stdev = torch.sqrt(torch.var(x, dim=dim2reduce, keepdim=True, unbiased=False) + self.eps).detach()
+            if mask is None:
+                self.mean = torch.mean(x, dim=1, keepdim=True).detach()
+                self.stdev = torch.sqrt(torch.var(x, dim=1, keepdim=True, unbiased=False) + self.eps).detach()
+            else:
+                # Expand mask to match the shape of x. Assuming mask is (N, L) and x is (N, L, C).
+                mask = mask.unsqueeze(-1).float()
+                # Sum over the sequence length dimension
+                masked_sum = torch.sum(x * mask, dim=1, keepdim=True)
+                # Count of non-masked elements
+                num_non_masked = torch.sum(mask, dim=1, keepdim=True)
+                # Avoid division by zero
+                num_non_masked = torch.clamp(num_non_masked, min=1)
+                
+                self.mean = (masked_sum / num_non_masked).detach()
+                
+                # Variance calculation
+                variance = torch.sum(((x - self.mean) * mask)**2, dim=1, keepdim=True) / num_non_masked
+                self.stdev = torch.sqrt(variance + self.eps).detach()
 
     def _normalize(self, x):
         if self.subtract_last:
