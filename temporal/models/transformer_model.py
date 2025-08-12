@@ -191,7 +191,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         Returns:
             TransformerOutput: A structured object containing the model's outputs.
         """
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_attentions = output_attions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
@@ -260,7 +260,9 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             reconstructed_output = self.output_patch_reconstructor(input_to_heads)
             
             B, T_tok, _ = reconstructed_output.shape
-            output_patch_.reshape(B, T_tok * output_patch_size, d_model)
+            output_patch_size = self.preprocessor.value_embedding.output_patch_size
+            d_model = self.config.d_model
+            input_to_heads = reconstructed_output.reshape(B, T_tok * output_patch_size, d_model)
 
         # Step 4: Align head input with targets for loss calculation if needed.
         if (
@@ -269,7 +271,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         ):
             num_target_steps = targets.size(1)
 
-            # This check is crucial for catching data pipeline issues
             if input_to_heads.shape[1] < num_target_steps:
                  raise ValueError(
                      f"Input to heads ({input_to_heads.shape[1]} steps) is shorter than targets ({num_target_steps} steps). "
@@ -297,15 +298,12 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             if self.loss_fn is None:
                 raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
             
-            # Normalize targets before loss calculation if instance norm is configured
-            normalized_targets = targets
-            if self.config.instance_norm_config is not None:
-                normalized_targets = self.preprocessor.instance_norm.transform(targets, attention_mask=loss_mask)
+            # De-normalize logits back to the original scale before loss calculation
+            denormalized_logits = self.preprocessor.denormalize(logits)
 
-            loss = self.loss_fn(preds=logits, targets=normalized_targets, loss_mask=loss_mask)
+            loss = self.loss_fn(preds=denormalized_logits, targets=targets, loss_mask=loss_mask)
 
             if total_aux_loss is not None:
-                # Ensure aux loss is a scalar before adding
                 loss += self.config.aux_loss_weight * total_aux_loss.mean()
 
         # Step 7: Construct and return the final output object.
