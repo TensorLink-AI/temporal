@@ -92,8 +92,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         Initializes the TransformerTemporalModel in an order that matches the
         forward pass for clearer model summaries.
         """
-        super().__init__()
-        self.config = config
+        super().__init__(config)
 
         if builder is None:
             builder = ModuleBuilder(config)
@@ -191,7 +190,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         Returns:
             TransformerOutput: A structured object containing the model's outputs.
         """
-        output_attentions = output_attions if output_attentions is not None else self.config.output_attentions
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
