@@ -186,7 +186,7 @@ class AutoregressivePatchMixin:
         P_out = self.preprocessor.value_embedding.output_patch_size
         f_sz  = self.config.feature_size
 
-        point_predictions = projected_patches.view(B, P_gen * P_out, f_sz)
+        point_predictions = projected_patches.reshape(B, -1, f_sz)
 
 
         # --- Step 5: Apply final output heads (e.g., for probabilistic forecasts) ---
