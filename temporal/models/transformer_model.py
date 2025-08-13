@@ -121,7 +121,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
 
             # The reconstructor's job is to project each patch token's hidden state
             # to a representation that can be reshaped into a sequence of hidden states.
-            output_projection_size = output_patch_size * d_model
+            output_projection_size = output_patch_size * self.config.feature_size
 
             if use_mlp:
                 print(f"INFO: Building MLP patch_merger (d_model -> {mlp_hidden_size} -> {output_projection_size}).")
