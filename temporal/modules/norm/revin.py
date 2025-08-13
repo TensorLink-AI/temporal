@@ -59,7 +59,15 @@ class RevIN(nn.Module):
     def _get_statistics(self, x, mask: Optional[torch.Tensor] = None):
         if self.subtract_last:
             self.last = x[:, -1, :].unsqueeze(1).detach()
+            # The mean of the shifted series is not zero, but we are only scaling by stdev
+            self.mean = torch.zeros_like(self.last) # Not used, but kept for consistency
+            
+            x_shifted = x - self.last
+            # When using subtract_last, stdev should be calculated on the shifted series
+            self.stdev = torch.sqrt(torch.var(x_shifted, dim=1, keepdim=True, unbiased=False) + self.eps).detach().clamp_min(self.eps)
+
         else:
+            self.last = None
             if mask is None:
                 self.mean = torch.mean(x, dim=1, keepdim=True).detach()
                 self.stdev = torch.sqrt(torch.var(x, dim=1, keepdim=True, unbiased=False) + self.eps).detach().clamp_min(self.eps)
@@ -84,7 +92,9 @@ class RevIN(nn.Module):
             x = x - self.last
         else:
             x = x - self.mean
+        
         x = x / self.stdev
+        
         if self.affine:
             x = x * self.affine_weight
             x = x + self.affine_bias
@@ -93,10 +103,10 @@ class RevIN(nn.Module):
     def _denormalize(self, x):
         # Prepare stats, unsqueezing if x has extra dims (e.g. for quantiles)
         stdev = self.stdev
-        mean = self.mean if not self.subtract_last else None
+        mean = self.mean 
         affine_weight = self.affine_weight if self.affine else None
         affine_bias = self.affine_bias if self.affine else None
-        last = self.last if self.subtract_last else None
+        last = self.last
 
         if x.ndim > stdev.ndim:
             extra_dims = (1,) * (x.ndim - stdev.ndim)
@@ -138,7 +148,6 @@ class RevIN(nn.Module):
 
         if mask is not None:
             mask_expanded = mask.to(dtype=x.dtype, device=x.device).unsqueeze(-1)
-            # Where mask is True, use transformed values. Where False, use original values.
             return torch.where(mask_expanded.bool(), x_transformed, x)
         
         return x_transformed

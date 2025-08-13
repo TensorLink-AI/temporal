@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Optional, Tuple, Dict, Any
 
 from temporal.models.module_builder_helper import ModuleBuilder
-from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig # Corrected import path
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig 
 
 class InputPreprocessor(nn.Module):
     """
@@ -41,7 +41,6 @@ class InputPreprocessor(nn.Module):
             
         self.value_embedding = builder.build_value_embedding(self.config.value_embedding_config)
         self.positional_embedding = builder.build_positional_embedding(self.config.positional_embedding_config)
-        # Use the correctly named layer_norm_config
         self.layernorm_embedding = builder.build_normalization(self.config.layer_norm_config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -74,16 +73,13 @@ class InputPreprocessor(nn.Module):
         if self.is_patched:
             x = input_values.transpose(1, 2)
             patches = x.unfold(2, self.patch_size, self.patch_stride)
-            if verbose: print(f"[Preprocessor] Unfolded patches shape: {patches.shape}")
             patches = patches.permute(0, 2, 1, 3)
             B, N, F, P = patches.shape
             input_for_embedding = patches.reshape(B, N, F * P)
-            if verbose: print(f"[Preprocessor] Flattened patches for embedding shape: {input_for_embedding.shape}")
         else:
             input_for_embedding = input_values
 
         value_embeds = self.value_embedding(input_for_embedding)
-        if verbose: print(f"[Preprocessor] Value embedding shape: {value_embeds.shape}")
         
         batch_size_embed, seq_len_after_patching, d_model = value_embeds.shape 
         
@@ -92,7 +88,6 @@ class InputPreprocessor(nn.Module):
             seq_len=seq_len_after_patching,
             past_key_values_length=past_key_values_length
         )
-        if verbose: print(f"[Preprocessor] Positional embedding shape: {pos_embed.shape}")
 
         if validate_shapes:
             assert value_embeds.shape == pos_embed.shape, \
@@ -101,7 +96,6 @@ class InputPreprocessor(nn.Module):
         hidden_states = value_embeds + pos_embed
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        if verbose: print(f"[Preprocessor] Final hidden_states shape: {hidden_states.shape}")
 
         final_attention_mask = self._prepare_attention_mask(
             attention_mask,
@@ -138,7 +132,8 @@ class InputPreprocessor(nn.Module):
         is_causal: bool,
     ) -> Optional[torch.Tensor]:
         """
-        Creates a 4D attention mask, handling patching internally."""
+        Creates a 4D attention mask, handling patching internally.
+        """
         bsz, seq_len = input_shape
         final_mask = None
         
