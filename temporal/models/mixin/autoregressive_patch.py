@@ -45,17 +45,42 @@ class AutoregressivePatchMixin:
         except (TypeError, ValueError) as e:
             raise TypeError(f"Could not convert '{name}'={value} (type {type(value)}) to float scalar. Error: {e}")
 
-    def _get_head_output(self, head_input: torch.Tensor) -> Union[torch.Tensor, List[torch.Tensor]]:
+    def _get_head_output(
+        self,
+        head_input: torch.Tensor,
+        prediction_strategy: Optional[Union[str, float, int]] = None,
+        quantile_levels: Optional[List[float]] = None,
+    ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
         Applies final output head(s) to the processed model output.
+
+        If `quantile_levels` are provided, this method will attempt to call the
+        `sample_quantiles` method on the head(s) for probabilistic forecasting.
+        Otherwise, it returns a point forecast.
         """
         if not hasattr(self, 'output_heads'):
             raise AttributeError("Model is missing output_heads, which is required for generation.")
 
-        if isinstance(self.output_heads, nn.ModuleList):
-            return [head(head_input) for head in self.output_heads]
+        # Handle probabilistic forecasting (quantile sampling)
+        if quantile_levels:
+            if isinstance(self.output_heads, nn.ModuleList):
+                # Multiple heads: sample from each and aggregate if needed
+                all_quantiles = [
+                    head.sample_quantiles(head_input, quantile_levels=quantile_levels)
+                    for head in self.output_heads
+                ]
+                # Further aggregation might be needed depending on the desired output format
+                return all_quantiles
+            else:
+                # Single head
+                return self.output_heads.sample_quantiles(head_input, quantile_levels=quantile_levels)
+
+        # Handle point forecasting (standard forward pass)
         else:
-            return self.output_heads(head_input)
+            if isinstance(self.output_heads, nn.ModuleList):
+                return [head(head_input) for head in self.output_heads]
+            else:
+                return self.output_heads(head_input)
 
     @torch.no_grad()
     def generate(
@@ -189,7 +214,11 @@ class AutoregressivePatchMixin:
 
 
         # --- Step 5: Apply final output heads (e.g., for probabilistic forecasts) ---
-        final_output = self._get_head_output(point_predictions)
+        final_output = self._get_head_output(
+            point_predictions,
+            prediction_strategy=prediction_strategy,
+            quantile_levels=quantile_levels
+        )
         
         # --- Step 6: Denormalize the final output if necessary ---
         if hasattr(self.preprocessor, 'denormalize'):
