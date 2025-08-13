@@ -180,13 +180,12 @@ class AutoregressivePatchMixin:
 
         # --- Step 4: Merge generated patches into final predictions ---
         all_generated_patches = torch.cat(generated_patches, dim=1)
-        projected_patches = self.output_patch_reconstructor(all_generated_patches)
+        reconstructed_output = self.output_patch_reconstructor(all_generated_patches)
 
-        B, P_gen, _ = projected_patches.shape
-        P_out = self.preprocessor.value_embedding.output_patch_size
-        f_sz  = self.config.feature_size
-
-        point_predictions = projected_patches.reshape(B, -1, f_sz)
+        B, T_tok, _ = reconstructed_output.shape
+        output_patch_size = self.preprocessor.value_embedding.output_patch_size
+        d_model = self.config.d_model
+        point_predictions = reconstructed_output.view(B, T_tok * output_patch_size, d_model)
 
 
         # --- Step 5: Apply final output heads (e.g., for probabilistic forecasts) ---

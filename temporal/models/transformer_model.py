@@ -120,8 +120,8 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             d_model = self.config.d_model
 
             # The reconstructor's job is to project each patch token's hidden state
-            # to a representation that can be reshaped into a sequence of hidden states.
-            output_projection_size = output_patch_size * self.config.feature_size
+            # back to the hidden dimension space for each time step in the patch.
+            output_projection_size = output_patch_size * d_model
 
             if use_mlp:
                 print(f"INFO: Building MLP patch_merger (d_model -> {mlp_hidden_size} -> {output_projection_size}).")
@@ -261,7 +261,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             B, T_tok, _ = reconstructed_output.shape
             output_patch_size = self.preprocessor.value_embedding.output_patch_size
             d_model = self.config.d_model
-            input_to_heads = reconstructed_output.reshape(B, T_tok * output_patch_size, d_model)
+            input_to_heads = reconstructed_output.view(B, T_tok * output_patch_size, d_model)
 
         # Step 4: Align head input with targets for loss calculation if needed.
         if (
