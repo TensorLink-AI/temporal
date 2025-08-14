@@ -40,6 +40,12 @@ class RevIN(nn.Module):
         self.subtract_last = subtract_last
         if self.affine:
             self._init_params()
+        
+        # Initialize mean and stdev to None
+        self.mean = None
+        self.stdev = None
+        self.last = None
+
 
     def forward(self, x: torch.Tensor, mode: str, mask: Optional[torch.Tensor] = None):
         if mode == 'norm':
@@ -101,6 +107,9 @@ class RevIN(nn.Module):
         return x
 
     def _denormalize(self, x):
+        if self.stdev is None or self.mean is None:
+            raise RuntimeError("RevIN must be normalized before denormalizing. Call with mode='norm' first.")
+        
         # Prepare stats, unsqueezing if x has extra dims (e.g. for quantiles)
         stdev = self.stdev
         mean = self.mean 
@@ -134,6 +143,8 @@ class RevIN(nn.Module):
         return x
 
     def transform(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        if self.stdev is None or self.mean is None:
+            raise RuntimeError("RevIN must be normalized before transforming. Call with mode='norm' first.")
         # Use stored statistics to normalize a new input
         if self.subtract_last:
             x_transformed = x - self.last
@@ -176,6 +187,11 @@ class RevIN2d(nn.Module):
         self.subtract_last = subtract_last
         if self.affine:
             self._init_params()
+        
+        # Initialize mean and stdev to None
+        self.mean = None
+        self.stdev = None
+        self.last = None
 
     def forward(self, x: torch.Tensor, mode: str, mask: Optional[torch.Tensor] = None):
         if mode == 'norm':
@@ -229,6 +245,8 @@ class RevIN2d(nn.Module):
         return x
 
     def _denormalize(self, x):
+        if self.stdev is None or self.mean is None:
+            raise RuntimeError("RevIN2d must be normalized before denormalizing. Call with mode='norm' first.")
         if self.affine:
             x = x - self.affine_bias
             x = x / (self.affine_weight + self.eps*self.eps)
@@ -240,6 +258,8 @@ class RevIN2d(nn.Module):
         return x
 
     def transform(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        if self.stdev is None or self.mean is None:
+            raise RuntimeError("RevIN2d must be normalized before transforming. Call with mode='norm' first.")
         if self.subtract_last:
             raise NotImplementedError("`subtract_last` is not implemented for RevIN2d.")
 
