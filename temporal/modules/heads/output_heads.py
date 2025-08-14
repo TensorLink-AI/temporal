@@ -79,7 +79,7 @@ class GaussianHead(BaseOutputHead):
         super().__init__()
         self.feature_size = output_size
         # Project to 2 parameters (mean, log_std) for each feature.
-        self.proj = nn.Linear(hidden_size, self.feature_size * 2)
+        self.proj = nn.Linear(hidden_size, self.feature_size )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
