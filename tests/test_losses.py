@@ -2,7 +2,7 @@
 
 import pytest
 import torch
-from temporal.modules.losses.losses import TimeSeriesLoss, CRPSLoss, RegisteredMixtureLoss
+from temporal.modules.losses.losses import TimeSeriesLoss, CRPSLoss, RegisteredMixtureLoss, SpreadPenalty
 
 # --- Fixtures ---
 
@@ -83,6 +83,33 @@ def test_timeseries_loss_with_mask(sample_tensors, loss_mask):
     unmasked_loss_mod = loss_fn(preds, targets_mod)
 
     assert masked_loss_mod < unmasked_loss_mod
+
+# --- SpreadPenalty Tests ---
+def test_spread_penalty_calculation():
+    """
+    Tests the SpreadPenalty loss calculation in isolation.
+    """
+    loss_fn = SpreadPenalty()
+    # Predictions shape: [Batch, Time, Quantiles]
+    # Spread for first sample, first timestep: 3 - 1 = 2
+    # Spread for first sample, second timestep: 6 - 4 = 2
+    # Spread for second sample, first timestep: 12 - 10 = 2
+    # Spread for second sample, second timestep: 15 - 13 = 2
+    preds = torch.tensor([
+        [[1, 2, 3], [4, 5, 6]],
+        [[10, 11, 12], [13, 14, 15]]
+    ]).float()
+    
+    # The penalty is the mean of the squared spreads. 
+    # (2^2 + 2^2 + 2^2 + 2^2) / 4 = 4.0
+    penalty = loss_fn(preds, None) # Targets are not used
+    assert torch.isclose(penalty, torch.tensor(4.0))
+
+    # Test edge case with zero spread
+    preds_zero_spread = torch.tensor([[[2, 2, 2], [5, 5, 5]]]).float()
+    penalty_zero = loss_fn(preds_zero_spread, None)
+    assert torch.isclose(penalty_zero, torch.tensor(0.0))
+
 
 # --- CRPSLoss Tests ---
 

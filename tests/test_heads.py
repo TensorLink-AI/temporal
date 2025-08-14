@@ -9,6 +9,7 @@ from temporal.modules.heads.output_heads import (
     DistPredHead,
     MixtureOutputHead,
 )
+from temporal.modules.losses.losses import QuantileLoss
 
 # --- Fixtures ---
 
@@ -88,6 +89,67 @@ def test_quantile_head_forward_multivariate(head_params, sample_hidden_state):
         feature_size,
         num_quantiles
     )
+
+def test_quantile_head_forward_univariate(head_params, sample_hidden_state):
+    """Tests the forward pass of QuantileRegressionOutputHead for a univariate case."""
+    feature_size = 1
+    num_quantiles = 7
+    head = QuantileRegressionOutputHead(
+        hidden_size=head_params["hidden_size"],
+        output_size=feature_size * num_quantiles,
+        num_quantiles=num_quantiles,
+        feature_size=feature_size
+    )
+    output = head(sample_hidden_state)
+    # Ensure the feature dimension is squeezed out for univariate case
+    assert output.shape == (
+        head_params["batch_size"],
+        head_params["seq_len"],
+        num_quantiles
+    )
+
+def test_quantile_head_predict_method(head_params):
+    """Tests the `predict` method of QuantileRegressionOutputHead."""
+    feature_size = 3
+    num_quantiles = 5 # Odd number to ensure a clear median
+    head = QuantileRegressionOutputHead(
+        hidden_size=head_params["hidden_size"],
+        output_size=feature_size * num_quantiles,
+        num_quantiles=num_quantiles,
+        feature_size=feature_size
+    )
+    # Mock forward output
+    forward_output = torch.randn(
+        head_params["batch_size"],
+        head_params["seq_len"],
+        feature_size,
+        num_quantiles
+    ).sort(dim=-1).values # Ensure quantiles are ordered
+
+    # The `predict` method should return the median point forecast
+    prediction = head.predict(forward_output)
+    
+    # Check shape
+    assert prediction.shape == (
+        head_params["batch_size"],
+        head_params["seq_len"],
+        feature_size
+    )
+    # Check that the median value was selected (index 2 for 5 quantiles)
+    assert torch.all(prediction == forward_output[..., 2])
+
+
+def test_quantile_head_get_loss(head_params):
+    """Tests that the correct loss function is returned."""
+    head = QuantileRegressionOutputHead(
+        hidden_size=head_params["hidden_size"],
+        output_size=15,
+        num_quantiles=5,
+        feature_size=3
+    )
+    loss_fn = head.get_loss_fn()
+    assert isinstance(loss_fn, QuantileLoss)
+
 
 # --- DistPredHead Tests ---
 

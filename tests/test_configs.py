@@ -2,13 +2,15 @@
 
 import pytest
 from pydantic import ValidationError
-from temporal.configs.transformer_config import (
+from temporal.configs.transformer_model_config import (
     TransformerTimeSeriesConfig,
-    AttentionConfig,
-    FeedForwardConfig,
-    ArchitectureConfig,
-    TransformerBlockConfig
 )
+from temporal.configs.attention_config import AttentionConfig
+from temporal.configs.feedforward_config import FeedForwardConfig
+from temporal.configs.architecture_config import ArchitectureConfig
+from temporal.configs.transformer_block_config import TransformerBlockConfig
+from temporal.configs.embedding_config import EmbeddingConfig
+from temporal.models.builder import build_time_series_transformer
 
 def test_attention_config_defaults():
     """Tests that AttentionConfig can be initialized with minimal arguments."""
@@ -79,3 +81,23 @@ def test_main_config_to_dict_serialization():
     assert isinstance(config_dict, dict)
     assert config_dict['d_model'] == 32
     assert config_dict['architecture']['layout'] == "decoder-only" # Default
+
+def test_model_build_with_inconsistent_d_model():
+    """
+    Tests that building a model with inconsistent d_model values between
+    the main config and a component (e.g., embedding) raises a RuntimeError.
+    """
+    config = TransformerTimeSeriesConfig(
+        d_model=32, # Main model dimension
+        num_heads=4,
+        feature_size=5,
+        prediction_length=10,
+        context_length=50,
+        # Override embedding config with a different d_model
+        value_embedding_config=EmbeddingConfig(type="linear", kwargs={"d_model": 64}),
+        encoder_blocks=[TransformerBlockConfig(block_type="default_encoder")],
+        decoder_blocks=[TransformerBlockConfig(block_type="default_decoder")],
+    )
+    
+    with pytest.raises(RuntimeError, match="Shape mismatch"):
+        build_time_series_transformer(config)
