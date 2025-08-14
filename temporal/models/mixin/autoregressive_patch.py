@@ -24,6 +24,37 @@ class AutoregressivePatchMixin:
                 m.train()
 
     # ... [ _get_scalar_value, _get_head_output, and legacy helpers remain unchanged ] ...
+    def _normalize_levels(self, quantile_levels):
+        if quantile_levels is None:
+            return None
+        qs = [float(q) for q in quantile_levels]
+        if not all(0.0 < q < 1.0 for q in qs):
+            raise ValueError(f"All quantiles must be in (0,1). Got {qs}")
+        return sorted(qs)
+
+    def _safe_denormalize(self, x):
+        if not hasattr(self.preprocessor, 'denormalize'):
+            return x
+        def _den(t):
+            try:
+                return self.preprocessor.denormalize(t)
+            except Exception:
+                return t
+        if torch.is_tensor(x):
+            return _den(x)
+        if isinstance(x, dict):
+            return {k: _den(v) if torch.is_tensor(v) else v for k, v in x.items()}
+        if isinstance(x, list):
+            out = []
+            for v in x:
+                if torch.is_tensor(v):
+                    out.append(_den(v))
+                elif isinstance(v, dict):
+                    out.append({k: _den(t) if torch.is_tensor(t) else t for k, t in v.items()})
+                else:
+                    out.append(v)
+            return out
+        return x
 
     def _get_scalar_value(self, value: Union[torch.Tensor, float, int, Any], name: str) -> Optional[float]:
         """
@@ -50,37 +81,52 @@ class AutoregressivePatchMixin:
         head_input: torch.Tensor,
         prediction_strategy: Optional[Union[str, float, int]] = None,
         quantile_levels: Optional[List[float]] = None,
-    ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
+    ):
         """
-        Applies final output head(s) to the processed model output.
-
-        If `quantile_levels` are provided, this method will attempt to call the
-        `sample_quantiles` method on the head(s) for probabilistic forecasting.
-        Otherwise, it returns a point forecast.
+        Project via head(s) first, then:
+        - if prediction_strategy: use head.predict(...)
+        - elif quantile_levels:   use head.sample_quantiles(...)
+        - else:                   return point forecast (projected)
+        Works for single head or ModuleList; supports optional self.head_aggregator.
         """
         if not hasattr(self, 'output_heads'):
             raise AttributeError("Model is missing output_heads, which is required for generation.")
 
-        # Handle probabilistic forecasting (quantile sampling)
-        if quantile_levels:
-            if isinstance(self.output_heads, nn.ModuleList):
-                # Multiple heads: sample from each and aggregate if needed
-                all_quantiles = [
-                    head.sample_quantiles(head_input, quantile_levels=quantile_levels)
-                    for head in self.output_heads
-                ]
-                # Further aggregation might be needed depending on the desired output format
-                return all_quantiles
-            else:
-                # Single head
-                return self.output_heads.sample_quantiles(head_input, quantile_levels=quantile_levels)
+        levels = self._normalize_levels(quantile_levels)
 
-        # Handle point forecasting (standard forward pass)
-        else:
-            if isinstance(self.output_heads, nn.ModuleList):
-                return [head(head_input) for head in self.output_heads]
-            else:
-                return self.output_heads(head_input)
+        # ---------- ModuleList ----------
+        if isinstance(self.output_heads, nn.ModuleList):
+            projected = [head(head_input) for head in self.output_heads]  # project all
+
+            per_head_outputs = []
+            for head, y in zip(self.output_heads, projected):
+                if (prediction_strategy is not None) and hasattr(head, "predict") and callable(getattr(head, "predict")):
+                    per_head_outputs.append(head.predict(y, method=prediction_strategy))
+                elif (levels is not None) and hasattr(head, "sample_quantiles") and callable(getattr(head, "sample_quantiles")):
+                    per_head_outputs.append(head.sample_quantiles(y, quantile_levels=levels))
+                else:
+                    per_head_outputs.append(y)
+
+            # Optional aggregation (like stepwise)
+            if hasattr(self, 'head_aggregator') and self.head_aggregator:
+                try:
+                    return self.head_aggregator(per_head_outputs)
+                except Exception as e:
+                    logger.warning(f"head_aggregator failed in patch mixin; returning per-head list. Error: {e}")
+                    return per_head_outputs
+            return per_head_outputs
+
+        # ---------- Single head ----------
+        head = self.output_heads
+        projected = head(head_input)
+
+        if (prediction_strategy is not None) and hasattr(head, "predict") and callable(getattr(head, "predict")):
+            return head.predict(projected, method=prediction_strategy)
+
+        if (levels is not None) and hasattr(head, "sample_quantiles") and callable(getattr(head, "sample_quantiles")):
+            return head.sample_quantiles(projected, quantile_levels=levels)
+
+        return projected
 
     @torch.no_grad()
     def generate(
@@ -134,7 +180,8 @@ class AutoregressivePatchMixin:
         reference_tensor = decoder_inputs if encoder_inputs is None else encoder_inputs
         batch_size, device = reference_tensor.shape[0], reference_tensor.device
 
-        num_patches_to_generate = prediction_length // self.preprocessor.value_embedding.output_patch_size
+        patch = self.preprocessor.value_embedding.output_patch_size
+        num_patches_to_generate = (prediction_length + patch - 1) // patch  # ceil-div
 
         # --- 2. Architectural Path: Prepare context and initial decoder state ---
         if hasattr(self, 'encoder') and self.encoder is not None and encoder_inputs is not None:

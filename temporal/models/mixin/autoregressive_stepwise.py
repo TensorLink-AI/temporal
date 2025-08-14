@@ -44,37 +44,63 @@ class AutoregressiveStepwiseMixin:
             return [head(last_hidden) for head in self.output_heads]
         else:
             return self.output_heads(last_hidden)
+            
+    def _normalize_levels(self, quantile_levels):
+        if quantile_levels is None:
+            return None
+        qs = [float(q) for q in quantile_levels]
+        if not all(0.0 < q < 1.0 for q in qs):
+            raise ValueError(f"All quantiles must be in (0,1). Got {qs}")
+        return sorted(qs)
 
     def _compute_prediction_to_store(
         self,
         raw_head_output: Union[torch.Tensor, List[torch.Tensor], Dict[str, Any]],
         prediction_strategy: Optional[Union[str, float, int]],
         quantile_levels: Optional[List[float]],
-        output_head: nn.Module # Pass the specific head or the primary head if ModuleList
-    ) -> Union[torch.Tensor, Dict[str, Any]]:
+        output_head: nn.Module  # primary head if ModuleList
+    ) -> Union[torch.Tensor, Dict[str, Any], List[torch.Tensor]]:
         """
-        Determines the prediction to store based on strategy and head capabilities.
-        This is what will be returned in the final 'predictions' list.
+        Decide what to store for this AR step:
+        - If strategy given and head supports predict(): use it
+        - Else if quantiles requested and head supports sample_quantiles(): sample them
+        - Else store raw output.
+        Works for single head or ModuleList.
         """
-        if prediction_strategy is not None:
-            # If a specific strategy is requested for the output
-            if hasattr(output_head, "predict") and callable(getattr(output_head, "predict")):
-                return output_head.predict(raw_head_output, method=prediction_strategy)
-            elif isinstance(prediction_strategy, float) and hasattr(output_head, "sample_quantiles") and callable(getattr(output_head, "sample_quantiles")):
-                # Sample the specific quantile as the output
-                sampled_output = output_head.sample_quantiles(raw_head_output, quantile_levels=[prediction_strategy])
-                return sampled_output.squeeze(-1) # [B, 1, F, 1] -> [B, 1, F]
-            else:
-                logger.warning(f"Prediction strategy '{prediction_strategy}' not supported by head for direct output. Storing raw head output.")
-                return raw_head_output
-        else:
-            # No specific prediction_strategy requested, store raw output or all specified quantiles
-            if hasattr(output_head, "sample_quantiles") and callable(getattr(output_head, "sample_quantiles")) and quantile_levels is not None:
-                # If `quantile_levels` are explicitly provided, sample them for the output
-                return output_head.sample_quantiles(raw_head_output, quantile_levels=quantile_levels)
-            else:
-                # Default: store the raw output of the head's forward pass
-                return raw_head_output
+        levels = self._normalize_levels(quantile_levels)
+
+        # --- Multi-head path ---
+        if isinstance(raw_head_output, list):
+            assert isinstance(self.output_heads, nn.ModuleList), \
+                "raw_head_output is a list but self.output_heads is not ModuleList."
+
+            per_head = []
+            for h, y in zip(self.output_heads, raw_head_output):
+                if prediction_strategy is not None and hasattr(h, "predict") and callable(getattr(h, "predict")):
+                    per_head.append(h.predict(y, method=prediction_strategy))  # tensor [B,1,F] or similar
+                elif levels is not None and hasattr(h, "sample_quantiles") and callable(getattr(h, "sample_quantiles")):
+                    qy = h.sample_quantiles(y, quantile_levels=levels)         # tensor [B,1,F,Q] or [B,1,Q]
+                    per_head.append(qy)
+                else:
+                    per_head.append(y)
+
+            # If you want to aggregate for storage when multiple heads exist:
+            if hasattr(self, 'head_aggregator') and self.head_aggregator:
+                try:
+                    return self.head_aggregator(per_head)  # your aggregator must handle shapes
+                except Exception as e:
+                    logger.warning(f"head_aggregator failed during store; returning per-head list. Error: {e}")
+                    return per_head
+            return per_head
+
+        # --- Single-head path ---
+        y = raw_head_output
+        if prediction_strategy is not None and hasattr(output_head, "predict") and callable(getattr(output_head, "predict")):
+            return output_head.predict(y, method=prediction_strategy)
+        if levels is not None and hasattr(output_head, "sample_quantiles") and callable(getattr(output_head, "sample_quantiles")):
+            return output_head.sample_quantiles(y, quantile_levels=levels)
+        return y
+
 
     def _compute_next_decoder_input_value(
         self,
