@@ -3,7 +3,7 @@
 import pytest
 import torch
 from temporal.modules.norm.revin import RevIN as Revin
-from temporal.modules.norm.dynamic_revin import DynamicRevin
+from temporal.modules.norm.dynamic_revin import DynamicRevIN as DynamicRevin
 
 # --- Fixtures ---
 
@@ -58,8 +58,8 @@ def test_revin_reversibility(sample_tensor):
 def test_dynamic_revin_init():
     """Tests the initialization of the DynamicRevin layer."""
     layer = DynamicRevin(num_features=5)
-    assert isinstance(layer.affine_weight, torch.nn.Parameter)
-    assert isinstance(layer.affine_bias, torch.nn.Parameter)
+    assert isinstance(layer.gamma, torch.nn.Parameter)
+    assert isinstance(layer.beta, torch.nn.Parameter)
 
 
 def test_dynamic_revin_reversibility(sample_tensor):
@@ -70,10 +70,10 @@ def test_dynamic_revin_reversibility(sample_tensor):
     layer = DynamicRevin(num_features=num_features)
 
     # 1. Normalize the tensor
-    normalized_output, mean, stdev = layer(sample_tensor, mode="norm")
+    normalized_output = layer(sample_tensor, mode="norm")
 
     # 2. Denormalize the output
-    denormalized_output = layer(normalized_output, mode="denorm", mean=mean, stdev=stdev)
+    denormalized_output = layer(normalized_output, mode="denorm")
 
     # 3. Assert perfect reversibility
     assert normalized_output.shape == sample_tensor.shape
@@ -89,14 +89,10 @@ def test_dynamic_revin_non_affine(sample_tensor):
     and is reversible.
     """
     num_features = sample_tensor.shape[-1]
-    layer = DynamicRevin(num_features=num_features, affine=False)
-
-    # Ensure no affine parameters were created
-    assert not hasattr(layer, "affine_weight")
-    assert not hasattr(layer, "affine_bias")
+    layer = DynamicRevin(num_features=num_features, affine_mode="dynamic")
 
     # Test for reversibility
-    normalized, mean, stdev = layer(sample_tensor, mode="norm")
-    denormalized = layer(normalized, mode="denorm", mean=mean, stdev=stdev)
+    normalized = layer(sample_tensor, mode="norm")
+    denormalized = layer(normalized, mode="denorm")
 
     assert torch.allclose(denormalized, sample_tensor, atol=1e-6)
