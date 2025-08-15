@@ -36,7 +36,6 @@ def decoder_config():
         positional_embedding_config=EmbeddingConfig(
             type="sinusoidal", kwargs={"max_seq_len": 100}
         ),
-        norm_config=NormalizationConfig(type="layer_norm"),
     )
 
 

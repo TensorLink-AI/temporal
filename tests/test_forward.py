@@ -9,6 +9,7 @@ from temporal.configs.transformer_block_config import (
     DecoderBlockConfig,
 )
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
+from temporal.configs.output_head_config import OutputHeadConfig
 
 # --- Fixtures ---
 
@@ -39,6 +40,7 @@ def encoder_decoder_config():
             )
         ],
         loss_config={"type": "mse"},
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 
@@ -60,6 +62,7 @@ def decoder_only_config():
             )
         ],
         loss_config={"type": "mse"},
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 

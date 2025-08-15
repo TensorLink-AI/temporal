@@ -7,12 +7,17 @@ from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.configs.transformer_model_config import (
     TransformerTimeSeriesConfig as TransformerConfig,
 )
+from temporal.configs.output_head_config import OutputHeadConfig
 
 
 @pytest.fixture
 def mock_builder():
     """Creates a mock ModuleBuilder with a basic config."""
-    config = TransformerConfig(d_model=32, num_heads=4, feature_size=1)
+    config = TransformerConfig(
+        d_model=32,
+        feature_size=1,
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
+    )
     builder = ModuleBuilder(config)
     return builder
 

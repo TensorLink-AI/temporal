@@ -6,6 +6,11 @@ import os
 from temporal.models.builder import build_time_series_transformer
 from temporal.models.transformer_model import TransformerTemporalModel
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+from temporal.configs.transformer_block_config import (
+    EncoderBlockConfig,
+    DecoderBlockConfig,
+)
+from temporal.configs.output_head_config import OutputHeadConfig
 
 
 @pytest.fixture
@@ -14,7 +19,6 @@ def generation_config():
     return TransformerTimeSeriesConfig(
         feature_size=1,
         d_model=16,
-        num_heads=2,
         num_encoder_layers=2,
         num_decoder_layers=2,
         context_length=10,
@@ -22,6 +26,9 @@ def generation_config():
         architecture={"layout": "encoder-decoder"},
         loss_config={"type": "mse"},
         use_cache=True,  # Explicitly enable KV Caching
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
+        encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
+        decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
     )
 
 
@@ -51,7 +58,9 @@ def test_kv_cache_correctness(generation_model, generation_config):
 
     # 1. Forward pass without cache (full sequence at once)
     with torch.no_grad():
-        full_pass_output = model(encoder_inputs=past_values, decoder_inputs=future_values)
+        full_pass_output = model(
+            encoder_inputs=past_values, decoder_inputs=future_values
+        )
     full_pass_logits = full_pass_output.logits
 
     # 2. Forward pass with cache (token-by-token)
@@ -59,10 +68,11 @@ def test_kv_cache_correctness(generation_model, generation_config):
     past_key_values = None
 
     # Encoder forward pass to get encoder_hidden_states
-    preprocessor_output = model.preprocessor.process(past_values,
-    # TODO: add support for past_features and future_features
-    past_features=None,
-    future_features=None,
+    preprocessor_output = model.preprocessor.process(
+        past_values,
+        # TODO: add support for past_features and future_features
+        past_features=None,
+        future_features=None,
     )
     encoder_output = model.encoder(**preprocessor_output)
     encoder_hidden_states = encoder_output

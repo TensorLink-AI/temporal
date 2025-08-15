@@ -10,6 +10,7 @@ from temporal.configs.transformer_block_config import (
 )
 from temporal.configs.embedding_config import EmbeddingConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
+from temporal.configs.output_head_config import OutputHeadConfig
 
 # --- Fixtures ---
 
@@ -41,6 +42,7 @@ def patched_model_config():
         ],
         value_embedding_config=EmbeddingConfig(type="patch", kwargs={"patch_size": 2}),
         loss_config={"type": "mse"},
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 

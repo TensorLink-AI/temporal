@@ -4,6 +4,8 @@ import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+from temporal.models.transformer_model import TransformerOutput
+from temporal.configs.output_head_config import OutputHeadConfig
 
 # --- Fixtures ---
 
@@ -13,12 +15,12 @@ def model_config():
     """Provides a simple, valid config for model testing."""
     return TransformerTimeSeriesConfig(
         d_model=16,
-        num_heads=2,
         feature_size=3,
         prediction_length=5,
         context_length=10,
         architecture={"layout": "encoder-decoder"},
         loss_config={"type": "mse"},
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 
@@ -81,8 +83,6 @@ def test_model_output_dataclass():
     """
     Tests the functionality of the TransformerOutput dataclass.
     """
-    from temporal.models.outputs import TransformerOutput
-
     output = TransformerOutput(logits=torch.randn(2, 5, 3), loss=torch.tensor(0.5))
 
     # Test attribute access
