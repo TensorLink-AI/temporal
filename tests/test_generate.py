@@ -1,5 +1,3 @@
-# tests/test_generate.py
-
 import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
@@ -46,7 +44,8 @@ def encoder_decoder_config():
                 ),
             )
         ],
-        loss_config=LossConfig(type="mse"),
+        # FIX: Changed "mse" to a valid, registered loss type.
+        loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
@@ -54,11 +53,10 @@ def encoder_decoder_config():
 @pytest.fixture(scope="module")
 def patched_config(encoder_decoder_config):
     """Provides a config with patch embedding."""
-    from copy import deepcopy
-
-    cfg = deepcopy(encoder_decoder_config)
-    cfg.value_embedding_config = EmbeddingConfig(type="patch", kwargs={"patch_size": 2})
-    return cfg
+    # FIX: Create a new config object instead of modifying a frozen one.
+    config_dict = encoder_decoder_config.to_dict()
+    config_dict["value_embedding_config"] = EmbeddingConfig(type="patch", kwargs={"patch_size": 2})
+    return TransformerTimeSeriesConfig.from_dict(config_dict)
 
 
 @pytest.fixture(scope="module")
@@ -78,7 +76,8 @@ def decoder_only_config():
                 ),
             )
         ],
-        loss_config=LossConfig(type="mse"),
+        # FIX: Changed "mse" to a valid, registered loss type.
+        loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 

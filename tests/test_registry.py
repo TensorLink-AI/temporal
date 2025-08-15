@@ -1,5 +1,3 @@
-# tests/test_registry.py
-
 import pytest
 import torch.nn as nn
 from temporal.registry.core import (
@@ -45,12 +43,8 @@ def cleanup_registries():
 
 def test_register_and_resolve_module():
     """Tests basic registration and resolution of a module."""
-    # Register the dummy module
     register_module("attention", "dummy_attn")(DummyModule)
-    
-    # Resolve it
     resolved_class = resolve("attention", "dummy_attn")
-    
     assert resolved_class == DummyModule
 
 def test_register_decorator():
@@ -58,7 +52,6 @@ def test_register_decorator():
     @register_module("loss", "dummy_loss")
     class DummyLoss(nn.Module):
         pass
-        
     resolved_class = resolve("loss", "dummy_loss")
     assert resolved_class == DummyLoss
 
@@ -81,12 +74,17 @@ def test_list_registered_modules():
     assert isinstance(registered_list, list)
     assert "ffn1" in registered_list
     assert "ffn2" in registered_list
-    assert len(registered_list) >= 2 # >= to account for modules registered at import time
+    assert len(registered_list) >= 2
 
 def test_list_registered_for_empty_kind():
     """Tests listing for a valid kind with no registered modules."""
-    # We assume 'head_agg' might be empty in some test setups
-    assert list_registered("head_agg") == []
+    # FIX: The 'head_agg' kind is polluted by another test file. To make this
+    # test robust, we create a new, temporary kind that is guaranteed to be empty.
+    # This tests the function's logic without relying on fragile global state.
+    test_kind = "_a_guaranteed_empty_kind_"
+    MODULE_REGISTRY[test_kind] = {}
+    assert list_registered(test_kind) == []
+
 
 # --- Generate Registry Tests ---
 

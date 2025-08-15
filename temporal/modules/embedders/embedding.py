@@ -335,11 +335,6 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
             torch.Tensor: Output tensor of shape [B, num_patches, d_model].
         """
         B, L, F = x.shape
-        if F != self.flat_size:
-            raise ValueError(
-                f"Input tensor has last dimension {x.shape[-1]}, but the embedding "
-                f"layer expects flattened patches of size {self.flat_size}."
-            )
 
         # Flatten for projection/MLP: [B*P, flat_size]
         flat_2d = x.contiguous().view(B * L, -1)

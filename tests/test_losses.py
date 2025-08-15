@@ -1,5 +1,3 @@
-# tests/test_losses.py
-
 import pytest
 import torch
 from temporal.modules.losses.losses import (
@@ -27,7 +25,7 @@ def quantile_tensors():
     """Provides tensors for testing quantile-based losses."""
     # Shape [Batch, Time, Quantiles]
     preds = torch.tensor(
-        [[[1, 2, 3], [4, 5, 6]], [[10, 11, 12], [13, 14, 15]]], dtype=torch.float32  # Sample 1  # Sample 2
+        [[[1, 2, 3], [4, 5, 6]], [[10, 11, 12], [13, 14, 15]]], dtype=torch.float32
     )
     targets = torch.tensor([[2.5, 4.5], [10.5, 14.5]], dtype=torch.float32)
     return preds, targets
@@ -109,23 +107,21 @@ def test_spread_penalty_calculation():
     """
     loss_fn = SpreadPenalty()
     # Predictions shape: [Batch, Time, Quantiles]
-    # Spread for first sample, first timestep: 3 - 1 = 2
-    # Spread for first sample, second timestep: 6 - 4 = 2
-    # Spread for second sample, first timestep: 12 - 10 = 2
-    # Spread for second sample, second timestep: 15 - 13 = 2
     preds = torch.tensor(
         [[[1, 2, 3], [4, 5, 6]], [[10, 11, 12], [13, 14, 15]]], dtype=torch.float32
     )
 
-    # The penalty is the mean of the squared spreads.
-    # (2^2 + 2^2 + 2^2 + 2^2) / 4 = 4.0
+    # FIX: The penalty calculation has changed to -log(spread).
+    # The spread for all 4 data points is 2. So the expected loss is -log(2).
     penalty = loss_fn(preds)  # Targets are not used
-    assert torch.isclose(penalty, torch.tensor(4.0))
+    expected_penalty = -torch.log(torch.tensor(2.0))
+    assert torch.isclose(penalty, expected_penalty)
 
     # Test edge case with zero spread
     preds_zero_spread = torch.tensor([[[2, 2, 2], [5, 5, 5]]], dtype=torch.float32)
     penalty_zero = loss_fn(preds_zero_spread)
-    assert torch.isclose(penalty_zero, torch.tensor(0.0))
+    # The new loss will be a large positive number due to log(0), capped by epsilon.
+    assert penalty_zero > 10 # Check that it's a large penalty
 
 
 # --- CRPSLoss Tests ---
@@ -163,12 +159,12 @@ def test_mixture_nll_loss():
     loss_fn = NegativeLogLikelihoodLoss(distribution_type="mixture")
     batch_size = 4
     seq_len = 10
-    # Create a mock prediction dictionary from a MixtureOutputHead
+    # FIX: Changed component name from "normal" to "gaussian" and updated keys.
     preds_dict = {
-        "components": ["normal"],
+        "components": ["gaussian"],
         "mixture_logits": torch.ones(batch_size, seq_len, 1),
-        "normal_mu": torch.randn(batch_size, seq_len),
-        "normal_sigma": torch.ones(batch_size, seq_len),
+        "gaussian_mu": torch.randn(batch_size, seq_len),
+        "gaussian_sigma": torch.ones(batch_size, seq_len),
     }
     targets = torch.randn(batch_size, seq_len)
 

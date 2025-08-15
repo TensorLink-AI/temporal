@@ -1,5 +1,3 @@
-# tests/test_module_losses.py
-
 import pytest
 import torch
 from temporal.modules.losses.loss_functions import (
@@ -102,12 +100,12 @@ def test_mixture_loss():
     loss_fn = MixtureLoss()
     batch_size, seq_len = 2, 10
     
-    # Mock prediction from a head with two components: normal and student_t
+    # FIX: Changed component name from "normal" to "gaussian" and updated keys.
     preds_dict = {
-        "components": ["normal", "student_t"],
+        "components": ["gaussian", "student_t"],
         "mixture_logits": torch.randn(batch_size, seq_len, 2),
-        "normal_mu": torch.randn(batch_size, seq_len),
-        "normal_sigma": torch.rand(batch_size, seq_len),
+        "gaussian_mu": torch.randn(batch_size, seq_len),
+        "gaussian_sigma": torch.rand(batch_size, seq_len),
         "student_df": torch.rand(batch_size, seq_len) * 5,
         "student_mu": torch.randn(batch_size, seq_len),
         "student_scale": torch.rand(batch_size, seq_len),

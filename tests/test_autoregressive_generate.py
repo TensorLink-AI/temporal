@@ -1,5 +1,3 @@
-# tests/test_autoregressive_generate.py
-
 import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
@@ -47,7 +45,8 @@ def patched_model_config():
             )
         ],
         value_embedding_config=EmbeddingConfig(type="patch", kwargs={"patch_size": 2}),
-        loss_config=LossConfig(type="timeseries_generic", loss_type="mse"),
+        # FIX: Removed `loss_type` and set `type` directly to "mse"
+        loss_config=LossConfig(type="mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 

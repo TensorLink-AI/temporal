@@ -70,8 +70,8 @@ def test_main_config_initialization():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        # FIX: Removed `loss_type` and set `type` directly to "mse"
-        loss_config=LossConfig(type="mse"),
+        # FIX: Changed "mse" to a valid, registered loss type.
+        loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     assert config.d_model == 32
@@ -99,8 +99,8 @@ def test_main_config_validation_error():
             architecture=ArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
-            # FIX: Removed `loss_type` and set `type` directly to "mse"
-            loss_config=LossConfig(type="mse"),
+            # FIX: Changed "mse" to a valid, registered loss type.
+            loss_config=LossConfig(type="timeseries_generic"),
             output_head_config=OutputHeadConfig(type="linear", output_size=1),
         )
 
@@ -115,8 +115,8 @@ def test_main_config_to_dict_serialization():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        # FIX: Removed `loss_type` and set `type` directly to "mse"
-        loss_config=LossConfig(type="mse"),
+        # FIX: Changed "mse" to a valid, registered loss type.
+        loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     config_dict = config.to_dict()
@@ -160,8 +160,8 @@ def test_model_build_with_inconsistent_d_model():
                         ),
                     )
                 ],
-                # FIX: Removed `loss_type` and set `type` directly to "mse"
-                loss_config=LossConfig(type="mse"),
+                # FIX: Changed "mse" to a valid, registered loss type.
+                loss_config=LossConfig(type="timeseries_generic"),
                 output_head_config=OutputHeadConfig(type="linear", output_size=1),
             )
         )

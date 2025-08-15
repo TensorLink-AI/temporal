@@ -37,6 +37,8 @@ class ModuleBuilder:
         """
         self.config = config
         self._model_dim = config.d_model
+        self._feature_size = config.feature_size # ADD THIS LINE
+
         if self._model_dim is None:
             raise ValueError("The configuration must define 'd_model'.")
 
@@ -79,7 +81,8 @@ class ModuleBuilder:
             kwargs['embed_dim'] = self._model_dim
         elif 'hidden_size' in accepted_params and 'hidden_size' not in kwargs:
             kwargs['hidden_size'] = self._model_dim
-
+        if 'feature_size' in accepted_params and 'feature_size' not in kwargs:
+            kwargs['feature_size'] = self._feature_size
         # Special handling for normalization layers.
         if kind == "normalization" and 'normalized_shape' in accepted_params:
             if getattr(module_config, 'type', '') in ("revin", "revin2d"):

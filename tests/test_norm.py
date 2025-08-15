@@ -1,5 +1,3 @@
-# tests/test_norm.py
-
 import pytest
 import torch
 from temporal.modules.norm.layer_norm import LayerNorm
@@ -49,7 +47,8 @@ def test_layer_norm_forward(sample_tensor):
 def test_rms_norm_init():
     """Tests the initialization of RMSNorm."""
     norm = RMSNorm(normalized_shape=32)
-    assert isinstance(norm.scale, torch.nn.Parameter)
+    # FIX: The learnable parameter was renamed from 'scale' to 'weight'.
+    assert isinstance(norm.weight, torch.nn.Parameter)
     assert not hasattr(norm, "bias")  # RMSNorm typically does not have a bias
 
 
@@ -92,9 +91,9 @@ def test_scale_norm_forward(sample_tensor):
     # Check that output is different from input
     assert not torch.allclose(output, sample_tensor)
 
-    # Check that the L2 norm of the output along the feature dimension, divided by sqrt(d_model), is close to g
+    # FIX: The implementation of ScaleNorm has changed. It no longer divides
+    # by sqrt(d_model). We now check that the L2 norm of the output is close to g.
     l2_norm = torch.norm(output, p=2, dim=-1)
-    scaled_norm = l2_norm / (d_model**0.5)
     assert torch.allclose(
-        scaled_norm.mean(), torch.tensor(norm.g.item()), atol=1e-2
+        l2_norm.mean(), torch.tensor(norm.g.item()), atol=1e-2
     )

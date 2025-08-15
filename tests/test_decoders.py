@@ -1,5 +1,3 @@
-# tests/test_decoders.py
-
 import pytest
 import torch
 from temporal.modules.decoders.decoders import TimeSeriesTransformerDecoder
@@ -50,9 +48,14 @@ def decoder_config():
 @pytest.fixture
 def patched_decoder_config(decoder_config):
     """Provides a config with patch embedding."""
-    return decoder_config.model_copy(
-        update={"value_embedding_config": EmbeddingConfig(type="patch", kwargs={"patch_size": 2})}
-    )
+    # FIX: Create a new config object instead of using .model_copy()
+    # Convert the original config to a dict, update the value, and create a new instance.
+    config_dict = decoder_config.to_dict()
+    config_dict["value_embedding_config"] = EmbeddingConfig(type="patch", kwargs={"patch_size": 2})
+    
+    # We need to ensure nested configs are also handled correctly,
+    # so we create the object from the modified dictionary.
+    return TransformerTimeSeriesConfig.from_dict(config_dict)
 
 
 @pytest.fixture

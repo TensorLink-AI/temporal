@@ -1,5 +1,3 @@
-# tests/test_forward.py
-
 import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
@@ -45,7 +43,8 @@ def encoder_decoder_config():
                 ),
             )
         ],
-        loss_config=LossConfig(type="mse"),
+        # FIX: Changed "mse" to a valid, registered loss type.
+        loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
@@ -67,7 +66,8 @@ def decoder_only_config():
                 ),
             )
         ],
-        loss_config=LossConfig(type="mse"),
+        # FIX: Changed "mse" to a valid, registered loss type.
+        loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 

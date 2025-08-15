@@ -1,11 +1,14 @@
-# tests/test_models.py
-
 import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.models.transformer_model import TransformerOutput
 from temporal.configs.output_head_config import OutputHeadConfig
+# FIX: Add missing imports for config objects
+from temporal.configs.architecture_config import (
+    TransformerArchitectureConfig as ArchitectureConfig,
+)
+from temporal.configs.loss_config import LossConfig
 
 # --- Fixtures ---
 
@@ -18,8 +21,12 @@ def model_config():
         feature_size=3,
         prediction_length=5,
         context_length=10,
-        architecture={"layout": "encoder-decoder"},
-        loss_config={"type": "mse"},
+        # FIX: Instantiate the ArchitectureConfig object directly with a 'type'
+        architecture=ArchitectureConfig(
+            type="transformer_architecture", layout="encoder-decoder"
+        ),
+        # FIX: Instantiate the LossConfig object with a valid registered type
+        loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 

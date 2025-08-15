@@ -1,4 +1,3 @@
-
 import pytest
 import torch
 from unittest.mock import MagicMock, patch
@@ -8,14 +7,22 @@ from temporal.configs.transformer_model_config import (
     TransformerTimeSeriesConfig as TransformerConfig,
 )
 from temporal.configs.output_head_config import OutputHeadConfig
+# FIX: Add the missing config import
+from temporal.configs.architecture_config import (
+    TransformerArchitectureConfig as ArchitectureConfig,
+)
 
 
 @pytest.fixture
 def mock_builder():
     """Creates a mock ModuleBuilder with a basic config."""
+    # FIX: Add the required 'architecture' config
     config = TransformerConfig(
         d_model=32,
         feature_size=1,
+        architecture=ArchitectureConfig(
+            type="transformer_architecture", layout="encoder-decoder"
+        ),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     builder = ModuleBuilder(config)
@@ -112,12 +119,17 @@ def test_patch_transform_block_merge_first_invalid_expansion(mock_builder):
 
 def test_patch_transform_block_non_divisible_d_model_split_first(mock_builder):
     """Tests that 'split_first' order raises an error if d_model is not divisible by expansion_factor."""
-    mock_builder.config.d_model = 33  # Not divisible by 2
+    # FIX: Create a new builder with a modified config instead of changing the existing one.
+    config_dict = mock_builder.config.to_dict()
+    config_dict["d_model"] = 33  # Not divisible by 2
+    bad_config = TransformerConfig.from_dict(config_dict)
+    bad_builder = ModuleBuilder(bad_config)
+
     with pytest.raises(
         ValueError, match="d_model \(33\) must be divisible by expansion_factor \(2\)"
     ):
         PatchTransformBlock(
-            builder=mock_builder,
+            builder=bad_builder, # Use the new builder
             wrapped_block_type="default_encoder",
             expansion_factor=2,
             order="split_first",

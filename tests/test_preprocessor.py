@@ -1,5 +1,3 @@
-# tests/test_preprocessor.py
-
 import pytest
 import torch
 from temporal.models.preprocessor import InputPreprocessor
@@ -94,12 +92,13 @@ def test_verbose_output(preprocessor, capsys):
 
 def test_patched_preprocessor_padding(base_config):
     """Tests that the preprocessor correctly pads for patch embedding."""
-    from copy import deepcopy
-
-    patched_config = deepcopy(base_config)
-    patched_config.value_embedding_config = EmbeddingConfig(
+    # FIX: Create a new config from a dict instead of using deepcopy and modifying it.
+    patched_config_dict = base_config.to_dict()
+    patched_config_dict["value_embedding_config"] = EmbeddingConfig(
         type="patch", kwargs={"patch_size": 4}
-    )
+    ).to_dict()
+    patched_config = TransformerTimeSeriesConfig.from_dict(patched_config_dict)
+
     builder = ModuleBuilder(patched_config)
     preprocessor = InputPreprocessor(patched_config, builder)
 
