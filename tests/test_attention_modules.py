@@ -12,8 +12,8 @@ from temporal.modules.attentions.diff_attention import DifferentialAttention
 def attention_config():
     """Provides a base configuration dictionary for attention modules."""
     return {
-        "d_model": 32,
-        "n_heads": 4,
+        "embed_dim": 32,
+        "num_heads": 4,
     }
 
 
@@ -36,9 +36,9 @@ def sample_tensors():
 def test_full_attention_init(attention_config):
     """Tests the initialization of the FullAttention module."""
     attn = FullAttention(**attention_config)
-    assert attn.d_model == attention_config["d_model"]
-    assert attn.n_heads == attention_config["n_heads"]
-    assert attn.head_dim == attention_config["d_model"] // attention_config["n_heads"]
+    assert attn.embed_dim == attention_config["embed_dim"]
+    assert attn.num_heads == attention_config["num_heads"]
+    assert attn.head_dim == attention_config["embed_dim"] // attention_config["num_heads"]
 
 
 def test_full_attention_forward_pass(attention_config, sample_tensors):
@@ -64,7 +64,7 @@ def test_full_attention_with_mask_and_kv_cache(attention_config, sample_tensors)
     assert past_key_value is not None
     assert past_key_value[0].shape == (
         hidden_states.shape[0],
-        attn.n_heads,
+        attn.num_heads,
         hidden_states.shape[1],
         attn.head_dim,
     )
@@ -92,7 +92,7 @@ def test_diff_attention_init(diff_attention_config):
     assert attn.num_kv_heads == 2
     assert (
         attn.n_rep
-        == diff_attention_config["n_heads"] // diff_attention_config["num_kv_heads"]
+        == diff_attention_config["num_heads"] // diff_attention_config["num_kv_heads"]
     )
 
 

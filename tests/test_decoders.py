@@ -50,9 +50,9 @@ def decoder_config():
 @pytest.fixture
 def patched_decoder_config(decoder_config):
     """Provides a config with patch embedding."""
-    cfg = decoder_config
-    cfg.value_embedding_config = EmbeddingConfig(type="patch", kwargs={"patch_size": 2})
-    return cfg
+    return decoder_config.model_copy(
+        update={"value_embedding_config": EmbeddingConfig(type="patch", kwargs={"patch_size": 2})}
+    )
 
 
 @pytest.fixture
@@ -91,11 +91,8 @@ def test_decoder_initialization(decoder, decoder_config):
 def test_decoder_forward_pass_shapes(decoder):
     batch_size, dec_seq_len, enc_seq_len = 2, 8, 10
     d_model = decoder.config.d_model
-    feature_size = decoder.config.feature_size
 
-    decoder_inputs = torch.randn(batch_size, dec_seq_len, d_model)
-    # Manually apply value embedding, as is now required
-    hidden_states = decoder.value_embedding(decoder_inputs)
+    hidden_states = torch.randn(batch_size, dec_seq_len, d_model)
     encoder_hidden_states = torch.randn(batch_size, enc_seq_len, d_model)
 
     output = decoder(
@@ -111,14 +108,9 @@ def test_decoder_forward_pass_shapes(decoder):
 def test_patched_decoder_forward_pass(patched_decoder):
     batch_size, dec_seq_len = 2, 8
     d_model = patched_decoder.config.d_model
-    feature_size = patched_decoder.config.feature_size
     patch_size = patched_decoder.config.value_embedding_config.kwargs["patch_size"]
 
-    decoder_inputs = torch.randn(batch_size, dec_seq_len, d_model)
-    hidden_states = patched_decoder.value_embedding(decoder_inputs)
-
-    # Check that the sequence length was correctly patched
-    assert hidden_states.shape[1] == dec_seq_len // patch_size
+    hidden_states = torch.randn(batch_size, dec_seq_len // patch_size, d_model)
 
     output = patched_decoder(hidden_states=hidden_states, return_dict=True)
     assert output.last_hidden_state.shape == (
@@ -131,10 +123,8 @@ def test_patched_decoder_forward_pass(patched_decoder):
 def test_decoder_kv_caching_mechanism(decoder):
     batch_size, history_len, enc_seq_len = 2, 8, 10
     d_model = decoder.config.d_model
-    feature_size = decoder.config.feature_size
 
-    history_inputs = torch.randn(batch_size, history_len, d_model)
-    history_embeds = decoder.value_embedding(history_inputs)
+    history_embeds = torch.randn(batch_size, history_len, d_model)
     encoder_hidden_states = torch.randn(batch_size, enc_seq_len, d_model)
 
     # --- Step 1: Process initial sequence ---
@@ -147,8 +137,7 @@ def test_decoder_kv_caching_mechanism(decoder):
     assert output_with_cache.past_key_values is not None
 
     # --- Step 2: Process a single new token ---
-    new_token_input = torch.randn(batch_size, 1, d_model)
-    new_token_embed = decoder.value_embedding(new_token_input)
+    new_token_embed = torch.randn(batch_size, 1, d_model)
 
     output_next_step = decoder(
         hidden_states=new_token_embed,
@@ -164,4 +153,22 @@ def test_decoder_kv_caching_mechanism(decoder):
 
 
 def test_decoder_output_flags(decoder):
-    batch_s
+    batch_size, dec_seq_len = 2, 8
+    d_model = decoder.config.d_model
+    hidden_states = torch.randn(batch_size, dec_seq_len, d_model)
+
+    # Test with flags enabled
+    output_full = decoder(
+        hidden_states=hidden_states,
+        output_attentions=True,
+        output_hidden_states=True,
+        return_dict=True,
+    )
+    assert output_full.attentions is not None
+    assert output_full.hidden_states is not None
+    assert len(output_full.hidden_states) == len(decoder.layers) + 1
+
+    # Test with flags disabled
+    output_simple = decoder(hidden_states=hidden_states, return_dict=True)
+    assert output_simple.attentions is None
+    assert output_simple.hidden_states is None
