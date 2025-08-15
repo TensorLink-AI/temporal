@@ -40,26 +40,17 @@ forecast = model.generate(context, prediction_length=24)
 
 print(forecast.shape)  # torch.Size([1, 24, 1])
 ```
-✨ Key Features
-Configuration-Driven: Design complex models with simple, readable configurations. No more boilerplate code.
+## ✨ Key Features
+* **Configuration-Driven:** Design complex models with simple, readable configurations. No more boilerplate code.
+* **Modular and Extensible:** Swap out components like attention mechanisms, normalization layers, and output heads with ease. Add your own custom components with a single decorator.
+* **State-of-the-Art Components:** `temporal` comes with a rich set of pre-built components, including:
+    * **Advanced Attention Mechanisms:** `FlashAttention`, `LSEAttention`, `DifferentialAttention`, and more.
+    * **Probabilistic Forecasting:** A variety of output heads for modeling uncertainty, including `GaussianHead`, `QuantileRegressionOutputHead`, and `MixtureOutputHead`.
+    * **Patch-Based Modeling:** First-class support for patch-based time series modeling for improved efficiency and performance.
+* **Hugging Face Compatible:** Seamlessly integrate your models with the Hugging Face ecosystem for training, sharing, and deployment.
 
-Modular and Extensible: Swap out components like attention mechanisms, normalization layers, and output heads with ease. Add your own custom components with a single decorator.
-
-State-of-the-Art Components: temporal comes with a rich set of pre-built components, including:
-
-Advanced Attention Mechanisms: FlashAttention, LSEAttention, DifferentialAttention, and more.
-
-Probabilistic Forecasting: A variety of output heads for modeling uncertainty, including GaussianHead, QuantileRegressionOutputHead, and MixtureOutputHead.
-
-Patch-Based Modeling: First-class support for patch-based time series modeling for improved efficiency and performance.
-
-Hugging Face Compatible: Seamlessly integrate your models with the Hugging Face ecosystem for training, sharing, and deployment.
-
-📚 Learn More
-Tutorial: A detailed guide to building and training your first model.
-
-Core Concepts: Understand the "magic" behind temporal.
-
-Transformer Capabilities: A deep dive into the advanced features of the Transformer module.
-
-Extending temporal: Learn how to add your own custom components.
+## 📚 Learn More
+* **[Tutorial](./docs/getting-started.md):** A detailed guide to building and training your first model.
+* **[Core Concepts](./docs/core-concepts.md):** Understand the "magic" behind `temporal`.
+* **[Transformer Capabilities](./docs/transformer-capabilities.md):** A deep dive into the advanced features of the Transformer module.
+* **[Extending `temporal`](./docs/extending-temporal.md):** Learn how to add your own custom components.
