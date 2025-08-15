@@ -4,7 +4,10 @@ import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
-from temporal.configs.transformer_block_config import TransformerBlockConfig
+from temporal.configs.transformer_block_config import (
+    EncoderBlockConfig,
+    DecoderBlockConfig,
+)
 from temporal.configs.embedding_config import EmbeddingConfig
 
 # --- Fixtures ---
@@ -15,13 +18,12 @@ def encoder_decoder_config():
     """Provides a config for a standard encoder-decoder model."""
     return TransformerTimeSeriesConfig(
         d_model=16,
-        num_heads=2,
         feature_size=3,
         prediction_length=5,
         context_length=10,
         architecture={"layout": "encoder-decoder"},
-        encoder_blocks=[TransformerBlockConfig(block_type="default_encoder")],
-        decoder_blocks=[TransformerBlockConfig(block_type="default_decoder")],
+        encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
+        decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
         loss_config={"type": "mse"},
     )
 
@@ -41,12 +43,11 @@ def decoder_only_config():
     """Provides a config for a decoder-only model."""
     return TransformerTimeSeriesConfig(
         d_model=16,
-        num_heads=2,
         feature_size=3,
         prediction_length=5,
         context_length=10,
         architecture={"layout": "decoder"},
-        decoder_blocks=[TransformerBlockConfig(block_type="default_decoder")],
+        decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
         loss_config={"type": "mse"},
     )
 

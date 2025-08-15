@@ -5,8 +5,8 @@ import torch
 from temporal.modules.decoders.decoders import TimeSeriesTransformerDecoder
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
-from temporal.configs.transformer_block_config import TransformerBlockConfig
-from temporal.configs.attention_config import AttentionConfig
+from temporal.configs.transformer_block_config import DecoderBlockConfig
+from temporal.configs.attention_config import FullAttentionConfig
 from temporal.configs.feedforward_config import FeedForwardConfig
 from temporal.configs.embedding_config import EmbeddingConfig
 from temporal.configs.normalization_config import NormalizationConfig
@@ -20,14 +20,13 @@ def decoder_config():
     """Provides a base TransformerTimeSeriesConfig for a decoder."""
     return TransformerTimeSeriesConfig(
         d_model=16,
-        num_heads=2,
         feature_size=4,
         prediction_length=5,
         context_length=10,
         decoder_blocks=[
-            TransformerBlockConfig(
-                block_type="default_decoder",
-                attention_config=AttentionConfig(attention_type="full", num_heads=2),
+            DecoderBlockConfig(
+                type="default_decoder",
+                attention_config=FullAttentionConfig(type="full", num_heads=2),
                 ffn_config=FeedForwardConfig(type="standard", intermediate_size=32),
             ),
         ],
@@ -35,7 +34,7 @@ def decoder_config():
         positional_embedding_config=EmbeddingConfig(
             type="sinusoidal", kwargs={"max_seq_len": 100}
         ),
-        norm_config=NormalizationConfig(norm_type="layer_norm"),
+        norm_config=NormalizationConfig(type="layer_norm"),
     )
 
 

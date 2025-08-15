@@ -5,7 +5,10 @@ import torch.nn as nn
 from temporal.models.builder import build_time_series_transformer
 from temporal.models.base_model import BaseTemporalModel
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
-from temporal.configs.transformer_block_config import TransformerBlockConfig
+from temporal.configs.transformer_block_config import (
+    EncoderBlockConfig,
+    DecoderBlockConfig,
+)
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
@@ -20,13 +23,14 @@ def valid_encoder_decoder_config():
     """Provides a valid configuration for a standard encoder-decoder model."""
     return TransformerTimeSeriesConfig(
         d_model=16,
-        num_heads=2,
         feature_size=3,
         prediction_length=5,
         context_length=10,
-        architecture=ArchitectureConfig(layout="encoder-decoder"),
-        encoder_blocks=[TransformerBlockConfig(block_type="default_encoder")],
-        decoder_blocks=[TransformerBlockConfig(block_type="default_decoder")],
+        architecture=ArchitectureConfig(
+            type="transformer_architecture", layout="encoder-decoder"
+        ),
+        encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
+        decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
         loss_config=LossConfig(type="mse"),
     )
 
@@ -36,12 +40,11 @@ def valid_decoder_only_config():
     """Provides a valid configuration for a decoder-only model."""
     return TransformerTimeSeriesConfig(
         d_model=16,
-        num_heads=2,
         feature_size=3,
         prediction_length=5,
         context_length=10,
-        architecture=ArchitectureConfig(layout="decoder"),
-        decoder_blocks=[TransformerBlockConfig(block_type="default_decoder")],
+        architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
+        decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
         loss_config=LossConfig(type="mse"),
     )
 
@@ -82,13 +85,14 @@ def test_build_raises_for_missing_encoder_blocks():
     """
     bad_config = TransformerTimeSeriesConfig(
         d_model=16,
-        num_heads=2,
         feature_size=3,
         prediction_length=5,
         context_length=10,
-        architecture=ArchitectureConfig(layout="encoder-decoder"),
+        architecture=ArchitectureConfig(
+            type="transformer_architecture", layout="encoder-decoder"
+        ),
         # Missing encoder_blocks
-        decoder_blocks=[TransformerBlockConfig(block_type="default_decoder")],
+        decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
         loss_config=LossConfig(type="mse"),
     )
     with pytest.raises(
@@ -105,11 +109,10 @@ def test_build_raises_for_missing_decoder_blocks():
     """
     bad_config = TransformerTimeSeriesConfig(
         d_model=16,
-        num_heads=2,
         feature_size=3,
         prediction_length=5,
         context_length=10,
-        architecture=ArchitectureConfig(layout="decoder"),
+        architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
         # Missing decoder_blocks
         loss_config=LossConfig(type="mse"),
     )
@@ -126,7 +129,6 @@ def test_build_raises_for_missing_loss_config():
     """
     bad_config = TransformerTimeSeriesConfig(
         d_model=16,
-        num_heads=2,
         feature_size=3,
         prediction_length=5,
         context_length=10,
@@ -159,7 +161,7 @@ def test_build_with_custom_registered_components(valid_decoder_only_config):
     # Update the config to use the custom block
     custom_config = valid_decoder_only_config.copy(deep=True)
     custom_config.decoder_blocks = [
-        TransformerBlockConfig(block_type="custom_test_block")
+        DecoderBlockConfig(type="custom_test_block")
     ]
 
     # This should build without errors
