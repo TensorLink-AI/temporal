@@ -7,7 +7,7 @@ from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.transformer_block_config import DecoderBlockConfig
 from temporal.configs.attention_config import FullAttentionConfig
-from temporal.configs.feedforward_config import FeedForwardConfig
+from temporal.configs.feedforward_config import StandardFeedForwardConfig
 from temporal.configs.embedding_config import EmbeddingConfig
 from temporal.configs.normalization_config import NormalizationConfig
 
@@ -27,7 +27,9 @@ def decoder_config():
             DecoderBlockConfig(
                 type="default_decoder",
                 attention_config=FullAttentionConfig(type="full", num_heads=2),
-                ffn_config=FeedForwardConfig(type="standard", intermediate_size=32),
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
             ),
         ],
         value_embedding_config=EmbeddingConfig(type="value"),

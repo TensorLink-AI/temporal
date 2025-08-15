@@ -9,6 +9,7 @@ from temporal.configs.transformer_block_config import (
     DecoderBlockConfig,
 )
 from temporal.configs.embedding_config import EmbeddingConfig
+from temporal.configs.feedforward_config import StandardFeedForwardConfig
 
 # --- Fixtures ---
 
@@ -22,8 +23,22 @@ def encoder_decoder_config():
         prediction_length=5,
         context_length=10,
         architecture={"layout": "encoder-decoder"},
-        encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
-        decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
+        encoder_blocks=[
+            EncoderBlockConfig(
+                type="default_encoder",
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
+            )
+        ],
+        decoder_blocks=[
+            DecoderBlockConfig(
+                type="default_decoder",
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
+            )
+        ],
         loss_config={"type": "mse"},
     )
 
@@ -47,7 +62,14 @@ def decoder_only_config():
         prediction_length=5,
         context_length=10,
         architecture={"layout": "decoder"},
-        decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
+        decoder_blocks=[
+            DecoderBlockConfig(
+                type="default_decoder",
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
+            )
+        ],
         loss_config={"type": "mse"},
     )
 

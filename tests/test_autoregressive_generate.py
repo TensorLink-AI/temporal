@@ -9,6 +9,7 @@ from temporal.configs.transformer_block_config import (
     DecoderBlockConfig,
 )
 from temporal.configs.embedding_config import EmbeddingConfig
+from temporal.configs.feedforward_config import StandardFeedForwardConfig
 
 # --- Fixtures ---
 
@@ -22,8 +23,22 @@ def patched_model_config():
         prediction_length=6,  # Multiple of patch size
         context_length=10,
         architecture={"layout": "encoder-decoder"},
-        encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
-        decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
+        encoder_blocks=[
+            EncoderBlockConfig(
+                type="default_encoder",
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
+            )
+        ],
+        decoder_blocks=[
+            DecoderBlockConfig(
+                type="default_decoder",
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
+            )
+        ],
         value_embedding_config=EmbeddingConfig(type="patch", kwargs={"patch_size": 2}),
         loss_config={"type": "mse"},
     )

@@ -13,6 +13,7 @@ from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.loss_config import LossConfig
+from temporal.configs.output_head_config import OutputHeadConfig
 
 
 # --- Fixtures ---
@@ -32,6 +33,7 @@ def valid_encoder_decoder_config():
         encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
         decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
         loss_config=LossConfig(type="mse"),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 
@@ -46,6 +48,7 @@ def valid_decoder_only_config():
         architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
         decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
         loss_config=LossConfig(type="mse"),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 
@@ -94,6 +97,7 @@ def test_build_raises_for_missing_encoder_blocks():
         # Missing encoder_blocks
         decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
         loss_config=LossConfig(type="mse"),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     with pytest.raises(
         ValueError,
@@ -115,6 +119,7 @@ def test_build_raises_for_missing_decoder_blocks():
         architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
         # Missing decoder_blocks
         loss_config=LossConfig(type="mse"),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     with pytest.raises(
         ValueError,
@@ -132,6 +137,10 @@ def test_build_raises_for_missing_loss_config():
         feature_size=3,
         prediction_length=5,
         context_length=10,
+        architecture=ArchitectureConfig(
+            type="transformer_architecture", layout="encoder-decoder"
+        ),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     # Manually remove the default loss_config
     bad_config.loss_config = None
@@ -165,5 +174,5 @@ def test_build_with_custom_registered_components(valid_decoder_only_config):
     ]
 
     # This should build without errors
-    model = build_time_series_transformer(custom_config)
+    model = build_time_series_transformer(custom_.config)
     assert isinstance(model.decoder.layers[0], CustomBlock)
