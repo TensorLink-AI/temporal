@@ -8,6 +8,7 @@ from temporal.modules.attentions.diff_attention import DifferentialAttention
 
 # --- Fixtures ---
 
+
 @pytest.fixture
 def attention_config():
     """Provides a base configuration dictionary for attention modules."""
@@ -15,6 +16,7 @@ def attention_config():
         "d_model": 32,
         "n_heads": 4,
     }
+
 
 @pytest.fixture
 def sample_tensors():
@@ -28,7 +30,9 @@ def sample_tensors():
     attention_mask[:, :, :, -2:] = -torch.finfo(torch.float32).min
     return hidden_states, attention_mask
 
+
 # --- FullAttention Tests ---
+
 
 def test_full_attention_init(attention_config):
     """Tests the initialization of the FullAttention module."""
@@ -37,14 +41,16 @@ def test_full_attention_init(attention_config):
     assert attn.n_heads == attention_config["n_heads"]
     assert attn.head_dim == attention_config["d_model"] // attention_config["n_heads"]
 
+
 def test_full_attention_forward_pass(attention_config, sample_tensors):
     """Tests the forward pass of FullAttention, checking output shape."""
     hidden_states, _ = sample_tensors
     attn = FullAttention(**attention_config)
-    output, attn_probs = attn(hidden_states)
+    output, attn_probs, past_key_value = attn(hidden_states)
 
     assert output.shape == hidden_states.shape
     assert attn_probs is None  # output_attentions is False by default
+
 
 def test_full_attention_with_mask_and_kv_cache(attention_config, sample_tensors):
     """Tests FullAttention with an attention mask and KV caching."""
@@ -54,23 +60,24 @@ def test_full_attention_with_mask_and_kv_cache(attention_config, sample_tensors)
 
     # First pass with full sequence
     output1, _, past_key_value = attn(
-        hidden_states,
-        attention_mask=attention_mask,
-        use_cache=True
+        hidden_states, attention_mask=attention_mask, use_cache=True
     )
     assert past_key_value is not None
-    assert past_key_value[0].shape == (hidden_states.shape[0], attn.n_heads, hidden_states.shape[1], attn.head_dim)
+    assert past_key_value[0].shape == (
+        hidden_states.shape[0],
+        attn.n_heads,
+        hidden_states.shape[1],
+        attn.head_dim,
+    )
 
     # Second pass with a single new token and the cache
     next_token = torch.randn(hidden_states.shape[0], 1, hidden_states.shape[2])
-    output2, _, _ = attn(
-        next_token,
-        past_key_value=past_key_value,
-        use_cache=True
-    )
+    output2, _, _ = attn(next_token, past_key_value=past_key_value, use_cache=True)
     assert output2.shape == next_token.shape
 
+
 # --- DestationaryAttention Tests ---
+
 
 def test_destationary_attention_init(attention_config):
     """Tests the initialization of the DestationaryAttention module."""
@@ -78,12 +85,14 @@ def test_destationary_attention_init(attention_config):
     assert attn.tau.shape == (attn.n_heads, 1, 1)
     assert attn.delta.shape == (attn.n_heads, 1, 1)
 
+
 def test_destationary_attention_forward_pass(attention_config, sample_tensors):
     """Tests the forward pass of DestationaryAttention."""
     hidden_states, _ = sample_tensors
     attn = DestationaryAttention(**attention_config)
     output, _ = attn(hidden_states)
     assert output.shape == hidden_states.shape
+
 
 def test_destationary_logic():
     """
@@ -111,7 +120,7 @@ def test_destationary_logic():
     # Expected weights = [e*e^1, e*e^2, e*e^3, e*e^4] -> [e^2, e^3, e^4, e^5]
     # The values should be identical across the sequence length dimension (dim -1)
     # and then normalized by the sum along that dimension.
-    expected_cumsum = torch.tensor([1., 2., 3., 4.]).view(1, 1, -1)
+    expected_cumsum = torch.tensor([1.0, 2.0, 3.0, 4.0]).view(1, 1, -1)
     expected_unnorm = torch.exp(torch.ones(seq_len, seq_len) + expected_cumsum)
     expected_normalized = expected_unnorm / expected_unnorm.sum(dim=-1, keepdim=True)
 
@@ -121,6 +130,7 @@ def test_destationary_logic():
 
 # --- DifferentialAttention Tests ---
 
+
 @pytest.fixture
 def diff_attention_config(attention_config):
     """Provides a configuration for DifferentialAttention."""
@@ -128,11 +138,16 @@ def diff_attention_config(attention_config):
     config["num_kv_heads"] = 2
     return config
 
+
 def test_diff_attention_init(diff_attention_config):
     """Tests the initialization of DifferentialAttention."""
     attn = DifferentialAttention(**diff_attention_config)
     assert attn.num_kv_heads == 2
-    assert attn.n_rep == diff_attention_config["n_heads"] // diff_attention_config["num_kv_heads"]
+    assert (
+        attn.n_rep
+        == diff_attention_config["n_heads"] // diff_attention_config["num_kv_heads"]
+    )
+
 
 def test_diff_attention_forward_pass(diff_attention_config, sample_tensors):
     """Tests the forward pass of DifferentialAttention."""
