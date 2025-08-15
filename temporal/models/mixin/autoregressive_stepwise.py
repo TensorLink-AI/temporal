@@ -18,7 +18,7 @@ class AutoregressiveStepwiseMixin:
     def _get_scalar_value(self, value: Union[torch.Tensor, float, int, Any], name: str) -> Optional[float]:
         """ Safely converts a potential tensor value to a float scalar. """
         if value is None:
-            return None
+            return 0.0
         if torch.is_tensor(value):
             temp_value = value
             while temp_value.numel() > 1:

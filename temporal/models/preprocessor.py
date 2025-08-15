@@ -199,6 +199,7 @@ class InputPreprocessor(nn.Module):
             batch_size, seq_len, d_model = patch_embeds.shape
 
             pos_embed = self.positional_embedding(
+                x=patch_embeds,
                 batch_size=batch_size,
                 seq_len=seq_len,
                 past_key_values_length=past_key_values_length

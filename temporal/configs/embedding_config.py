@@ -341,7 +341,10 @@ class WaveletPositionalEmbeddingConfig(EmbeddingConfig):
 
 
 # Helper function for polymorphic creation
-def embedding_config_from_dict(data: Dict[str, Any]) -> EmbeddingConfig:
+def embedding_config_from_dict(data: Dict[str, Any], **kwargs) -> EmbeddingConfig:
+    if 'feature_size' in kwargs:
+        data['feature_size'] = kwargs['feature_size']
+        
     embedding_type = data.get("type", "value") # Default to 'value' if type not specified
     # Map config type names to registry keys if they differ (e.g., "value" -> "value_embedding")
     type_to_registry_key = {

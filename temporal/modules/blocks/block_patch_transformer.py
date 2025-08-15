@@ -8,7 +8,7 @@ from temporal.registry.core import register_module
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.models.block_builder import BlockBuilder
 from temporal.models.outputs import DecoderLayerOutput
-from temporal.configs.transformer_block_config import TransformerBlockConfig
+from temporal.configs.transformer_block_config import TransformerBlockConfig, transformer_block_config_from_dict
 
 @register_module("block", "patch_transform_block")
 class PatchTransformBlock(nn.Module):
@@ -63,14 +63,15 @@ class PatchTransformBlock(nn.Module):
 
         # --- Inner Layer Construction ---
         temp_builder = ModuleBuilder(temp_config)
-        inner_layer_cfg = TransformerBlockConfig(
-            type=wrapped_block_type, # FIX: Use 'type' instead of 'block_type' for consistency
-            attention_config=attention_config or {"type": "full"},
-            ffn_config=ffn_config or {"type": "standard", "intermediate_size": inner_dim * 4},
-            kwargs=kwargs,
-        )
+        inner_layer_cfg_dict = {
+            "type": wrapped_block_type,
+            "attention_config": attention_config or {"type": "full"},
+            "ffn_config": ffn_config or {"type": "standard", "intermediate_size": inner_dim * 4},
+            "kwargs": kwargs,
+        }
+        inner_layer_cfg = transformer_block_config_from_dict(inner_layer_cfg_dict)
         # Assuming BlockBuilder is not needed and we can build directly
-        self.transformer_layer = temp_builder.build_block(inner_layer_cfg)
+        self.transformer_layer = temp_builder.module_builder._build("block", inner_layer_cfg)
 
     def forward(
         self,

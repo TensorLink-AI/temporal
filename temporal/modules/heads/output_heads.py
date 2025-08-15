@@ -79,7 +79,7 @@ class GaussianHead(BaseOutputHead):
         super().__init__()
         self.feature_size = output_size
         # Project to 2 parameters (mean, log_std) for each feature.
-        self.proj = nn.Linear(hidden_size, self.feature_size )
+        self.proj = nn.Linear(hidden_size, self.feature_size * 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -94,7 +94,7 @@ class GaussianHead(BaseOutputHead):
         """
         return self.proj(x)
 
-    def predict(self, x: torch.Tensor) -> torch.Tensor:
+    def predict(self, x: torch.Tensor, method: str = "mean") -> torch.Tensor:
         """
         Sample from the predicted Gaussian distribution during generation.
 
@@ -105,6 +105,9 @@ class GaussianHead(BaseOutputHead):
             Sampled features: [B, 1, F]
         """
         mu, log_sigma = x.chunk(2, dim=-1)
+        if method == "mean":
+            return mu
+        
         sigma = torch.exp(log_sigma)
         eps = torch.randn_like(mu)
         return mu + eps * sigma
@@ -177,6 +180,17 @@ class QuantileRegressionOutputHead(BaseOutputHead):
             return projected_output.view(*projected_output.shape[:-1], self.feature_size, self.num_quantiles)
         else:
             return projected_output
+
+    def predict(self, x: torch.Tensor, method: str = "median") -> torch.Tensor:
+        """
+        Predicts the median quantile.
+        """
+        if method != "median":
+            raise ValueError("QuantileRegressionOutputHead only supports 'median' prediction.")
+        
+        # Assume quantiles are sorted
+        median_idx = self.num_quantiles // 2
+        return x[..., median_idx]
 
     def get_loss_fn(self) -> Optional[Callable]:
         """Returns None, as loss is determined by the main training config."""
@@ -272,11 +286,7 @@ class DistPredHead(BaseOutputHead):
             else:
                 raise ValueError(f"Unsupported method string: {method!r}")
         elif isinstance(method, float):
-            qs = getattr(self, "quantiles", None) or getattr(self.config, "quantiles", None)
-            if qs is None or len(qs) != K:
-                raise ValueError(f"No valid quantiles list of length {K} found.")
-            qt = torch.tensor(qs, device=x.device)
-            idx = (qt - method).abs().argmin().item()
+            idx = int(method * K)
         elif isinstance(method, int):
             idx = method if method >= 0 else K + method
             if not (0 <= idx < K):

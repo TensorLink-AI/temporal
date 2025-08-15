@@ -8,9 +8,9 @@ class MultiStepMixin:
     """
 
     @torch.no_grad()
-    def generate_multistep(
+    def generate(
         self,
-        input_ids: torch.Tensor,
+        encoder_inputs: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
@@ -18,16 +18,16 @@ class MultiStepMixin:
         Generates a multi-step forecast in a single pass.
 
         This method supports both raw feature inputs and pre-processed embeddings.
-        - If `input_ids` has 3 dimensions and the last dimension matches `config.feature_size`,
+        - If `encoder_inputs` has 3 dimensions and the last dimension matches `config.feature_size`,
           it is treated as raw features and passed through the `preprocessor`.
         - Otherwise, it is assumed to be pre-processed embeddings.
         """
         self.eval()
 
         # 1) Preprocess inputs if they are raw features
-        if hasattr(self, "preprocessor") and input_ids.ndim == 3 and input_ids.shape[-1] == self.config.feature_size:
+        if hasattr(self, "preprocessor") and encoder_inputs.ndim == 3 and encoder_inputs.shape[-1] == self.config.feature_size:
             proc = self.preprocessor.process(
-                input_values=input_ids,
+                input_values=encoder_inputs,
                 attention_mask=attention_mask,
                 is_causal=False,
                 validate_shapes=False,
@@ -36,7 +36,7 @@ class MultiStepMixin:
             processed_inputs = proc["hidden_states"]
             attention_mask = proc["attention_mask"]
         else:
-            processed_inputs = input_ids  # Assumed to be embeddings
+            processed_inputs = encoder_inputs  # Assumed to be embeddings
 
         # 2) Pass inputs through the main model forward pass
         # This is simpler than the autoregressive case as we don't need a decoder loop.
@@ -48,7 +48,7 @@ class MultiStepMixin:
         )
 
         # 3) Project the final hidden states to the prediction space
-        last_hidden_state = outputs.last_hidden_state
+        last_hidden_state = outputs.logits
 
         if not hasattr(self, 'output_heads'):
             raise AttributeError("Model is missing output_heads required to project hidden states to features.")

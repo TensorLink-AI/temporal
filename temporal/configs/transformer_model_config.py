@@ -37,7 +37,7 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     positional_embedding_config: EmbeddingConfig = field(default_factory=lambda: embedding_config_from_dict({"type": "sinusoidal"}))
     encoder_blocks: Optional[List[TransformerBlockConfig]] = field(default=None)
     decoder_blocks: Optional[List[TransformerBlockConfig]] = field(default=None)
-    output_head_config: OutputHeadConfig = field(default_factory=lambda: output_head_config_from_dict({"type": "linear"}))
+    output_head_config: OutputHeadConfig = field(default_factory=lambda: output_head_config_from_dict({"type": "linear", "output_size": 1}))
     
     layer_norm_config: NormalizationConfig = field(default_factory=lambda: normalization_config_from_dict({"type": "layer"}))
     instance_norm_config: Optional[NormalizationConfig] = field(default=None)
@@ -155,7 +155,6 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if "architecture" in data and isinstance(data["architecture"], dict):
             data["architecture"] = TransformerArchitectureConfig.from_dict(data["architecture"])
         if "value_embedding_config" in data and isinstance(data["value_embedding_config"], dict):
-            #data["value_embedding_config"] = embedding_config_from_dict(data["value_embedding_config"])
             feature_size = data.get("feature_size") or data.get("input_dim")
             data["value_embedding_config"] = embedding_config_from_dict(
                 data["value_embedding_config"],

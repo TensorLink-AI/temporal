@@ -18,20 +18,6 @@ Shaw relative, Fourier, Time2Vec, ALiBi, bucketed relative, convolutional, time-
 patch, global, and a stacked wrapper.
 """
 
-import torch
-import torch.nn as nn
-import numpy as np
-import inspect
-import math
-from typing import Optional, Tuple, List, Dict, Union, Sequence, Any, Callable
-
-from temporal.registry.core import register_module, resolve
-from torch.fft import rfft, irfft
-import pywt
-"""
-Module providing a variety of time-series embedding classes and helper functions.
-"""
-
 # --- RoPE Helper Functions ---
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     x1 = x[..., : x.shape[-1] // 2]
@@ -117,7 +103,7 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         pe[:, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
         """
         Adds positional encoding to the input tensor.
         Args:
@@ -195,22 +181,24 @@ class RotaryPositionalEmbedding(BaseEmbedding):
         self.register_buffer("sin_cached", emb.sin(), persistent=False)
         self.max_seq_len_cached = seq_len
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, seq_len: int = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Infers seq_len from input and returns the cos/sin caches.
         Args:
-            x: A dummy tensor of shape [B, L, D] to infer seq_len and device.
+            x: A dummy tensor of shape [B, H, L, D] to infer device.
+            seq_len: The sequence length.
         Returns:
             Tuple of (cos, sin), each of shape [seq_len, d_model].
         """
-        seq_len = x.shape[1]
+        if seq_len is None:
+            seq_len = x.shape[-2]
         if seq_len > self.max_seq_len_cached or self.cos_cached.device != x.device:
             self._build_cache(max(seq_len, self.max_seq_len_cached))
         
-        cos = self.cos_cached[:seq_len]
-        sin = self.sin_cached[:seq_len]
+        cos = self.cos_cached[:seq_len].to(x.device)
+        sin = self.sin_cached[:seq_len].to(x.device)
         
-        return (x * cos) + (rotate_half(x) * sin)
+        return cos, sin
         
 # --- Other Embedding Implementations (Unchanged) ---
 # Global Embedding

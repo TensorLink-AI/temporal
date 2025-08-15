@@ -205,7 +205,7 @@ class DifferentialAttention(BaseMultiHeadAttention):
                 raise ValueError("`rotary_proj` is not initialized. Pass `use_rope=True` to the constructor.")
             
             kv_seq_len = k.size(-2)
-            cos, sin = self.rotary_proj(v)
+            cos, sin = self.rotary_proj(q, seq_len=kv_seq_len) # Pass q to infer device and seq_len
             
             q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids)
 
