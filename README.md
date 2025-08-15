@@ -1,59 +1,65 @@
-⏳ Temporal: A Modern Time Series Foundation Model Toolkit
-Temporal is a modular, extensible deep learning framework for building next-generation foundation models for time series data. Inspired by Hugging Face’s transformers, Temporal offers a clean, registry-based interface for designing, training, and deploying powerful time series models — with full support for distributional outputs, autoregressive decoding, Monte Carlo dropout ensembles, and custom hybrid attention mechanisms.
+# temporal: The Modern Toolkit for Time Series Forecasting
 
-Whether you're working in finance, energy, healthcare, sensors, or any other temporal domain, Temporal is built to be your go-to foundation for general-purpose time series modeling.
+**Build, train, and deploy state-of-the-art deep learning models for time series forecasting with unparalleled flexibility and ease.**
 
-✨ Key Features
-🧱 Block-based Transformer Architecture
-Build encoder-decoder or decoder-only models with modular blocks composed of attention, FFN, normalization, and hybrid structures.
+`temporal` is a powerful and extensible Python framework designed to make cutting-edge time series forecasting accessible. It launches with a powerful, state-of-the-art Transformer toolkit, with plans to incorporate other model architectures in the near future. Whether you're a researcher experimenting with novel architectures or a practitioner building robust forecasting solutions, `temporal` provides the tools you need to get the job done.
 
-🧠 Registry-First Modular Design
-Every component — attention, block, head, embedding, loss — is registered and dynamically resolved from config.
+## 🚀 Getting Started
 
-📐 Hybrid Multi-Head Attention with Custom Fusion
-Assign different attention types (dot, sparse, wavelet) to each head and fuse with SE, attention, mean, or gated mechanisms.
+It's easy to get started with `temporal`.
 
-🔁 Autoregressive & Multistep Decoding
-Easily switch between .generate(), .generate_multistep(), and .forward() with full support for causal masks and caching.
+### Installation
 
-🎯 Monte Carlo Dropout Ensembles
-Perform stochastic inference at test time by enabling dropout for empirical ensemble sampling and uncertainty quantification.
+```bash
+pip install temporal
+```
+Your First Forecast in 60 Seconds
+```Python
 
-📊 Distributional Output Heads
-Swap in Linear, MultiQuantile, Gaussian, or TDistribution heads and automatically receive the matching loss (e.g., CRPS, NLL, quantile).
-
-🔄 Flexible Output Head Aggregation
-Fuse outputs from multiple output heads using registered aggregation strategies (e.g., mean, head2head, moe, low_rank).
-
-🧪 Fully Configurable via JSON or Code
-Drive your entire model via TransformerTimeSeriesConfig — with structured subconfigs for attention, heads, loss, and architecture.
-
-💾 FromPretrained + Serialization
-Save models, config, and training metadata with .save_pretrained() and reload them with .from_pretrained().
-
-🔨 Example Use Cases
-🔋 Forecasting electricity demand or load balancing
-
-📈 Predicting asset prices or futures spreads
-
-🩺 Modeling patient health data or hospital readmission risk
-
-🛠️ Monitoring sensors in industrial IoT environments
-
-💡 Learning residual signals or latent temporal regimes
-
-🧪 Generating synthetic time series for augmentation
-
-🚀 Get Started
-bash
-Copy
-Edit
-pip install temporal  # or your package name
-python
-Copy
-Edit
+import torch
 from temporal.models import build_time_series_transformer
 from temporal.configs import TransformerTimeSeriesConfig
 
-config = TransformerTimeSeriesConfig(...)
+# 1. Define your model with a simple configuration
+config = TransformerTimeSeriesConfig(
+    feature_size=1,
+    context_length=128,
+    prediction_length=24,
+    d_model=64,
+    encoder_blocks=[{"type": "default_encoder"}],
+    output_head_config={"type": "linear", "output_size": 1},
+)
+
+# 2. Build your model
 model = build_time_series_transformer(config)
+
+# 3. Make a forecast!
+# (B, T, F) -> (1, 128, 1)
+context = torch.randn(1, 128, 1)
+forecast = model.generate(context, prediction_length=24)
+
+print(forecast.shape)  # torch.Size([1, 24, 1])
+```
+✨ Key Features
+Configuration-Driven: Design complex models with simple, readable configurations. No more boilerplate code.
+
+Modular and Extensible: Swap out components like attention mechanisms, normalization layers, and output heads with ease. Add your own custom components with a single decorator.
+
+State-of-the-Art Components: temporal comes with a rich set of pre-built components, including:
+
+Advanced Attention Mechanisms: FlashAttention, LSEAttention, DifferentialAttention, and more.
+
+Probabilistic Forecasting: A variety of output heads for modeling uncertainty, including GaussianHead, QuantileRegressionOutputHead, and MixtureOutputHead.
+
+Patch-Based Modeling: First-class support for patch-based time series modeling for improved efficiency and performance.
+
+Hugging Face Compatible: Seamlessly integrate your models with the Hugging Face ecosystem for training, sharing, and deployment.
+
+📚 Learn More
+Tutorial: A detailed guide to building and training your first model.
+
+Core Concepts: Understand the "magic" behind temporal.
+
+Transformer Capabilities: A deep dive into the advanced features of the Transformer module.
+
+Extending temporal: Learn how to add your own custom components.
