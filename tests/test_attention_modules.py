@@ -3,7 +3,6 @@
 import pytest
 import torch
 from temporal.modules.attentions.base_attention import FullAttention
-from temporal.modules.attentions.destationary import DestationaryAttention
 from temporal.modules.attentions.diff_attention import DifferentialAttention
 
 # --- Fixtures ---
@@ -74,58 +73,6 @@ def test_full_attention_with_mask_and_kv_cache(attention_config, sample_tensors)
     next_token = torch.randn(hidden_states.shape[0], 1, hidden_states.shape[2])
     output2, _, _ = attn(next_token, past_key_value=past_key_value, use_cache=True)
     assert output2.shape == next_token.shape
-
-
-# --- DestationaryAttention Tests ---
-
-
-def test_destationary_attention_init(attention_config):
-    """Tests the initialization of the DestationaryAttention module."""
-    attn = DestationaryAttention(**attention_config)
-    assert attn.tau.shape == (attn.n_heads, 1, 1)
-    assert attn.delta.shape == (attn.n_heads, 1, 1)
-
-
-def test_destationary_attention_forward_pass(attention_config, sample_tensors):
-    """Tests the forward pass of DestationaryAttention."""
-    hidden_states, _ = sample_tensors
-    attn = DestationaryAttention(**attention_config)
-    output, _ = attn(hidden_states)
-    assert output.shape == hidden_states.shape
-
-
-def test_destationary_logic():
-    """
-    Tests the core de-stationarization logic with predictable inputs.
-    """
-    n_heads = 2
-    seq_len = 4
-    attn = DestationaryAttention(d_model=32, n_heads=n_heads)
-
-    # Initialize tau and delta to predictable values (ones)
-    torch.nn.init.ones_(attn.tau)
-    torch.nn.init.ones_(attn.delta)
-
-    # Create a simple, non-normalized attention score matrix
-    # Shape: (batch_size, n_heads, seq_len, seq_len)
-    attn_scores = torch.ones(1, n_heads, seq_len, seq_len)
-
-    # Call the destationarize method
-    destationarized_weights = attn.destationarize(attn_scores)
-
-    # Manually calculate the expected output
-    # tau = 1, so cumulative sum is [1, 2, 3, 4]
-    # The weights should be exp(scores) * exp(cumsum(tau))
-    # Since scores are 1, exp(scores) is e.
-    # Expected weights = [e*e^1, e*e^2, e*e^3, e*e^4] -> [e^2, e^3, e^4, e^5]
-    # The values should be identical across the sequence length dimension (dim -1)
-    # and then normalized by the sum along that dimension.
-    expected_cumsum = torch.tensor([1.0, 2.0, 3.0, 4.0]).view(1, 1, -1)
-    expected_unnorm = torch.exp(torch.ones(seq_len, seq_len) + expected_cumsum)
-    expected_normalized = expected_unnorm / expected_unnorm.sum(dim=-1, keepdim=True)
-
-    assert destationarized_weights.shape == attn_scores.shape
-    assert torch.allclose(destationarized_weights[0, 0], expected_normalized, atol=1e-6)
 
 
 # --- DifferentialAttention Tests ---

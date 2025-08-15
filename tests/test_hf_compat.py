@@ -5,7 +5,9 @@ import torch
 import os
 import torch.nn as nn
 from temporal.utils.hf_accessors import save_hf, load_hf
-from temporal.hf_compat.config_wrapper import TimeSeriesTransformerConfig
+from temporal.hf_compat.config_wrapper import (
+    HFCompatibleTimeSeriesConfig as TimeSeriesTransformerConfig,
+)
 from temporal.hf_compat.modeling_wrapper import (
     TimeSeriesTransformerModel as HfAdaptedModel,
 )

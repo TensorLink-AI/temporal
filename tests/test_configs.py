@@ -7,7 +7,9 @@ from temporal.configs.transformer_model_config import (
 )
 from temporal.configs.attention_config import AttentionConfig
 from temporal.configs.feedforward_config import FeedForwardConfig
-from temporal.configs.architecture_config import ArchitectureConfig
+from temporal.configs.architecture_config import (
+    TransformerArchitectureConfig as ArchitectureConfig,
+)
 from temporal.configs.transformer_block_config import TransformerBlockConfig
 from temporal.configs.embedding_config import EmbeddingConfig
 from temporal.models.builder import build_time_series_transformer

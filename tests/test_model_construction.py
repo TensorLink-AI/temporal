@@ -6,7 +6,9 @@ from temporal.models.builder import build_time_series_transformer
 from temporal.models.base_model import BaseTemporalModel
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.transformer_block_config import TransformerBlockConfig
-from temporal.configs.architecture_config import ArchitectureConfig
+from temporal.configs.architecture_config import (
+    TransformerArchitectureConfig as ArchitectureConfig,
+)
 from temporal.configs.loss_config import LossConfig
 
 
