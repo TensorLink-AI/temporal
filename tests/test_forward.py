@@ -10,6 +10,10 @@ from temporal.configs.transformer_block_config import (
 )
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
 from temporal.configs.output_head_config import OutputHeadConfig
+from temporal.configs.architecture_config import (
+    TransformerArchitectureConfig as ArchitectureConfig,
+)
+from temporal.configs.loss_config import LossConfig
 
 # --- Fixtures ---
 
@@ -22,7 +26,9 @@ def encoder_decoder_config():
         feature_size=3,
         prediction_length=5,
         context_length=10,
-        architecture={"layout": "encoder-decoder"},
+        architecture=ArchitectureConfig(
+            type="transformer_architecture", layout="encoder-decoder"
+        ),
         encoder_blocks=[
             EncoderBlockConfig(
                 type="default_encoder",
@@ -39,7 +45,7 @@ def encoder_decoder_config():
                 ),
             )
         ],
-        loss_config={"type": "mse"},
+        loss_config=LossConfig(type="mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
@@ -52,7 +58,7 @@ def decoder_only_config():
         feature_size=3,
         prediction_length=5,
         context_length=10,
-        architecture={"layout": "decoder"},
+        architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
         decoder_blocks=[
             DecoderBlockConfig(
                 type="default_decoder",
@@ -61,7 +67,7 @@ def decoder_only_config():
                 ),
             )
         ],
-        loss_config={"type": "mse"},
+        loss_config=LossConfig(type="mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 

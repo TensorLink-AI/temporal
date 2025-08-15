@@ -11,6 +11,10 @@ from temporal.configs.transformer_block_config import (
 from temporal.configs.embedding_config import EmbeddingConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
 from temporal.configs.output_head_config import OutputHeadConfig
+from temporal.configs.architecture_config import (
+    TransformerArchitectureConfig as ArchitectureConfig,
+)
+from temporal.configs.loss_config import LossConfig
 
 # --- Fixtures ---
 
@@ -23,7 +27,9 @@ def patched_model_config():
         feature_size=3,
         prediction_length=6,  # Multiple of patch size
         context_length=10,
-        architecture={"layout": "encoder-decoder"},
+        architecture=ArchitectureConfig(
+            type="transformer_architecture", layout="encoder-decoder"
+        ),
         encoder_blocks=[
             EncoderBlockConfig(
                 type="default_encoder",
@@ -41,7 +47,7 @@ def patched_model_config():
             )
         ],
         value_embedding_config=EmbeddingConfig(type="patch", kwargs={"patch_size": 2}),
-        loss_config={"type": "mse"},
+        loss_config=LossConfig(type="mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 

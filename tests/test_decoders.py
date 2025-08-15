@@ -10,6 +10,10 @@ from temporal.configs.attention_config import FullAttentionConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
 from temporal.configs.embedding_config import EmbeddingConfig
 from temporal.configs.normalization_config import NormalizationConfig
+from temporal.configs.architecture_config import (
+    TransformerArchitectureConfig as ArchitectureConfig,
+)
+from temporal.configs.output_head_config import OutputHeadConfig
 
 
 # --- Fixtures ---
@@ -36,6 +40,10 @@ def decoder_config():
         positional_embedding_config=EmbeddingConfig(
             type="sinusoidal", kwargs={"max_seq_len": 100}
         ),
+        architecture=ArchitectureConfig(
+            type="transformer_architecture", layout="decoder"
+        ),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 
