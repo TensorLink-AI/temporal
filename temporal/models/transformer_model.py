@@ -114,7 +114,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         #  partion this out eventually to make it cleaner
         if self.preprocessor.is_patched:
             patch_size = self.preprocessor.patch_size
-            output_patch_size = self.preprocessor.value_embedding.output_patch_size
+            output_patch_size = getattr(self.preprocessor.value_embedding, 'output_patch_size', patch_size)
             use_mlp = getattr(self.preprocessor.value_embedding, 'use_mlp', False)
             mlp_hidden_size = getattr(self.preprocessor.value_embedding, 'mlp_hidden_size', None) or (patch_size * 2)
             d_model = self.config.d_model
@@ -259,7 +259,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             reconstructed_output = self.output_patch_reconstructor(input_to_heads)
             
             B, T_tok, _ = reconstructed_output.shape
-            output_patch_size = self.preprocessor.value_embedding.output_patch_size
+            output_patch_size = getattr(self.preprocessor.value_embedding, 'output_patch_size', patch_size)
             d_model = self.config.d_model
             input_to_heads = reconstructed_output.view(B, T_tok * output_patch_size, d_model)
 

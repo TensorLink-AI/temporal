@@ -155,7 +155,12 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
         if "architecture" in data and isinstance(data["architecture"], dict):
             data["architecture"] = TransformerArchitectureConfig.from_dict(data["architecture"])
         if "value_embedding_config" in data and isinstance(data["value_embedding_config"], dict):
-            data["value_embedding_config"] = embedding_config_from_dict(data["value_embedding_config"])
+            #data["value_embedding_config"] = embedding_config_from_dict(data["value_embedding_config"])
+            feature_size = data.get("feature_size") or data.get("input_dim")
+            data["value_embedding_config"] = embedding_config_from_dict(
+                data["value_embedding_config"],
+                feature_size=feature_size 
+            )
         if "positional_embedding_config" in data and isinstance(data["positional_embedding_config"], dict):
             data["positional_embedding_config"] = embedding_config_from_dict(data["positional_embedding_config"])
         if "encoder_blocks" in data and isinstance(data["encoder_blocks"], list):
