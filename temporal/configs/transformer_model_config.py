@@ -59,6 +59,10 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     feedforward_config: Optional[Any] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
+        if isinstance(self.loss_config, dict):
+            object.__setattr__(self, "loss_config", loss_config_from_dict(self.loss_config))
+        if isinstance(self.architecture, dict):
+            object.__setattr__(self, "architecture", TransformerArchitectureConfig.from_dict(self.architecture))
         super().__post_init__()
         
         if "input_dim" not in self.__dict__ and hasattr(self, 'feature_size'):
