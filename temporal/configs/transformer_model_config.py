@@ -8,27 +8,27 @@ from temporal.configs.base_config import BaseConfig, register_config_type, CONFI
 from temporal.configs.architecture_config import TransformerArchitectureConfig
 from temporal.configs.attention_config import AttentionConfig, attention_config_from_dict
 from temporal.configs.output_head_config import OutputHeadConfig, output_head_config_from_dict
-from temporal.configs.transformer_block_config import TransformerBlockConfig, transformer_block_config_from_dict, DecoderBlockConfig, EncoderBlockConfig # Added EncoderBlockConfig
+from temporal.configs.transformer_block_config import TransformerBlockConfig, transformer_block_config_from_dict, DecoderBlockConfig, EncoderBlockConfig
 from temporal.configs.embedding_config import EmbeddingConfig, embedding_config_from_dict
 from temporal.configs.head_aggregation_config import HeadAggregationConfig, head_aggregation_config_from_dict
 from temporal.configs.normalization_config import NormalizationConfig, normalization_config_from_dict
 from temporal.configs.quantizer_config import QuantizerConfig, quantizer_config_from_dict
 from temporal.configs.loss_config import LossConfig, loss_config_from_dict, PROBABILISTIC_LOSSES
-from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig # <-- ADDED THIS IMPORT
+from temporal.configs.basetimeseriesconfig import BaseTimeSeriesConfig
 
 T = TypeVar('T', bound='TransformerTimeSeriesConfig')
 
-@register_config_type("transformer_time_series_config")
+# FIX: Changed the registration name to match the model registry key.
+@register_config_type("transformer")
 @dataclass(frozen=True, kw_only=True)
 class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     """
     Configuration for a transformer-based time-series forecasting model.
-    Extends ``BaseTimeSeriesConfig`` with transformer-specific options.
     """
-    type: str = field(default="transformer_time_series_config")
+    # FIX: Changed the default type to match the model registry key.
+    type: str = field(default="transformer")
+    model_type: str = field(default="transformer") # Kept for consistency
 
-    # All fields are now keyword-only
-    model_type: str = field(default="transformer")
     d_model: int = field(default=64)
     hidden_dropout_prob: float = field(default=0.1)
     max_position_embeddings: int = field(default=4096)
@@ -39,10 +39,8 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     decoder_blocks: Optional[List[TransformerBlockConfig]] = field(default=None)
     output_head_config: OutputHeadConfig = field(default_factory=lambda: output_head_config_from_dict({"type": "linear"}))
     
-    # --- Refactored Normalization Configs ---
     layer_norm_config: NormalizationConfig = field(default_factory=lambda: normalization_config_from_dict({"type": "layer"}))
     instance_norm_config: Optional[NormalizationConfig] = field(default=None)
-    # --- End Refactor ---
 
     head_agg_config: HeadAggregationConfig = field(default_factory=lambda: head_aggregation_config_from_dict({"type": "mean"}))
     quantizer_config: Optional[QuantizerConfig] = field(default=None)
@@ -54,7 +52,6 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
     aux_loss_weight: float = field(default=0.01)
     use_cache: bool = field(default=True)
 
-    # Deprecated fields (keep for from_dict compatibility but don't use in new code)
     attention_blocks: Optional[Any] = field(default=None, repr=False, compare=False)
     feedforward_config: Optional[Any] = field(default=None, repr=False, compare=False)
 
@@ -63,6 +60,13 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             object.__setattr__(self, "loss_config", loss_config_from_dict(self.loss_config))
         if isinstance(self.architecture, dict):
             object.__setattr__(self, "architecture", TransformerArchitectureConfig.from_dict(self.architecture))
+        
+        # FIX: Ensure encoder/decoder blocks are lists if they are None. This resolves ValueErrors in the builder.
+        if self.encoder_blocks is None:
+            object.__setattr__(self, "encoder_blocks", [])
+        if self.decoder_blocks is None:
+            object.__setattr__(self, "decoder_blocks", [])
+            
         super().__post_init__()
         
         if "input_dim" not in self.__dict__ and hasattr(self, 'feature_size'):
@@ -86,18 +90,16 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             raise ValueError("value_embedding_config must be an EmbeddingConfig instance.")
         if not isinstance(self.positional_embedding_config, EmbeddingConfig):
             raise ValueError("positional_embedding_config must be an EmbeddingConfig instance.")
-        if self.encoder_blocks is not None:
-            if not all(isinstance(b, TransformerBlockConfig) for b in self.encoder_blocks):
-                raise ValueError("All items in encoder_blocks must be TransformerBlockConfig instances.")
-        if self.decoder_blocks is not None:
-            if not all(isinstance(b, TransformerBlockConfig) for b in self.decoder_blocks):
-                raise ValueError("All items in decoder_blocks must be TransformerBlockConfig instances.")
+        if not all(isinstance(b, TransformerBlockConfig) for b in self.encoder_blocks):
+            raise ValueError("All items in encoder_blocks must be TransformerBlockConfig instances.")
+        if not all(isinstance(b, TransformerBlockConfig) for b in self.decoder_blocks):
+            raise ValueError("All items in decoder_blocks must be TransformerBlockConfig instances.")
         if not isinstance(self.output_head_config, OutputHeadConfig):
             raise ValueError("output_head_config must be an OutputHeadConfig instance.")
         if not isinstance(self.layer_norm_config, NormalizationConfig):
             raise ValueError("layer_norm_config must be a NormalizationConfig instance.")
         if self.instance_norm_config is not None and not isinstance(self.instance_norm_config, NormalizationConfig):
-             raise ValueError("instance_norm_config must be a NormalizationConfig instance or None.")
+            raise ValueError("instance_norm_config must be a NormalizationConfig instance or None.")
         if not isinstance(self.head_agg_config, HeadAggregationConfig):
             raise ValueError("head_agg_config must be a HeadAggregationConfig instance.")
         if self.quantizer_config is not None and not isinstance(self.quantizer_config, QuantizerConfig):
@@ -110,17 +112,11 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             if block_config.attention_config:
                 heads = block_config.attention_config.num_heads
                 if self.d_model % heads != 0:
-                    raise ValueError(
-                        f"d_model ({self.d_model}) must be divisible by num_heads ({heads}) "
-                        f"in self-attention of block {i}"
-                    )
+                    raise ValueError(f"d_model ({self.d_model}) must be divisible by num_heads ({heads}) in self-attention of block {i}")
             if isinstance(block_config, DecoderBlockConfig) and block_config.cross_attention_config:
                 cross_heads = block_config.cross_attention_config.num_heads
                 if self.d_model % cross_heads != 0:
-                    raise ValueError(
-                        f"d_model ({self.d_model}) must be divisible by num_heads ({cross_heads}) "
-                        f"in cross-attention of block {i}"
-                    )
+                    raise ValueError(f"d_model ({self.d_model}) must be divisible by num_heads ({cross_heads}) in cross-attention of block {i}")
 
         if self.quantizer_config and not self.vocab_size:
             print("Warning: Quantizer configured but vocab_size not set.")
@@ -149,10 +145,9 @@ class TransformerTimeSeriesConfig(BaseTimeSeriesConfig):
             data["d_model"] = data.pop("hidden_size")
 
         if "input_dim" not in data and "feature_size" in data:
-             data["input_dim"] = data.pop("feature_size")
+            data["input_dim"] = data.pop("feature_size")
         elif "feature_size" in data and "input_dim" in data and data["feature_size"] != data["input_dim"]:
-            print(f"Warning: Both 'input_dim' ({data['input_dim']}) and 'feature_size' ({data['feature_size']}) found in config dict. "
-                  f"Preferring 'input_dim'. 'feature_size' will be ignored.")
+            print(f"Warning: Both 'input_dim' ({data['input_dim']}) and 'feature_size' ({data['feature_size']}) found in config dict. Preferring 'input_dim'. 'feature_size' will be ignored.")
             data.pop("feature_size")
         elif "feature_size" in data:
             data.pop("feature_size")

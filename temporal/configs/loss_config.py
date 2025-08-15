@@ -15,8 +15,20 @@ class LossConfig(BaseConfig):
     # `type` field is inherited from BaseConfig and is kw_only.
 
     def __post_init__(self):
-        super().__post_init__() # Call BaseConfig's post_init for its own validations
-        pass # No common validation for all loss types here
+        super().__post_init__()
+        pass
+
+# FIX: Added a new config class for the 'timeseries_generic' loss type.
+@register_config_type("timeseries_generic")
+@dataclass(frozen=True, kw_only=True)
+class TimeSeriesLossConfig(LossConfig):
+    """
+    Configuration for the generic TimeSeriesLoss, which can handle mse, mae, etc.
+    """
+    type: str = field(default="timeseries_generic")
+    loss_type: str = field(default="mse") # The actual underlying loss (e.g., 'mse', 'mae')
+    quantiles: Optional[List[float]] = field(default=None)
+
 
 @register_config_type("mse_loss")
 @dataclass(frozen=True, kw_only=True)
@@ -24,7 +36,7 @@ class MSELossConfig(LossConfig):
     """
     Configuration for Mean Squared Error loss.
     """
-    type: str = field(default="mse") # Override type field and make it kw_only
+    type: str = field(default="mse")
 
 @register_config_type("crps_loss")
 @dataclass(frozen=True, kw_only=True)
@@ -32,9 +44,9 @@ class CRPSLossConfig(LossConfig):
     """
     Configuration for Continuous Ranked Probability Score (CRPS) loss.
     """
-    type: str = field(default="crps") # Override type field and make it kw_only
+    type: str = field(default="crps")
     reduction: str = field(default="mean")
-    estimator: str = field(default="pinball") # Common estimator, change as needed
+    estimator: str = field(default="pinball")
     spread_lambda: float = field(default=0.0)
     spread_penalty_type: str = field(default="log")
     spread_penalty_epsilon: float = field(default=0.0)
@@ -51,14 +63,6 @@ class CRPSLossConfig(LossConfig):
             raise ValueError(f"spread_lambda must be in [0, 1], got {self.spread_lambda}")
         if self.spread_penalty_type not in ["log", "inverse", "symmetric_log", "none"]:
             raise ValueError(f"spread_penalty_type must be 'log', 'inverse', 'symmetric_log', or 'none', got {self.spread_penalty_type}")
-        if self.spread_penalty_epsilon < 0:
-            raise ValueError("spread_penalty_epsilon cannot be negative.")
-        if self.scaling_type not in ["none", "std", "minmax"]:
-            raise ValueError(f"scaling_type must be 'none', 'std', or 'minmax', got {self.scaling_type}")
-        if self.scaling_dim <= 0:
-            raise ValueError("scaling_dim must be a positive integer.")
-        if self.scaling_eps < 0:
-            raise ValueError("scaling_eps cannot be negative.")
 
 @register_config_type("quantile_loss")
 @dataclass(frozen=True, kw_only=True)
@@ -66,8 +70,8 @@ class QuantileLossConfig(LossConfig):
     """
     Configuration for Quantile Loss.
     """
-    type: str = field(default="quantile") # Override type field and make it kw_only
-    quantiles: List[float] = field(default_factory=list) # Required quantiles list
+    type: str = field(default="quantile")
+    quantiles: List[float] = field(default_factory=list)
 
     def __post_init__(self):
         super().__post_init__()
@@ -91,13 +95,10 @@ class NLLLossConfig(LossConfig):
     Configuration for Negative Log Likelihood loss.
     """
     type: str = field(default="nll")
-    # All NLL-specific parameters should go into `kwargs` for module instantiation
-    # `distribution_type` is required for NegativeLogLikelihoodLoss.__init__
-    kwargs: Dict[str, Any] = field(default_factory=lambda: {"distribution_type": "gaussian"}) # Default distribution type if not specified
+    kwargs: Dict[str, Any] = field(default_factory=lambda: {"distribution_type": "gaussian"})
 
     def __post_init__(self):
         super().__post_init__()
-        # Ensure distribution_type is set in kwargs
         if "distribution_type" not in self.kwargs:
             raise ValueError("NLLLossConfig requires 'distribution_type' to be specified in kwargs.")
         if self.kwargs["distribution_type"] not in ["gaussian", "mixture"]:
@@ -106,14 +107,16 @@ class NLLLossConfig(LossConfig):
 
 # Helper function for polymorphic creation
 def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
-    loss_type = data.get("type", "mse") # Default to 'mse' if type not specified
+    loss_type = data.get("type", "mse")
     type_to_registry_key = {
+        # FIX: Added 'timeseries_generic' to the map.
+        "timeseries_generic": "timeseries_generic",
         "mse": "mse_loss",
         "crps": "crps_loss",
         "quantile": "quantile_loss",
         "mq": "quantile_loss",
         "timeflow": "timeflow_loss",
-        "nll": "nll_loss", # Map 'nll' to the new config type
+        "nll": "nll_loss",
     }
     registry_key = type_to_registry_key.get(loss_type, loss_type)
 

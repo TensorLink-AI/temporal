@@ -5,6 +5,8 @@ from typing import Optional, Tuple, Dict, Any
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig 
 
+
+
 class InputPreprocessor(nn.Module):
     """
     A module responsible for preprocessing raw inputs for a transformer model.
@@ -45,10 +47,9 @@ class InputPreprocessor(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         self.is_patched = isinstance(self.value_embedding, TimeSeriesPatchEmbedding)
-        self.patch_size = self.value_embedding.patch_size if self.is_patched else 1
-        self.patch_stride = self.value_embedding.stride if self.is_patched else 1 
-        self.embedding_pad_value = getattr(self.value_embedding, 'pad_value', 0.0)
-        print(f"[InputPreprocessor __init__] self.patch_size: {self.patch_size}")
+        # These are now correctly inferred from the embedding layer itself if needed
+        self.patch_size = getattr(self.value_embedding, 'patch_size', 1)
+        self.patch_stride = getattr(self.value_embedding, 'stride', 1)
 
     def process(
         self,
@@ -67,27 +68,19 @@ class InputPreprocessor(nn.Module):
         # --- Apply Instance Normalization if configured ---
         if self.instance_norm is not None:
             input_values = self.instance_norm(input_values, mode='norm', mask=attention_mask)
-
-        batch_size, original_seq_len, num_features = input_values.shape
         
-        if self.is_patched:
-            x = input_values.transpose(1, 2)
-            patches = x.unfold(2, self.patch_size, self.patch_stride)
-            patches = patches.permute(0, 2, 1, 3)
-            B, N, F, P = patches.shape
-            input_for_embedding = patches.reshape(B, N, F * P)
-        else:
-            input_for_embedding = input_values
+        # --- Value Embedding (Handles Patching Internally) ---
+        # FIX: Removed the buggy manual patching logic. The embedding layer now handles this.
+        value_embeds = self.value_embedding(input_values)
+        if verbose: print(f"[Preprocessor] Value embedding shape: {value_embeds.shape}")
 
-        value_embeds = self.value_embedding(input_for_embedding)
-        
         batch_size_embed, seq_len_after_patching, d_model = value_embeds.shape 
         
-        pos_embed = self.positional_embedding(
-            batch_size=batch_size_embed,
-            seq_len=seq_len_after_patching,
-            past_key_values_length=past_key_values_length
-        )
+        # --- Positional Embedding ---
+        # FIX: Pass the value_embeds tensor to positional embedding. This is more robust
+        # for device placement and for embeddings that modify the input tensor directly.
+        pos_embed = self.positional_embedding(x=value_embeds)
+        if verbose: print(f"[Preprocessor] Positional embedding shape: {pos_embed.shape}")
 
         if validate_shapes:
             assert value_embeds.shape == pos_embed.shape, \
@@ -96,7 +89,9 @@ class InputPreprocessor(nn.Module):
         hidden_states = value_embeds + pos_embed
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = self.dropout(hidden_states)
+        if verbose: print(f"[Preprocessor] Final hidden_states shape: {hidden_states.shape}")
 
+        # --- Attention Mask Creation ---
         final_attention_mask = self._prepare_attention_mask(
             attention_mask,
             (batch_size_embed, seq_len_after_patching),
@@ -112,12 +107,6 @@ class InputPreprocessor(nn.Module):
     def denormalize(self, data: torch.Tensor) -> torch.Tensor:
         """
         Reverses the instance normalization if it was applied.
-
-        Args:
-            data (torch.Tensor): The data to be denormalized, typically model logits.
-
-        Returns:
-            torch.Tensor: The denormalized data in the original scale.
         """
         if self.instance_norm is not None:
             return self.instance_norm(data, mode='denorm')
@@ -138,10 +127,16 @@ class InputPreprocessor(nn.Module):
         final_mask = None
         
         if is_causal:
-            final_mask = self._make_causal_mask((bsz, seq_len), inputs_embeds.dtype, device=inputs_embeds.device, past_key_values_length=past_key_values_length)
+            final_mask = self._make_causal_mask(
+                (bsz, seq_len), 
+                inputs_embeds.dtype, 
+                device=inputs_embeds.device, 
+                past_key_values_length=past_key_values_length
+            )
         
         if attention_mask is not None:
             if self.is_patched:
+                # Downsample the attention mask if patching is used
                 patch_mask_bool = attention_mask.unfold(1, self.patch_size, self.patch_stride).any(dim=-1)
                 processed_mask = patch_mask_bool.to(attention_mask.dtype)
             else:
@@ -188,7 +183,6 @@ class InputPreprocessor(nn.Module):
         inverted_mask = (1.0 - expanded_mask).to(dtype)
         
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
-
     def _prepare_decoder_inputs_for_generation(
             self,
             patch_embeds: torch.Tensor,
