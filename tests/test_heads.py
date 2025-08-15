@@ -3,7 +3,7 @@
 import pytest
 import torch
 from temporal.modules.heads.output_heads import (
-    LinearHead,
+    LinearOutputHead,
     GaussianHead,
     QuantileRegressionOutputHead,
     DistPredHead,
