@@ -3,9 +3,10 @@
 import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
-from temporal.configs.transformer_config import TransformerTimeSeriesConfig
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 
 # --- Fixtures ---
+
 
 @pytest.fixture(scope="module")
 def model_config():
@@ -17,25 +18,29 @@ def model_config():
         prediction_length=5,
         context_length=10,
         architecture={"layout": "encoder-decoder"},
-        loss_config={"type": "mse"}
+        loss_config={"type": "mse"},
     )
+
 
 @pytest.fixture(scope="module")
 def model(model_config):
     """Provides a fully built model instance."""
     return build_time_series_transformer(model_config)
 
+
 # --- Test Cases ---
+
 
 def test_model_initialization(model, model_config):
     """
     Tests that the model and its components are initialized correctly.
     """
     assert model.config == model_config
-    assert hasattr(model, 'encoder') and model.encoder is not None
-    assert hasattr(model, 'decoder') and model.decoder is not None
-    assert hasattr(model, 'output_heads') and model.output_heads is not None
-    assert hasattr(model, 'loss_fn') and model.loss_fn is not None
+    assert hasattr(model, "encoder") and model.encoder is not None
+    assert hasattr(model, "decoder") and model.decoder is not None
+    assert hasattr(model, "output_heads") and model.output_heads is not None
+    assert hasattr(model, "loss_fn") and model.loss_fn is not None
+
 
 def test_model_device_placement(model):
     """
@@ -50,6 +55,7 @@ def test_model_device_placement(model):
     # Check that all parameters have been moved to the target device
     for param in model.parameters():
         assert param.device == device
+
 
 def test_enable_dropout_method(model):
     """
@@ -70,24 +76,22 @@ def test_enable_dropout_method(model):
     # Set back to eval mode for other tests
     model.eval()
 
+
 def test_model_output_dataclass():
     """
     Tests the functionality of the TransformerOutput dataclass.
     """
-    from temporal.models.transformer_model import TransformerOutput
-    
-    output = TransformerOutput(
-        logits=torch.randn(2, 5, 3),
-        loss=torch.tensor(0.5)
-    )
-    
+    from temporal.models.outputs import TransformerOutput
+
+    output = TransformerOutput(logits=torch.randn(2, 5, 3), loss=torch.tensor(0.5))
+
     # Test attribute access
     assert output.loss == 0.5
-    
+
     # Test item access
     assert output["loss"] == 0.5
     assert torch.equal(output["logits"], output.logits)
-    
+
     # Test keys method
     assert "logits" in output.keys()
     assert "loss" in output.keys()
