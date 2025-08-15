@@ -133,12 +133,13 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
 # Patch Embedding
 @register_module("embedding", "patch")
 class TimeSeriesPatchEmbedding(BaseEmbedding):
-    def __init__(self, patch_size: int, feature_size: int, d_model: int, stride: Optional[int] = None, pad_value: float = 0.0, use_mlp: bool = False, mlp_hidden_size: Optional[int] = None):
+    def __init__(self, patch_size: int, feature_size: int, d_model: int, stride: Optional[int] = None, pad_value: float = 0.0, use_mlp: bool = False, mlp_hidden_size: Optional[int] = None, output_patch_size: Optional[int] = None):
         super().__init__(d_model)
         self.patch_size = patch_size
         self.stride = stride or patch_size
         self.pad_value = pad_value
         self.flat_size = patch_size * feature_size
+        self.output_patch_size = output_patch_size if output_patch_size is not None else patch_size
         
         if use_mlp:
             H = mlp_hidden_size or d_model
@@ -194,7 +195,7 @@ class RotaryPositionalEmbedding(BaseEmbedding):
         self.register_buffer("sin_cached", emb.sin(), persistent=False)
         self.max_seq_len_cached = seq_len
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Infers seq_len from input and returns the cos/sin caches.
         Args:
@@ -205,7 +206,11 @@ class RotaryPositionalEmbedding(BaseEmbedding):
         seq_len = x.shape[1]
         if seq_len > self.max_seq_len_cached or self.cos_cached.device != x.device:
             self._build_cache(max(seq_len, self.max_seq_len_cached))
-        return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
+        
+        cos = self.cos_cached[:seq_len]
+        sin = self.sin_cached[:seq_len]
+        
+        return (x * cos) + (rotate_half(x) * sin)
         
 # --- Other Embedding Implementations (Unchanged) ---
 # Global Embedding

@@ -65,8 +65,8 @@ class PatchTransformBlock(nn.Module):
         temp_builder = ModuleBuilder(temp_config)
         inner_layer_cfg = TransformerBlockConfig(
             type=wrapped_block_type, # FIX: Use 'type' instead of 'block_type' for consistency
-            attention_config=attention_config,
-            ffn_config=ffn_config,
+            attention_config=attention_config or {"type": "full"},
+            ffn_config=ffn_config or {"type": "standard", "intermediate_size": inner_dim * 4},
             kwargs=kwargs,
         )
         # Assuming BlockBuilder is not needed and we can build directly

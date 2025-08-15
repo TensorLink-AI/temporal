@@ -79,3 +79,19 @@ class BaseTemporalModel(nn.Module):
             NotImplementedError: This method must be implemented by a subclass.
         """
         raise NotImplementedError("Subclasses must implement the generate() method.")
+
+    def save_pretrained(self, save_directory):
+        from temporal.utils.hf_accessors import save_hf
+        save_hf(self, self.config, save_directory)
+
+    @classmethod
+    def from_pretrained(cls, model_name_or_path, **kwargs):
+        from temporal.utils.hf_accessors import load_hf
+        from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+        
+        return load_hf(
+            model_name_or_path,
+            model_cls=cls,
+            config_cls=TransformerTimeSeriesConfig,
+            **kwargs,
+        )

@@ -137,7 +137,7 @@ class AutoregressivePatchMixin:
         attention_mask: Optional[torch.Tensor] = None,
         decoder_attention_mask: Optional[torch.Tensor] = None,
         use_cache: bool = True,
-        decoder_start_token_id: Optional[Any] = None,
+        decoder_start_token_id: Optional[Any] = 0.0,
         eos_token_id: Optional[Any] = None,
         early_stopping: bool = False,
         output_attentions: bool = False,
@@ -180,8 +180,8 @@ class AutoregressivePatchMixin:
         reference_tensor = decoder_inputs if encoder_inputs is None else encoder_inputs
         batch_size, device = reference_tensor.shape[0], reference_tensor.device
 
-        patch = self.preprocessor.value_embedding.output_patch_size
-        num_patches_to_generate = (prediction_length + patch - 1) // patch  # ceil-div
+        patch_size = self.preprocessor.patch_size
+        num_patches_to_generate = (prediction_length + patch_size - 1) // patch_size  # ceil-div
 
         # --- 2. Architectural Path: Prepare context and initial decoder state ---
         if hasattr(self, 'encoder') and self.encoder is not None and encoder_inputs is not None:
@@ -252,10 +252,11 @@ class AutoregressivePatchMixin:
 
         # --- Step 4: Merge generated patches into final predictions ---
         all_generated_patches = torch.cat(generated_patches, dim=1)
+        
         reconstructed_output = self.output_patch_reconstructor(all_generated_patches)
 
         B, T_tok, _ = reconstructed_output.shape
-        output_patch_size = self.preprocessor.value_embedding.output_patch_size
+        output_patch_size = self.preprocessor.patch_size
         d_model = self.config.d_model
         point_predictions = reconstructed_output.view(B, T_tok * output_patch_size, d_model)
 
@@ -271,8 +272,9 @@ class AutoregressivePatchMixin:
         if hasattr(self.preprocessor, 'denormalize'):
             logger.info("Denormalizing final patch-based predictions.")
             final_output = self.preprocessor.denormalize(final_output)
-
-        return final_output
+        
+        # --- Step 7: Trim to the requested prediction length ---
+        return final_output[:, :prediction_length, :]
 
     @torch.no_grad()
     def forecast(

@@ -448,6 +448,11 @@ class MixtureLoss(nn.Module):
                 sigma = sigma_val.expand_as(mu)
                 dist = Normal(loc=mu, scale=sigma)
                 log_prob = dist.log_prob(target_for_dist)
+            elif dist_name == "gaussian":
+                mu = preds["gaussian_mu"]
+                sigma = F.softplus(preds["gaussian_sigma"])
+                dist = Normal(loc=mu, scale=sigma)
+                log_prob = dist.log_prob(target_for_dist)
             else:
                 raise ValueError(f"Unknown distribution component: {dist_name}")
             log_probs.append(log_prob)
