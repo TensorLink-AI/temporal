@@ -6,6 +6,10 @@ from temporal.models.preprocessor import InputPreprocessor
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.embedding_config import EmbeddingConfig
+from temporal.configs.architecture_config import (
+    TransformerArchitectureConfig as ArchitectureConfig,
+)
+from temporal.configs.output_head_config import OutputHeadConfig
 
 
 @pytest.fixture
@@ -18,6 +22,10 @@ def base_config():
         positional_embedding_config=EmbeddingConfig(
             type="sinusoidal", kwargs={"max_seq_len": 100}
         ),
+        architecture=ArchitectureConfig(
+            type="transformer_architecture", layout="encoder-decoder"
+        ),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 
