@@ -67,6 +67,7 @@ In a world of many time series libraries, `temporal` stands out by offering:
 * **Unparalleled Flexibility:** `temporal`'s modular architecture allows you to mix and match components to create novel transformer architectures with ease.
 * **Deep Customization:** Go beyond simple hyperparameter tuning and control every aspect of your model, from the attention mechanism to the normalization layers.
 * **Research-Ready:** `temporal` is built for experimentation, with a focus on making it easy to implement and test new ideas.
+* **Production-Grade Code:** While built for research, the library is engineered with robust, high-quality components ready for production deployment.
 * **Hugging Face Integration:** Seamlessly share and use your `temporal` models within the Hugging Face ecosystem.
 
 ## `temporal` vs. The World: A Comparative Look
@@ -98,3 +99,4 @@ While the Hugging Face `transformers` library is an incredible tool for NLP, tim
 * **Model Builder:** Automates the model creation process and ensures that the resulting model is consistent with the specified configuration.
 * **Rich Module Library:** A comprehensive library of pre-built modules, including a wide variety of attention mechanisms, embeddings, normalization layers, and output heads.
 * **Hugging Face Integration:** An adapter that allows `temporal` models to be easily shared and used within the `transformers` framework.
+
