@@ -1,5 +1,3 @@
-# tests/test_configs.py
-
 import pytest
 from pydantic import ValidationError
 from temporal.configs.transformer_model_config import (
@@ -72,11 +70,12 @@ def test_main_config_initialization():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        loss_config=LossConfig(type="timeseries_generic", loss_type="mse"),
+        # FIX: Removed `loss_type` and set `type` directly to "mse"
+        loss_config=LossConfig(type="mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     assert config.d_model == 32
-    assert config.architecture.layout == "encoder-decoder"  # Inferred
+    assert config.architecture.layout == "encoder-decoder"
 
 
 def test_main_config_validation_error():
@@ -100,7 +99,8 @@ def test_main_config_validation_error():
             architecture=ArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
-            loss_config=LossConfig(type="timeseries_generic", loss_type="mse"),
+            # FIX: Removed `loss_type` and set `type` directly to "mse"
+            loss_config=LossConfig(type="mse"),
             output_head_config=OutputHeadConfig(type="linear", output_size=1),
         )
 
@@ -115,13 +115,14 @@ def test_main_config_to_dict_serialization():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        loss_config=LossConfig(type="timeseries_generic", loss_type="mse"),
+        # FIX: Removed `loss_type` and set `type` directly to "mse"
+        loss_config=LossConfig(type="mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     config_dict = config.to_dict()
     assert isinstance(config_dict, dict)
     assert config_dict["d_model"] == 32
-    assert config_dict["architecture"]["layout"] == "encoder-decoder"  # Default
+    assert config_dict["architecture"]["layout"] == "encoder-decoder"
 
 
 def test_model_build_with_inconsistent_d_model():
@@ -159,7 +160,8 @@ def test_model_build_with_inconsistent_d_model():
                         ),
                     )
                 ],
-                loss_config=LossConfig(type="timeseries_generic", loss_type="mse"),
+                # FIX: Removed `loss_type` and set `type` directly to "mse"
+                loss_config=LossConfig(type="mse"),
                 output_head_config=OutputHeadConfig(type="linear", output_size=1),
             )
         )
