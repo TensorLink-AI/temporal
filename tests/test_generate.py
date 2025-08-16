@@ -48,16 +48,15 @@ def encoder_decoder_config():
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
-
 @pytest.fixture(scope="module")
 def patched_config(encoder_decoder_config):
     """Provides a config with patch embedding."""
     config_dict = encoder_decoder_config.to_dict()
+    # FIX: Instantiate the specific config class directly
     config_dict["value_embedding_config"] = TimeSeriesPatchEmbeddingConfig(
         patch_size=2, feature_size=1
     ).to_dict()
     return TransformerTimeSeriesConfig.from_dict(config_dict)
-
 
 @pytest.fixture(scope="module")
 def decoder_only_config():

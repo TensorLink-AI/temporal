@@ -3,7 +3,7 @@ import torch
 from temporal.models.preprocessor import InputPreprocessor
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
-from temporal.configs.embedding_config import EmbeddingConfig
+from temporal.configs.embedding_config import EmbeddingConfig, TimeSeriesPatchEmbeddingConfig
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
@@ -94,8 +94,8 @@ def test_patched_preprocessor_padding(base_config):
     """Tests that the preprocessor correctly pads for patch embedding."""
     # FIX: Create a new config from a dict instead of using deepcopy and modifying it.
     patched_config_dict = base_config.to_dict()
-    patched_config_dict["value_embedding_config"] = EmbeddingConfig(
-        type="patch", kwargs={"patch_size": 4, "feature_size": 4}
+    patched_config_dict["value_embedding_config"] = TimeSeriesPatchEmbeddingConfig(
+        patch_size=4, feature_size=4
     ).to_dict()
     patched_config = TransformerTimeSeriesConfig.from_dict(patched_config_dict)
 
