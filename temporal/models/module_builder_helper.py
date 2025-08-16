@@ -12,6 +12,7 @@ from temporal.configs.normalization_config import NormalizationConfig
 from temporal.configs.head_aggregation_config import HeadAggregationConfig
 from temporal.configs.loss_config import LossConfig
 from temporal.configs.base_config import BaseConfig
+from temporal.configs.transformer_block_config import TransformerBlockConfig # Import TransformerBlockConfig
 
 
 class ModuleBuilder:
@@ -37,7 +38,7 @@ class ModuleBuilder:
         """
         self.config = config
         self._model_dim = config.d_model
-        self._feature_size = config.feature_size # ADD THIS LINE
+        self._feature_size = config.feature_size 
 
         if self._model_dim is None:
             raise ValueError("The configuration must define 'd_model'.")
@@ -61,18 +62,26 @@ class ModuleBuilder:
         signature = inspect.signature(cls.__init__)
         accepted_params = set(signature.parameters.keys())
 
-        # Decide how to pass arguments: as a single config object or unpacked.
-        if 'config' in accepted_params:
-            kwargs = {'config': module_config}
-        elif 'cfg' in accepted_params:
-            kwargs = {'cfg': module_config}
+        kwargs = {}
+        # Special handling for 'block' kind to ensure 'config' is passed if expected
+        if kind == "block" and ('config' in accepted_params or 'cfg' in accepted_params):
+            if 'config' in accepted_params:
+                kwargs['config'] = module_config
+            else:
+                kwargs['cfg'] = module_config
         else:
-            # Fallback to unpacking the config into keyword arguments.
-            kwargs = module_config.to_dict()
-            if 'kwargs' in kwargs:
-                extra_kwargs = kwargs.pop('kwargs')
-                kwargs.update(extra_kwargs)
-            kwargs.pop('type', None)
+            # Decide how to pass arguments: as a single config object or unpacked.
+            if 'config' in accepted_params:
+                kwargs = {'config': module_config}
+            elif 'cfg' in accepted_params:
+                kwargs = {'cfg': module_config}
+            else:
+                # Fallback to unpacking the config into keyword arguments.
+                kwargs = module_config.to_dict()
+                if 'kwargs' in kwargs:
+                    extra_kwargs = kwargs.pop('kwargs')
+                    kwargs.update(extra_kwargs)
+                kwargs.pop('type', None)
 
         # Automatically inject common model-wide parameters if the module needs them.
         if 'd_model' in accepted_params and 'd_model' not in kwargs:
