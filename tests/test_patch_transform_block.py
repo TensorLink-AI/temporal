@@ -12,7 +12,7 @@ from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from dataclasses import replace
-from temporal.configs.transformer_block_config import transformer_block_config_from_dict
+from temporal.configs.transformer_block_config import transformer_block_config_from_dict, AdaptivePatchTransformerBlockConfig # Import AdaptivePatchTransformerBlockConfig
 from temporal.models.mixin.adaptive_patching import PatchSplitting, PatchMerging
 
 
@@ -38,11 +38,18 @@ def test_patch_transform_block_init(mock_builder, order):
     expansion_factor = 2
     d_model = mock_builder.config.d_model
 
-    block = PatchTransformBlock(
-        builder=mock_builder,
-        wrapped_block_type="default_encoder",
+    # Create the AdaptivePatchTransformerBlockConfig to pass to PatchTransformBlock
+    patch_block_config = AdaptivePatchTransformerBlockConfig(
         expansion_factor=expansion_factor,
+        wrapped_block_type="default_encoder",
         order=order,
+        attention_config=mock_builder.config.attention_config,
+        ffn_config=mock_builder.config.ffn_config,
+    )
+
+    block = PatchTransformBlock(
+        config=patch_block_config, # Pass the config object
+        builder=mock_builder,
     )
 
     assert block.order == order
@@ -61,11 +68,18 @@ def test_patch_transform_block_forward_split_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    block = PatchTransformBlock(
-        builder=mock_builder,
-        wrapped_block_type="default_encoder",
+    # Create the AdaptivePatchTransformerBlockConfig
+    patch_block_config = AdaptivePatchTransformerBlockConfig(
         expansion_factor=expansion_factor,
+        wrapped_block_type="default_encoder",
         order="split_first",
+        attention_config=mock_builder.config.attention_config,
+        ffn_config=mock_builder.config.ffn_config,
+    )
+
+    block = PatchTransformBlock(
+        config=patch_block_config, # Pass the config object
+        builder=mock_builder,
     )
 
     input_tensor = torch.randn(2, seq_len, d_model)
@@ -80,11 +94,18 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    block = PatchTransformBlock(
-        builder=mock_builder,
-        wrapped_block_type="default_encoder",
+    # Create the AdaptivePatchTransformerBlockConfig
+    patch_block_config = AdaptivePatchTransformerBlockConfig(
         expansion_factor=expansion_factor,
+        wrapped_block_type="default_encoder",
         order="merge_first",
+        attention_config=mock_builder.config.attention_config,
+        ffn_config=mock_builder.config.ffn_config,
+    )
+
+    block = PatchTransformBlock(
+        config=patch_block_config, # Pass the config object
+        builder=mock_builder,
     )
 
     input_tensor = torch.randn(2, seq_len, d_model)
@@ -95,28 +116,37 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
 
 def test_patch_transform_block_invalid_order(mock_builder):
     """Tests that PatchTransformBlock raises an error for an invalid order."""
+    expansion_factor = 2
+    # The validation for 'order' now happens in AdaptivePatchTransformerBlockConfig's __post_init__
     with pytest.raises(
         ValueError, match="order must be one of 'split_first' or 'merge_first'"
     ):
-        PatchTransformBlock(
-            builder=mock_builder,
+        AdaptivePatchTransformerBlockConfig(
+            expansion_factor=expansion_factor,
             wrapped_block_type="default_encoder",
-            expansion_factor=2,
             order="invalid_order",
         )
 
 
 def test_patch_transform_block_merge_first_invalid_expansion(mock_builder):
     """Tests that 'merge_first' order raises an error with expansion_factor != 2."""
+    # The validation for 'merge_first' expansion_factor now happens directly in PatchTransformBlock's __init__
+    # after the config is passed.
+    expansion_factor = 3 # Invalid for merge_first
     with pytest.raises(
         ValueError,
         match="For 'merge_first' order with an MLP, expansion_factor must be 2.",
     ):
-        PatchTransformBlock(
-            builder=mock_builder,
+        patch_block_config = AdaptivePatchTransformerBlockConfig(
+            expansion_factor=expansion_factor,
             wrapped_block_type="default_encoder",
-            expansion_factor=3,
             order="merge_first",
+            attention_config=mock_builder.config.attention_config,
+            ffn_config=mock_builder.config.ffn_config,
+        )
+        PatchTransformBlock(
+            config=patch_block_config,
+            builder=mock_builder
         )
 
 
@@ -128,12 +158,20 @@ def test_patch_transform_block_non_divisible_d_model_split_first(mock_builder):
     bad_config = TransformerConfig.from_dict(config_dict)
     bad_builder = ModuleBuilder(bad_config)
 
+    expansion_factor = 2
+
+    # The validation for non-divisible d_model happens in PatchTransformBlock's __init__
     with pytest.raises(
         ValueError, match="d_model \(33\) must be divisible by expansion_factor \(2\)"
     ):
-        PatchTransformBlock(
-            builder=bad_builder, # Use the new builder
+        patch_block_config = AdaptivePatchTransformerBlockConfig(
+            expansion_factor=expansion_factor,
             wrapped_block_type="default_encoder",
-            expansion_factor=2,
             order="split_first",
+            attention_config=bad_builder.config.attention_config,
+            ffn_config=bad_builder.config.ffn_config,
+        )
+        PatchTransformBlock(
+            config=patch_block_config,
+            builder=bad_builder, # Use the new builder
         )
