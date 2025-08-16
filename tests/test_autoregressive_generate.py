@@ -45,9 +45,8 @@ def patched_model_config():
             )
         ],
         value_embedding_config=EmbeddingConfig(type="patch", kwargs={"patch_size": 2}),
-        # FIX: Changed `loss_type` and set `type` directly to "timeseries_generic"
         loss_config=LossConfig(type="timeseries_generic"),
-        output_head_config=OutputHeadConfig(type="linear", output_size=1),
+        output_head_config=OutputHeadConfig(type="linear", output_size=3),
     )
 
 
@@ -134,7 +133,7 @@ def test_generate_raises_error_on_no_input(patched_model):
     Ensures that calling generate() with no input context raises a ValueError.
     """
     with pytest.raises(
-        ValueError, match="Either `encoder_inputs` or `decoder_inputs` must be provided."
+        ValueError, match="You must provide either 'encoder_inputs' or 'decoder_inputs'."
     ):
         patched_model.generate(prediction_length=5)
 

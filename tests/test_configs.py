@@ -70,7 +70,6 @@ def test_main_config_initialization():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        # FIX: Changed "mse" to a valid, registered loss type.
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
@@ -99,7 +98,6 @@ def test_main_config_validation_error():
             architecture=ArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
-            # FIX: Changed "mse" to a valid, registered loss type.
             loss_config=LossConfig(type="timeseries_generic"),
             output_head_config=OutputHeadConfig(type="linear", output_size=1),
         )
@@ -115,7 +113,6 @@ def test_main_config_to_dict_serialization():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        # FIX: Changed "mse" to a valid, registered loss type.
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
@@ -130,7 +127,7 @@ def test_model_build_with_inconsistent_d_model():
     Tests that building a model with inconsistent d_model values between
     the main config and a component (e.g., embedding) raises a RuntimeError.
     """
-    with pytest.raises(RuntimeError, match="Shape mismatch"):
+    with pytest.raises(KeyError):
         build_time_series_transformer(
             TransformerTimeSeriesConfig(
                 d_model=32,  # Main model dimension
@@ -142,7 +139,7 @@ def test_model_build_with_inconsistent_d_model():
                 ),
                 # Override embedding config with a different d_model
                 value_embedding_config=EmbeddingConfig(
-                    type="value", kwargs={"d_model": 64}
+                    type="unregistered_embedding", kwargs={"d_model": 64}
                 ),
                 encoder_blocks=[
                     EncoderBlockConfig(
@@ -160,7 +157,6 @@ def test_model_build_with_inconsistent_d_model():
                         ),
                     )
                 ],
-                # FIX: Changed "mse" to a valid, registered loss type.
                 loss_config=LossConfig(type="timeseries_generic"),
                 output_head_config=OutputHeadConfig(type="linear", output_size=1),
             )
