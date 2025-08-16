@@ -115,7 +115,6 @@ class BaseMultiHeadAttention(nn.Module):
             scores = scores * tau + delta
         return scores
 
-
     def forward(
             self,
             hidden_states: torch.Tensor,
@@ -130,98 +129,66 @@ class BaseMultiHeadAttention(nn.Module):
             alibi_bias_generator: Optional[nn.Module] = None,
             x_raw: Optional[torch.Tensor] = None,
         ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-            """
-            Performs the forward pass of the attention layer.
-
-            Args:
-                hidden_states (torch.Tensor): The input hidden states.
-                key_value_states (Optional[torch.Tensor]): The key and value states for
-                    cross-attention. Defaults to None.
-                past_key_value (Optional[Tuple[torch.Tensor, torch.Tensor]]): The cached
-                    key and value states from previous steps. Defaults to None.
-                attention_mask (Optional[torch.Tensor]): The attention mask.
-                    Defaults to None.
-                head_mask (Optional[torch.Tensor]): The mask for attention heads.
-                    Defaults to None.
-                output_attentions (bool): Whether to output attention probabilities.
-                    Defaults to False.
-                use_cache (bool): Whether to use caching for the key and value states.
-                    Defaults to False.
-                position_ids (Optional[torch.LongTensor]): The position IDs for RoPE.
-                    Defaults to None.
-                rotary_proj (Optional[nn.Module]): The RoPE projection module.
-                    Defaults to None.
-                alibi_bias_generator (Optional[nn.Module]): The ALiBi bias generator.
-                    Defaults to None.
-                x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
-
-            Returns:
-                Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-                    A tuple containing the attention output, the attention probabilities
-                    (if output_attentions is True), and the updated key and value states
-                    (if use_cache is True).
-            """
+            
             B, T, _ = hidden_states.size()
             is_cross = key_value_states is not None
             kv_source = key_value_states if is_cross else hidden_states
 
-            # project
-            q = self.q_proj(hidden_states)          # [B, T, E]
-            k = self.k_proj(kv_source)
-            v = self.v_proj(kv_source)
+            # Project and reshape Q, K, V
+            q = self.q_proj(hidden_states).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+            k = self.k_proj(kv_source).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+            v = self.v_proj(kv_source).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
 
-            # reshape to heads
-            q = q.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)  # [B, H, T, D]
-            kv_len = k.size(1)
-            k = k.view(B, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
-            v = v.view(B, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-            # optional Q/K LayerNorm
             if self.use_qk_layernorm:
                 q = self.q_norm(q)
                 k = self.k_norm(k)
 
-            # --- FIX: Apply RoPE to NEW q and k BEFORE caching ---
+            # --- BUGFIX: Explicit RoPE application before caching ---
             if rotary_proj is not None:
-                past_len = past_key_value[0].shape[-2] if past_key_value is not None else 0
+                # 1. Determine the length of the cache
+                past_len = 0
+                if past_key_value is not None:
+                    past_len = past_key_value[0].shape[-2]
+                
+                # 2. Get positional embeddings for the TOTAL sequence length
                 total_len = past_len + T
-                
                 cos, sin = rotary_proj(v, seq_len=total_len)
+
+                # 3. CRITICAL: Slice cos/sin to get the embeddings for ONLY the NEW tokens
+                cos_slice = cos[..., past_len:total_len, :]
+                sin_slice = sin[..., past_len:total_len, :]
                 
-                # Apply RoPE to the query using its actual length T
-                q = apply_rotary_pos_emb(q, cos, sin, offset=past_len)
-
-                # Apply RoPE to the NEW key using its actual length T
+                # 4. Apply the sliced embeddings to the new query and key
+                q = (q * cos_slice) + (rotate_half(q) * sin_slice)
                 if not is_cross:
-                    k = apply_rotary_pos_emb(k, cos, sin, offset=past_len)
+                    k = (k * cos_slice) + (rotate_half(k) * sin_slice)
 
-            # --- FIX: Handle caching AFTER RoPE is applied ---
+            # Handle caching AFTER RoPE has been applied to the new k
             present = None
             if use_cache:
                 if past_key_value is not None:
-                    # Concatenate the ALREADY ROTATED new k/v with the cached k/v
                     k = torch.cat([past_key_value[0], k], dim=2)
                     v = torch.cat([past_key_value[1], v], dim=2)
                 present = (k, v)
 
-            # --- compute scores + optional ALiBi + mask ---
+            # --- The rest of the logic remains the same ---
             scores = self.compute_attention_scores(q, k, x_raw=x_raw)
+            
             if alibi_bias_generator is not None:
-                # The seq_len for alibi is the total key length
                 bias = alibi_bias_generator(batch_size=B, seq_len=k.size(-2))
                 scores = scores + bias
+                
             if attention_mask is not None:
                 scores = scores + attention_mask
 
-            # --- Softmax, dropout, head mask ---
             probs = self._compute_attn_probs(scores)
             probs = F.dropout(probs, p=self.dropout, training=self.training)
+            
             if head_mask is not None:
                 probs = probs * head_mask.view(1, -1, 1, 1)
 
-            # --- output ---
-            out = torch.matmul(probs, v.to(probs.dtype))  # [B, H, T, D]
-            out = out.transpose(1, 2).reshape(B, T, -1)   # [B, T, E]
+            out = torch.matmul(probs, v.to(probs.dtype))
+            out = out.transpose(1, 2).reshape(B, T, -1)
             out = self.out_proj(out)
 
             return (out, probs if output_attentions else None, present)
