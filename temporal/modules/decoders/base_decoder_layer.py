@@ -144,106 +144,79 @@ class TimeSeriesTransformerDecoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout_prob)
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,                            # [B, T_dec, D]
-        encoder_hidden_states: Optional[torch.Tensor] = None,   # [B, T_enc, D]
-        attention_mask: Optional[torch.Tensor] = None,          # [B, 1, T_dec, T_dec] (causal mask for self-attn)
-        encoder_attention_mask: Optional[torch.Tensor] = None,  # [B, 1, T_dec, T_enc] (padding mask for cross-attn)
-        past_key_value: Optional[Tuple[Optional[Tuple], Optional[Tuple]]] = None, # ((past_self_k, past_self_v), (past_cross_k, past_cross_v))
-        output_attentions: bool = False,
-        use_cache: bool = False, # Standard HF argument
-        x_raw: Optional[torch.Tensor] = None,
-    ) -> DecoderLayerOutput:
-        """
-        Performs the forward pass of the decoder layer.
-
-        Args:
-            hidden_states (torch.Tensor): The input to the layer, shape `[B, T_dec, D]`.
-            encoder_hidden_states (Optional[torch.Tensor]): The sequence from the
-                encoder's output, shape `[B, T_enc, D]`. Required for cross-attention.
-            attention_mask (Optional[torch.Tensor]): The causal mask for self-attention,
-                shape `[B, 1, T_dec, T_dec]`.
-            encoder_attention_mask (Optional[torch.Tensor]): The padding mask for
-                cross-attention, shape `[B, 1, T_dec, T_enc]`.
-            past_key_value (Optional[Tuple[Optional[Tuple], Optional[Tuple]]]): A tuple
-                containing cached key-value states for self-attention and cross-attention,
-                used for efficient autoregressive decoding.
-            output_attentions (bool): Whether to return the attention weights.
-            use_cache (bool): If True, the layer will return the updated key-value
-                states for future decoding steps.
-            x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
-
-        Returns:
-            DecoderLayerOutput: An object containing the output hidden states,
-                optional attention weights, optional auxiliary loss, and optional
-                past key value.
-        """
-        residual = hidden_states
-        self_attention_weights = None
-        cross_attention_weights = None
-        present_self_key_value = None
-        present_cross_key_value = None
-        aux_loss = None
-
-        # --- Self Attention ---
-        self_attn_past_key_value = past_key_value[0] if past_key_value is not None else None
-        self_attention_outputs = self.self_attn(
-            hidden_states=hidden_states,
-            key_value_states=None, # Self-attention does not use key_value_states
-            past_key_value=self_attn_past_key_value,
-            attention_mask=attention_mask,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            x_raw=x_raw,
-        )
-        self_attention_output = self_attention_outputs[0]
-        if output_attentions:
-            self_attention_weights = self_attention_outputs[1]
-        if use_cache:
-            present_self_key_value = self_attention_outputs[2] if len(self_attention_outputs) > 2 else None
-        hidden_states = self.norm1(residual + self.dropout(self_attention_output))
-        # --- End Self Attention ---
-
-        # --- Cross Attention ---
-        if self.is_encoder_decoder and self.cross_attn is not None and encoder_hidden_states is not None:
+            self,
+            hidden_states: torch.Tensor,
+            encoder_hidden_states: Optional[torch.Tensor] = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            encoder_attention_mask: Optional[torch.Tensor] = None,
+            # --- FIX: The cache is ONLY for self-attention ---
+            past_key_value: Optional[Tuple[torch.Tensor]] = None, 
+            output_attentions: bool = False,
+            use_cache: bool = False,
+            x_raw: Optional[torch.Tensor] = None,
+        ) -> DecoderLayerOutput:
+            
             residual = hidden_states
-            cross_attn_past_key_value = past_key_value[1] if past_key_value is not None else None
-            cross_attention_outputs = self.cross_attn(
+            self_attention_weights = None
+            cross_attention_weights = None
+            
+            # --- Self Attention (receives the entire past_key_value)---
+            self_attention_outputs = self.self_attn(
                 hidden_states=hidden_states,
-                key_value_states=encoder_hidden_states,
-                past_key_value=cross_attn_past_key_value,
-                attention_mask=encoder_attention_mask,
+                past_key_value=past_key_value, # Pass the cache directly
+                attention_mask=attention_mask,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 x_raw=x_raw,
             )
-            cross_attention_output = cross_attention_outputs[0]
-            if output_attentions:
-                cross_attention_weights = cross_attention_outputs[1]
-            if use_cache:
-                present_cross_key_value = cross_attention_outputs[2] if len(cross_attention_outputs) > 2 else None
+            self_attention_output = self_attention_outputs[0]
             
-            if self.norm2 is not None:
-                hidden_states = self.norm2(residual + self.dropout(cross_attention_output))
+            if use_cache:
+                # The new cache is the 3rd element from self-attention output
+                present_key_value = self_attention_outputs[2]
             else:
-                hidden_states = residual + self.dropout(cross_attention_output)
-        # --- End Cross Attention ---
+                present_key_value = None
 
-        # --- Feedforward ---
-        residual = hidden_states
-        ffn_outputs = self.ffn(hidden_states)
-        hidden_states = self.norm3(residual + self.dropout(ffn_outputs[0]))
-        if len(ffn_outputs) > 1 and ffn_outputs[1] is not None:
-            aux_loss = ffn_outputs[1]
+            if output_attentions:
+                self_attention_weights = self_attention_outputs[1]
 
-        # --- End Feedforward ---
+            hidden_states = self.norm1(residual + self.dropout(self_attention_output))
+            
+            # --- Cross Attention (no caching involved) ---
+            if self.is_encoder_decoder and self.cross_attn is not None and encoder_hidden_states is not None:
+                residual = hidden_states
+                cross_attention_outputs = self.cross_attn(
+                    hidden_states=hidden_states,
+                    key_value_states=encoder_hidden_states,
+                    attention_mask=encoder_attention_mask,
+                    # --- FIX: Do NOT pass past_key_value to cross-attention ---
+                    past_key_value=None, 
+                    use_cache=False, # Cross-attention never needs to return a cache
+                )
+                cross_attention_output = cross_attention_outputs[0]
+                
+                if output_attentions:
+                    cross_attention_weights = cross_attention_outputs[1]
+                
+                if self.norm2 is not None:
+                    hidden_states = self.norm2(residual + self.dropout(cross_attention_output))
+                else:
+                    hidden_states = residual + self.dropout(cross_attention_output)
 
-        present_key_value = (present_self_key_value, present_cross_key_value) if use_cache else None
+            # --- Feedforward ---
+            residual = hidden_states
+            ffn_outputs = self.ffn(hidden_states)
+            hidden_states = self.norm3(residual + self.dropout(ffn_outputs[0]))
+            
+            aux_loss = None
+            if len(ffn_outputs) > 1 and ffn_outputs[1] is not None:
+                aux_loss = ffn_outputs[1]
 
-        return DecoderLayerOutput(
-            hidden_states=hidden_states,
-            self_attention_weights=self_attention_weights,
-            cross_attention_weights=cross_attention_weights,
-            past_key_value=present_key_value,
-            aux_loss=aux_loss
-        )
+            # --- FIX: The returned cache is ONLY the self-attention cache ---
+            return DecoderLayerOutput(
+                hidden_states=hidden_states,
+                self_attention_weights=self_attention_weights,
+                cross_attention_weights=cross_attention_weights,
+                past_key_value=present_key_value,
+                aux_loss=aux_loss
+            )
