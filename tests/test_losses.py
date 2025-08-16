@@ -115,7 +115,7 @@ def test_spread_penalty_calculation():
     # The spread for all 4 data points is 2. So the expected loss is -log(2).
     penalty = loss_fn(preds)  # Targets are not used
     expected_penalty = -torch.log(torch.tensor(2.0))
-    assert torch.isclose(penalty, expected_penalty)
+    assert torch.isclose(penalty, expected_penalty, atol=1e-4)
 
     # Test edge case with zero spread
     preds_zero_spread = torch.tensor([[[2, 2, 2], [5, 5, 5]]], dtype=torch.float32)

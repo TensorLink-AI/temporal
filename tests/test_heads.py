@@ -53,7 +53,7 @@ def test_gaussian_head_forward(head_params, sample_hidden_state):
     assert output.shape == (
         head_params["batch_size"],
         head_params["seq_len"],
-        feature_size,
+        feature_size * 2,
     )
 
 

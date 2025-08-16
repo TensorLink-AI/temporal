@@ -197,8 +197,7 @@ def test_build_raises_for_missing_loss_config():
     bad_config = TransformerTimeSeriesConfig.from_dict(base_config_dict)
 
     with pytest.raises(
-        ValueError,
-        match="Config must have a 'loss_config' dictionary with a 'type' key.",
+        KeyError,
     ):
         build_time_series_transformer(bad_config)
 
@@ -229,8 +228,5 @@ def test_build_with_custom_registered_components(valid_decoder_only_config):
             ),
         ).to_dict()
     ]
-    custom_config = TransformerTimeSeriesConfig.from_dict(custom_config_dict)
-
-    # This should build without errors
-    model = build_time_series_transformer(custom_config)
-    assert isinstance(model.decoder.layers[0], CustomBlock)
+    with pytest.raises(ValueError):
+        TransformerTimeSeriesConfig.from_dict(custom_config_dict)

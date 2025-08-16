@@ -53,7 +53,9 @@ def encoder_decoder_config():
 def patched_config(encoder_decoder_config):
     """Provides a config with patch embedding."""
     config_dict = encoder_decoder_config.to_dict()
-    config_dict["value_embedding_config"] = EmbeddingConfig(type="patch", kwargs={"patch_size": 2}).to_dict()
+    config_dict["value_embedding_config"] = EmbeddingConfig(
+        type="patch", kwargs={"patch_size": 2}
+    ).to_dict()
     return TransformerTimeSeriesConfig.from_dict(config_dict)
 
 
