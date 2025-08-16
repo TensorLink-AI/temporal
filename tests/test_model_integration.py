@@ -88,12 +88,9 @@ def test_kv_cache_correctness(generation_model, generation_config):
     # Encoder forward pass to get encoder_hidden_states
     preprocessor_output = model.preprocessor.process(
         past_values,
-        # TODO: add support for past_features and future_features
-        past_features=None,
-        future_features=None,
     )
     encoder_output = model.encoder(**preprocessor_output)
-    encoder_hidden_states = encoder_output
+    encoder_hidden_states = encoder_output.last_hidden_state
 
     with torch.no_grad():
         for i in range(generation_config.prediction_length):
@@ -108,7 +105,7 @@ def test_kv_cache_correctness(generation_model, generation_config):
             )
 
             # The output of the decoder is the *next* token's representation
-            hidden_state = output
+            hidden_state = output.last_hidden_state
             # Project to logits
             next_logit = model.output_heads["default"](hidden_state)
 

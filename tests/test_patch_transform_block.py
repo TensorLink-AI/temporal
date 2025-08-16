@@ -11,6 +11,7 @@ from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
+from dataclasses import replace
 
 
 @pytest.fixture
