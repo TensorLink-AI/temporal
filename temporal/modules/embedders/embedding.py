@@ -90,45 +90,47 @@ class FlexibleValueEmbedding(BaseEmbedding):
         if self.layer_norm is not None:
             return self.layer_norm(emb)
         return emb
-        
+
 # -----------------------------
 # Sinusoidal Positional Embedding
 # -----------------------------
-@register_module("embedding", "sinusoidal")
-class SinusoidalPositionalEmbedding(BaseEmbedding):
-    """
-    Fixed sinusoidal positional embeddings as described in "Attention is All You Need".
-    """
+# In temporal/modules/embedders/embedding.py
+
+class SinusoidalPositionalEmbedding(PositionalEmbedding):
     def __init__(self, d_model: int, max_seq_len: int = 2048):
-        """
-        Initialize SinusoidalPositionalEmbedding.
+        super().__init__()
+        self.d_model = d_model
 
-        Args:
-            d_model: Dimension of the embeddings.
-            max_seq_len: Maximum sequence length supported.
-        """
-        super().__init__(d_model)
-        self.max_seq_len = max_seq_len
-        weights = self._init_weights()
-        self.register_buffer('weight', weights)
+        pe = torch.zeros(max_seq_len, d_model)
+        position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        # FIX: Add a dimension to make the buffer shape [1, max_seq_len, d_model].
+        pe = pe.unsqueeze(0)
+        
+        self.register_buffer("pe", pe)
 
-    def _init_weights(self) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, past_key_values_length: int = 0, **kwargs) -> torch.Tensor:
         """
-        Create sinusoidal positional encoding table.
-
-        Returns:
-            Tensor of shape [max_seq_len, d_model].
+        Returns positional encoding.
         """
-        position_enc = np.array([
-            [pos / np.power(10000, 2 * (j // 2) / self.d_model) for j in range(self.d_model)]
-            for pos in range(self.max_seq_len)
-        ])
-        out = torch.zeros(self.max_seq_len, self.d_model)
-        sentinel = self.d_model // 2 if self.d_model % 2 == 0 else (self.d_model // 2) + 1
-        out[:, 0:sentinel] = torch.FloatTensor(np.sin(position_enc[:, 0::2]))
-        out[:, sentinel:] = torch.FloatTensor(np.cos(position_enc[:, 1::2]))
-        return out
+        seq_len = kwargs.get("seq_len", x.shape[1])
+        batch_size = kwargs.get("batch_size", x.shape[0])
 
+        positions = torch.arange(
+            past_key_values_length,
+            past_key_values_length + seq_len,
+            dtype=torch.long,
+            device=self.pe.device,
+        )
+        
+        # This indexing now works because self.pe is 3D
+        pos_embedding = self.pe[:, positions, :]
+        return pos_embedding.expand(batch_size, -1, -1)
 
 # Patch Embedding
 @register_module("embedding", "patch")
