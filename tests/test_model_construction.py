@@ -174,6 +174,22 @@ def test_build_raises_for_missing_loss_config():
             type="transformer_architecture", layout="encoder-decoder"
         ),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
+        encoder_blocks=[
+            EncoderBlockConfig(
+                type="default_encoder",
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
+            )
+        ],
+        decoder_blocks=[
+            DecoderBlockConfig(
+                type="default_decoder",
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
+            )
+        ],
     ).to_dict()
 
     # Manually remove the default loss_config
@@ -206,7 +222,12 @@ def test_build_with_custom_registered_components(valid_decoder_only_config):
     # FIX: Create a new config from a dict instead of using .copy()
     custom_config_dict = valid_decoder_only_config.to_dict()
     custom_config_dict["decoder_blocks"] = [
-        DecoderBlockConfig(type="custom_test_block").to_dict()
+        DecoderBlockConfig(
+            type="custom_test_block",
+            ffn_config=StandardFeedForwardConfig(
+                type="standard", intermediate_size=32
+            ),
+        ).to_dict()
     ]
     custom_config = TransformerTimeSeriesConfig.from_dict(custom_config_dict)
 
