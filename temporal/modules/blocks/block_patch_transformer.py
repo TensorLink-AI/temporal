@@ -7,7 +7,7 @@ from temporal.models.mixin.adaptive_patching import PatchSplitting, PatchMerging
 from temporal.registry.core import register_module
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.models.outputs import DecoderLayerOutput
-from temporal.configs.transformer_block_config import transformer_block_config_from_dict
+from temporal.configs.transformer_block_config import transformer_block_config_from_dict, AdaptivePatchTransformerBlockConfig
 
 @register_module("block", "patch_transform_block")
 class PatchTransformBlock(nn.Module):
@@ -18,30 +18,29 @@ class PatchTransformBlock(nn.Module):
     def __init__(
         self,
         builder: ModuleBuilder,
-        wrapped_block_type: str,
-        expansion_factor: int,
-        order: str = 'split_first',
-        attention_config: dict = None,
-        ffn_config: dict = None,
         **kwargs,
     ):
         super().__init__()
-        if order not in ['split_first', 'merge_first']:
-            raise ValueError(f"order must be one of 'split_first' or 'merge_first', but got {order}")
-        
-        self.expansion_factor = expansion_factor
-        self.order = order
+        config = builder.config
+
+        if not isinstance(config, AdaptivePatchTransformerBlockConfig):
+            raise ValueError(
+                f"Expected config of type AdaptivePatchTransformerBlockConfig, but got {type(config)}"
+            )
+
+        self.expansion_factor = config.expansion_factor
+        self.order = config.order
         
         original_config = builder.config
         d_model = original_config.d_model
 
         if self.order == 'split_first':
-            inner_dim = d_model // expansion_factor
-            if d_model % expansion_factor != 0:
-                raise ValueError(f"d_model ({d_model}) must be divisible by expansion_factor ({expansion_factor})")
+            inner_dim = d_model // self.expansion_factor
+            if d_model % self.expansion_factor != 0:
+                raise ValueError(f"d_model ({d_model}) must be divisible by expansion_factor ({self.expansion_factor})")
             
-            self.patch_splitting = PatchSplitting(input_dim=d_model, expansion_factor=expansion_factor, use_mlp=True)
-            self.patch_merging = PatchMerging(input_dim=inner_dim, merge_factor=expansion_factor, use_mlp=True)
+            self.patch_splitting = PatchSplitting(input_dim=d_model, expansion_factor=self.expansion_factor, use_mlp=True)
+            self.patch_merging = PatchMerging(input_dim=inner_dim, merge_factor=self.expansion_factor, use_mlp=True)
             
             temp_config = replace(original_config, d_model=inner_dim)
         
@@ -51,17 +50,17 @@ class PatchTransformBlock(nn.Module):
             
             inner_dim = d_model * 2
             
-            self.patch_merging = PatchMerging(input_dim=d_model, merge_factor=expansion_factor, use_mlp=True)
-            self.patch_splitting = PatchSplitting(input_dim=inner_dim, expansion_factor=expansion_factor, use_mlp=True)
+            self.patch_merging = PatchMerging(input_dim=d_model, merge_factor=self.expansion_factor, use_mlp=True)
+            self.patch_splitting = PatchSplitting(input_dim=inner_dim, expansion_factor=self.expansion_factor, use_mlp=True)
             
             temp_config = replace(original_config, d_model=inner_dim)
 
         temp_builder = ModuleBuilder(temp_config)
         inner_layer_cfg_dict = {
-            "type": wrapped_block_type,
-            "attention_config": attention_config or {"type": "full"},
-            "ffn_config": ffn_config or {"type": "standard", "intermediate_size": inner_dim * 4},
-            "kwargs": kwargs,
+            "type": config.wrapped_block_type,
+            "attention_config": config.attention_config.to_dict(),
+            "ffn_config": config.ffn_config.to_dict(),
+            "kwargs": config.kwargs,
         }
         inner_layer_cfg = transformer_block_config_from_dict(inner_layer_cfg_dict)
         self.transformer_layer = temp_builder._build("block", inner_layer_cfg)

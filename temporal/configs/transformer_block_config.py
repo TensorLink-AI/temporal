@@ -59,6 +59,7 @@ class AdaptivePatchTransformerBlockConfig(TransformerBlockConfig):
     """
     expansion_factor: int # Required kw-only field
     wrapped_block_type: str # Required kw-only field (e.g., "default_encoder" or "default_decoder")
+    order: str = field(default='split_first')
 
     type: str = field(default="adaptive_patch_transformer") # Override base type and make it kw_only
 
@@ -66,6 +67,8 @@ class AdaptivePatchTransformerBlockConfig(TransformerBlockConfig):
         super().__post_init__()
         if self.expansion_factor <= 0:
             raise ValueError("expansion_factor must be a positive integer.")
+        if self.order not in ['split_first', 'merge_first']:
+            raise ValueError(f"order must be one of 'split_first' or 'merge_first', but got {self.order}")
         # wrapped_block_type can be a string or a config object after from_dict parsing.
         # If it's a string, look it up in the registry.
         if isinstance(self.wrapped_block_type, str):
