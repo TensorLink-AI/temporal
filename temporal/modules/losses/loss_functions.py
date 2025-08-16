@@ -358,6 +358,7 @@ class SpreadPenalty(nn.Module):
             raise ValueError(f"Expected preds shape [B, T, Q>=2], got: {preds.shape}")
 
         spread = preds[..., -1] - preds[..., 0]
+
         spread = torch.clamp(spread, min=0.0)
 
         if self.penalty_type == 'log':

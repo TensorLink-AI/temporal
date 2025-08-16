@@ -112,9 +112,20 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         Returns:
             Positional encoding tensor.
         """
-        seq_len = x.size(1)
-        return self.pe[past_key_values_length : past_key_values_length + seq_len, :]
+        if seq_len is None:
+            seq_len = x.shape[1]
+        if batch_size is None:
+            batch_size = x.shape[0]
 
+        positions = torch.arange(
+            past_key_values_length,
+            past_key_values_length + seq_len,
+            dtype=torch.long,
+            device=x.device,
+        )
+        pos_embedding = self.pe[:, positions, :]
+        return pos_embedding.expand(batch_size, -1, -1)
+        
 # Patch Embedding
 @register_module("embedding", "patch")
 class TimeSeriesPatchEmbedding(BaseEmbedding):
