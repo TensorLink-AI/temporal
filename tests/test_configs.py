@@ -142,7 +142,7 @@ def test_model_build_with_inconsistent_d_model():
                 ),
                 # Override embedding config with a different d_model
                 value_embedding_config=EmbeddingConfig(
-                    type="linear", kwargs={"d_model": 64}
+                    type="value", kwargs={"d_model": 64}
                 ),
                 encoder_blocks=[
                     EncoderBlockConfig(

@@ -9,6 +9,11 @@ from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.loss_config import LossConfig
+from temporal.configs.transformer_block_config import (
+    EncoderBlockConfig,
+    DecoderBlockConfig,
+)
+from temporal.configs.feedforward_config import StandardFeedForwardConfig
 
 # --- Fixtures ---
 
@@ -28,6 +33,22 @@ def model_config():
         # FIX: Instantiate the LossConfig object with a valid registered type
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
+        encoder_blocks=[
+            EncoderBlockConfig(
+                type="default_encoder",
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
+            )
+        ],
+        decoder_blocks=[
+            DecoderBlockConfig(
+                type="default_decoder",
+                ffn_config=StandardFeedForwardConfig(
+                    type="standard", intermediate_size=32
+                ),
+            )
+        ],
     )
 
 

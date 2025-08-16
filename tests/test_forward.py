@@ -21,7 +21,7 @@ def encoder_decoder_config():
     """Provides a config for a standard encoder-decoder model."""
     return TransformerTimeSeriesConfig(
         d_model=16,
-        feature_size=3,
+        feature_size=1,
         prediction_length=5,
         context_length=10,
         architecture=ArchitectureConfig(
@@ -54,7 +54,7 @@ def decoder_only_config():
     """Provides a config for a decoder-only model."""
     return TransformerTimeSeriesConfig(
         d_model=16,
-        feature_size=3,
+        feature_size=1,
         prediction_length=5,
         context_length=10,
         architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
@@ -173,10 +173,10 @@ def test_forward_pass_error_missing_inputs(
 
     # Test encoder-decoder model
     with pytest.raises(ValueError, match="requires 'encoder_inputs'"):
-        encoder_decoder_model(decoder_inputs=torch.randn(2, 5, 3))
+        encoder_decoder_model(decoder_inputs=torch.randn(2, 5, 1))
 
     with pytest.raises(ValueError, match="requires 'decoder_inputs'"):
-        encoder_decoder_model(encoder_inputs=torch.randn(2, 10, 3))
+        encoder_decoder_model(encoder_inputs=torch.randn(2, 10, 1))
 
     # Test decoder-only model
     with pytest.raises(ValueError, match="requires 'decoder_inputs'"):

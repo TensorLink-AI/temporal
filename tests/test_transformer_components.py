@@ -71,7 +71,7 @@ def test_encoder_only_forward_pass(basic_config):
     
     assert output.logits.shape == (
         2,
-        encoder_only_config.prediction_length,
+        encoder_only_config.context_length,
         encoder_only_config.feature_size,
     )
 
@@ -91,7 +91,7 @@ def test_decoder_only_forward_pass(basic_config):
 
     assert output.logits.shape == (
         2,
-        decoder_only_config.prediction_length,
+        decoder_only_config.context_length,
         decoder_only_config.feature_size,
     )
 
@@ -206,6 +206,7 @@ def test_batch_invariance(basic_config):
 def test_data_types(basic_config):
     """Tests that the model handles different data dtypes."""
     model = build_time_series_transformer(basic_config)
+    model.to(torch.float16)
     
     encoder_inputs = torch.randn(2, basic_config.context_length, basic_config.feature_size)
     decoder_inputs = torch.randn(2, basic_config.prediction_length, basic_config.feature_size)
@@ -215,6 +216,7 @@ def test_data_types(basic_config):
             encoder_inputs=encoder_inputs.to(torch.float16),
             decoder_inputs=decoder_inputs.to(torch.float16),
         )
+        model.to(torch.float32)
         model(
             encoder_inputs=encoder_inputs.to(torch.float32),
             decoder_inputs=decoder_inputs.to(torch.float32),

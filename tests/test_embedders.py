@@ -67,9 +67,9 @@ def test_rotary_embedding_forward(embedding_params):
     )
     # FIX: The forward pass now takes a tensor 'x' as input
     output = emb(input_tensor)
-    assert output.shape == input_tensor.shape
+    assert output[0].shape == input_tensor.shape
     # Rotary embeddings modify the input tensor
-    assert not torch.allclose(input_tensor, output)
+    assert not torch.allclose(input_tensor, output[0])
 
 def test_patch_embedding_forward(embedding_params):
     """Tests the forward pass of TimeSeriesPatchEmbedding."""

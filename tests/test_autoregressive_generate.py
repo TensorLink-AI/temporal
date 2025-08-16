@@ -45,8 +45,8 @@ def patched_model_config():
             )
         ],
         value_embedding_config=EmbeddingConfig(type="patch", kwargs={"patch_size": 2}),
-        # FIX: Removed `loss_type` and set `type` directly to "mse"
-        loss_config=LossConfig(type="mse"),
+        # FIX: Changed `loss_type` and set `type` directly to "timeseries_generic"
+        loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
