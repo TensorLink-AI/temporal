@@ -128,32 +128,49 @@ class InputPreprocessor(nn.Module):
         past_key_values_length: int,
         is_causal: bool,
     ) -> Optional[torch.Tensor]:
-        """
-        Creates a 4D attention mask, handling patching internally.
-        """
         bsz, seq_len = input_shape
+        dtype = inputs_embeds.dtype
+        device = inputs_embeds.device
+
         final_mask = None
-        
+
+        # 1) Causal mask is always built to total K length
         if is_causal:
             final_mask = self._make_causal_mask(
-                (bsz, seq_len), 
-                inputs_embeds.dtype, 
-                device=inputs_embeds.device, 
-                past_key_values_length=past_key_values_length
-            )
-        
-        if attention_mask is not None:
-            if self.is_patched:
-                # Downsample the attention mask if patching is used
-                patch_mask_bool = attention_mask.unfold(1, self.patch_size, self.patch_stride).any(dim=-1)
-                processed_mask = patch_mask_bool.to(attention_mask.dtype)
-            else:
-                processed_mask = attention_mask
+                (bsz, seq_len),
+                dtype,
+                device,
+                past_key_values_length=past_key_values_length,
+            )  # [B,1,T_q,(past+T_q)]
 
-            expanded_padding_mask = self._expand_mask(processed_mask, inputs_embeds.dtype, tgt_len=seq_len).to(inputs_embeds.device)
-            final_mask = expanded_padding_mask if final_mask is None else final_mask + expanded_padding_mask
+        if attention_mask is not None:
+            processed_mask = attention_mask
+
+            # (a) If you used patching for values, downsample the attention mask
+            if self.is_patched:
+                # [B, L] -> [B, L_patches]
+                processed_mask = processed_mask.unfold(1, self.patch_size, self.patch_stride).any(dim=-1)
+                processed_mask = processed_mask.to(attention_mask.dtype)
+
+            # (b) Make sure mask lives with embeds
+            processed_mask = processed_mask.to(device=device, dtype=inputs_embeds.dtype)
+
+            # (c) ***CRITICAL***: when caching, pad LEFT with 1s for past tokens so src_len==past+T_q
+            if is_causal and past_key_values_length > 0:
+                # mask convention here: 1 = valid, 0 = padding
+                processed_mask = torch.nn.functional.pad(
+                    processed_mask, (past_key_values_length, 0), value=1.0
+                )
+
+            # (d) Expand to 4D; tgt_len stays T_q, src_len is now total_k_len
+            expanded_padding_mask = self._expand_mask(
+                processed_mask, dtype=dtype, tgt_len=seq_len
+            ).to(device)
+
+            final_mask = expanded_padding_mask if final_mask is None else (final_mask + expanded_padding_mask)
 
         return final_mask
+
 
 
 
