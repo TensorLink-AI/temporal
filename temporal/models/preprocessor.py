@@ -156,6 +156,7 @@ class InputPreprocessor(nn.Module):
         return final_mask
 
 
+
     def _make_causal_mask(
         self,
         input_ids_shape: torch.Size,
@@ -165,27 +166,26 @@ class InputPreprocessor(nn.Module):
     ) -> torch.Tensor:
         """
         Creates a lower-triangular causal mask correctly handling past_key_values.
+        This is a robust implementation that directly builds the correct mask shape.
         """
         bsz, tgt_len = input_ids_shape
-        
-        # --- FIX: The mask must cover the TOTAL length (past + current) ---
         total_len = tgt_len + past_key_values_length
-        
-        # Create a mask for the full sequence length
-        mask = torch.full((total_len, total_len), torch.finfo(dtype).min, device=device)
-        mask_cond = torch.arange(mask.size(-1), device=device)
-        mask.masked_fill_(mask_cond[None, :] <= mask_cond[:, None], 0)
-        
-        # When generating step-by-step (tgt_len=1), we only need the last row of this full mask
-        # which shows what the current token can attend to.
-        # The final mask shape needs to be (bsz, 1, tgt_len, total_len)
-        final_mask = mask[None, None, :, :].expand(bsz, 1, total_len, total_len)
-        
-        # When decoding, we only care about the queries related to new tokens
-        if tgt_len != total_len:
-            final_mask = final_mask[:, :, -tgt_len:, :]
-            
-        return final_mask
+
+        # Create indices for the target (query) and source (key) sequence lengths
+        q_indices = torch.arange(tgt_len, device=device).view(tgt_len, 1)
+        k_indices = torch.arange(total_len, device=device).view(1, total_len)
+
+        # The query position index must be offset by the past length
+        # to correctly compare with the key indices.
+        # Condition for masking: key_position > query_position
+        mask_cond = k_indices > (q_indices + past_key_values_length)
+
+        # Create a float mask where masked positions are -inf and unmasked are 0.0
+        mask = torch.where(mask_cond, torch.finfo(dtype).min, 0.0)
+
+        # Expand to the 4D shape required for attention: [B, H, T_q, T_k]
+        # The head dimension (H) will be broadcasted automatically.
+        return mask[None, None, :, :].expand(bsz, 1, tgt_len, total_len)
 
     def _expand_mask(
         self,
