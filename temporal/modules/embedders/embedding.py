@@ -94,43 +94,38 @@ class FlexibleValueEmbedding(BaseEmbedding):
 # -----------------------------
 # Sinusoidal Positional Embedding
 # -----------------------------
-# In temporal/modules/embedders/embedding.py
 
+@register_module("embedding", "sinusoidal")
 class SinusoidalPositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, max_seq_len: int = 2048):
-        super().__init__()
-        self.d_model = d_model
+        super().__init__(d_model)  # <-- important
+        self.max_seq_len = max_seq_len
 
-        pe = torch.zeros(max_seq_len, d_model)
-        position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
+        # canonical interleaved sin/cos
+        position = torch.arange(max_seq_len, dtype=torch.float32).unsqueeze(1)  # [T,1]
         div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
-        )
+            torch.arange(0, d_model, 2, dtype=torch.float32) * (-math.log(10000.0) / d_model)
+        )  # [D/2]
+        pe = torch.zeros(max_seq_len, d_model, dtype=torch.float32)             # [T,D]
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        
-        # FIX: Add a dimension to make the buffer shape [1, max_seq_len, d_model].
-        pe = pe.unsqueeze(0)
-        
-        self.register_buffer("pe", pe)
+        self.register_buffer("pe", pe, persistent=False)
 
-    def forward(self, x: torch.Tensor, past_key_values_length: int = 0, **kwargs) -> torch.Tensor:
-        """
-        Returns positional encoding.
-        """
-        seq_len = kwargs.get("seq_len", x.shape[1])
-        batch_size = kwargs.get("batch_size", x.shape[0])
-
-        positions = torch.arange(
-            past_key_values_length,
-            past_key_values_length + seq_len,
-            dtype=torch.long,
-            device=self.pe.device,
-        )
-        
-        # This indexing now works because self.pe is 3D
-        pos_embedding = self.pe[:, positions, :]
-        return pos_embedding.expand(batch_size, -1, -1)
+    @torch.no_grad()
+    def forward(
+        self,
+        batch_size: int,
+        seq_len: int,
+        past_key_values_length: int = 0,
+    ) -> torch.Tensor:
+        start = past_key_values_length
+        end = start + seq_len
+        if end > self.max_seq_len:
+            raise IndexError(
+                f"Requested positions [{start}:{end}) exceed max_seq_len={self.max_seq_len}"
+            )
+        # [seq_len, d_model] -> [1, seq_len, d_model] -> [B, seq_len, d_model]
+        return self.pe[start:end].unsqueeze(0).expand(batch_size, -1, -1)
 
 # Patch Embedding
 @register_module("embedding", "patch")
