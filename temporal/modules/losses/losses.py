@@ -115,7 +115,7 @@ class TimeSeriesLoss(BaseLoss):
     def __init__(
         self,
         loss_type: str = "mse",
-        quantiles: list = [0.1, 0.5, 0.9],
+        quantiles: list = [0.5],
         reduction: str = "mean",
         **kwargs,
     ):

@@ -27,7 +27,7 @@ class TimeSeriesLossConfig(LossConfig):
     """
     type: str = field(default="timeseries_generic")
     loss_type: str = field(default="mse") # The actual underlying loss (e.g., 'mse', 'mae')
-    quantiles: List[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
+    quantiles: List[float] = field(default_factory=lambda: [ 0.5])
 
 
 @register_config_type("mse_loss")
