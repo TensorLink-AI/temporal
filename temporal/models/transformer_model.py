@@ -12,6 +12,13 @@ from temporal.models.mixin.multistep import MultiStepMixin
 from temporal.models.preprocessor import InputPreprocessor
 from temporal.models.module_builder_helper import ModuleBuilder
 
+# Import necessary components for internal building
+from temporal.models.output_head_builder import OutputHeadBuilder
+from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
+from temporal.modules.decoders.decoders import TimeSeriesTransformerDecoder
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+
+
 @dataclass
 class TransformerOutput:
     """
@@ -80,7 +87,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
 
     def __init__(
         self,
-        config,
+        config: TransformerTimeSeriesConfig, # Explicitly type hint config
         encoder: Optional[nn.Module] = None,
         decoder: Optional[nn.Module] = None,
         output_heads: Optional[nn.Module] = None,
@@ -91,24 +98,59 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         """
         Initializes the TransformerTemporalModel in an order that matches the
         forward pass for clearer model summaries.
+        Components are built if not explicitly provided, ensuring a complete architecture.
         """
         super().__init__(config)
 
         if builder is None:
             builder = ModuleBuilder(config)
+        self.builder = builder # Store builder for potential future use
 
         # 1. Preprocessor is the first step in the forward pass.
-        self.preprocessor = InputPreprocessor(config, builder)
+        self.preprocessor = InputPreprocessor(config, self.builder)
 
-        # 2. Encoder runs second.
-        self.encoder = encoder
+        # 2. Encoder runs second. Build if not provided.
+        if encoder is not None:
+            self.encoder = encoder
+        elif config.architecture.layout in ("encoder", "encoder-decoder"):
+            if not config.encoder_blocks:
+                raise ValueError("Config specifies an encoder, but 'encoder_blocks' are not defined.")
+            self.encoder = TimeSeriesTransformerEncoder(
+                config=config,
+                builder=self.builder,
+                block_configs=config.encoder_blocks,
+            )
+        else:
+            self.encoder = None
 
-        # 3. Decoder runs third.
-        self.decoder = decoder
+        # 3. Decoder runs third. Build if not provided.
+        if decoder is not None:
+            self.decoder = decoder
+        elif config.architecture.layout in ("decoder", "encoder-decoder"):
+            if not config.decoder_blocks:
+                raise ValueError("Config specifies a decoder, but 'decoder_blocks' are not defined.")
+            self.decoder = TimeSeriesTransformerDecoder(
+                config=config,
+                builder=self.builder,
+                block_configs=config.decoder_blocks,
+            )
+        else:
+            self.decoder = None
 
-        # 4. Output heads run last.
-        self.output_heads = output_heads
-        self.head_aggregator = head_aggregator
+        # 4. Output heads run last. Build if not provided.
+        if output_heads is not None:
+            self.output_heads = output_heads
+        else:
+            output_head_builder = OutputHeadBuilder(config, self.builder)
+            self.output_heads = output_head_builder.build()
+
+        # Build the head aggregator if multiple output tokens are used and not provided.
+        if head_aggregator is not None:
+            self.head_aggregator = head_aggregator
+        elif config.output_token_lengths > 1 and config.head_agg_config:
+            self.head_aggregator = self.builder.build_head_aggregator(config.head_agg_config)
+        else:
+            self.head_aggregator = None
 
         self.output_patch_reconstructor = None # Start as None
         #  partion this out eventually to make it cleaner
@@ -134,12 +176,19 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                 print(f"INFO: Building Linear patch_merger (d_model -> {output_projection_size}).")
                 self.output_patch_reconstructor = nn.Linear(d_model, output_projection_size)
         
-        # 5. Loss function is not a module, but we assign it here.
-        self.loss_fn = loss_fn
+        # 5. Loss function. Build if not provided.
+        if loss_fn is not None:
+            self.loss_fn = loss_fn
+        else:
+            if not config.loss_config or not config.loss_config.type:
+                raise ValueError("Config must have a 'loss_config' with a 'type' key to build default loss.")
+            self.loss_fn = self.builder.build_loss(config.loss_config)
+            if self.loss_fn is None:
+                raise RuntimeError(f"Failed to build the loss function from config: {config.loss_config.type}")
 
         # Store dtypes for casting if necessary
-        self._encoder_dtype = getattr(encoder, 'dtype', torch.float32) if encoder else torch.float32
-        self._decoder_dtype = getattr(decoder, 'dtype', torch.float32) if decoder else torch.float32
+        self._encoder_dtype = getattr(self.encoder, 'dtype', torch.float32) if self.encoder else torch.float32
+        self._decoder_dtype = getattr(self.decoder, 'dtype', torch.float32) if self.decoder else torch.float32
 
 
     def forward(
@@ -259,6 +308,8 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             reconstructed_output = self.output_patch_reconstructor(input_to_heads)
             
             B, T_tok, _ = reconstructed_output.shape
+            # Ensure patch_size is accessible for reconstruction
+            patch_size = self.preprocessor.patch_size 
             output_patch_size = getattr(self.preprocessor.value_embedding, 'output_patch_size', patch_size)
             d_model = self.config.d_model
             input_to_heads = reconstructed_output.view(B, T_tok * output_patch_size, d_model)

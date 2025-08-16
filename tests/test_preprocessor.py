@@ -92,7 +92,7 @@ def test_verbose_output(preprocessor, capsys):
 
 def test_patched_preprocessor_padding(base_config):
     """Tests that the preprocessor correctly pads for patch embedding."""
-    # FIX: Create a new config from a dict instead of using deepcopy and modifying it.
+    # FIX: Instantiate TimeSeriesPatchEmbeddingConfig directly with kw-only args.
     patched_config_dict = base_config.to_dict()
     patched_config_dict["value_embedding_config"] = TimeSeriesPatchEmbeddingConfig(
         patch_size=4, feature_size=4
