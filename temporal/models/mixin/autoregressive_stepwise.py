@@ -250,7 +250,7 @@ class AutoregressiveStepwiseMixin:
         eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
 
         for _ in range(prediction_length):
-            past_kv_length = _get_cache_length(past_key_values)
+            past_kv_length = self._get_cache_length(past_key_values)
 
             step_input = decoder_inputs[:, -1:, :] if use_cache and past_key_values is not None else decoder_inputs
             
