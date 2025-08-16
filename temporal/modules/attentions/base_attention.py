@@ -214,7 +214,7 @@ class BaseMultiHeadAttention(nn.Module):
             probs = probs * head_mask.view(1, -1, 1, 1)
 
         # --- 4) output ---
-        out = torch.matmul(probs, v)                  # [B, H, T, D]
+        out = torch.matmul(probs, v.to(probs.dtype))  # [B, H, T, D]
         out = out.transpose(1, 2).reshape(B, T, -1)   # [B, T, E]
         out = self.out_proj(out)
 

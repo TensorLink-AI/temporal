@@ -10,7 +10,6 @@ from temporal.configs.transformer_block_config import (
     DecoderBlockConfig,
 )
 from temporal.configs.output_head_config import OutputHeadConfig
-# FIX: Add missing imports for the config objects
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
@@ -21,7 +20,6 @@ from temporal.configs.feedforward_config import StandardFeedForwardConfig
 @pytest.fixture
 def generation_config():
     """Provides a standard config for an encoder-decoder model suitable for generation."""
-    # FIX: This fixture has been completely updated to the new config structure
     ffn_config = StandardFeedForwardConfig(type="standard", intermediate_size=32)
     
     return TransformerTimeSeriesConfig(
@@ -29,16 +27,12 @@ def generation_config():
         d_model=16,
         context_length=10,
         prediction_length=5,
-        # FIX: Instantiate the ArchitectureConfig object directly
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        # FIX: Use a valid, registered loss type
         loss_config=LossConfig(type="timeseries_generic"),
-        use_cache=True,  # Explicitly enable KV Caching
+        use_cache=True,
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
-        # FIX: Provide full block configs with required ffn_config
-        # The original config had num_layers=2, so we create two blocks.
         encoder_blocks=[
             EncoderBlockConfig(type="default_encoder", ffn_config=ffn_config),
             EncoderBlockConfig(type="default_encoder", ffn_config=ffn_config),
@@ -64,7 +58,7 @@ def test_kv_cache_correctness(generation_model, generation_config):
     This is a critical test for ensuring autoregressive generation is correct.
     """
     model = generation_model
-    model.eval()  # Ensure dropout is disabled
+    model.eval()
 
     batch_size = 2
     past_values = torch.randn(
@@ -106,10 +100,8 @@ def test_kv_cache_correctness(generation_model, generation_config):
                 use_cache=True,
             )
 
-            # The output of the decoder is the *next* token's representation
             hidden_state = output.last_hidden_state
-            # Project to logits
-            next_logit = model.output_heads["default"](hidden_state)
+            next_logit = model.output_heads(hidden_state)
 
             iterative_logits.append(next_logit)
             past_key_values = output.past_key_values
@@ -131,19 +123,14 @@ def test_model_serialization(generation_model):
     model.eval()
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # 1. Save the model
         model.save_pretrained(tmpdir)
 
-        # Check that essential files were created
         assert os.path.isfile(os.path.join(tmpdir, "config.json"))
         assert os.path.isfile(os.path.join(tmpdir, "pytorch_model.bin"))
 
-        # 2. Load the model from the saved directory
-        # We use the base class to call from_pretrained, as is standard
         reloaded_model = TransformerTemporalModel.from_pretrained(tmpdir)
         reloaded_model.eval()
 
-        # 3. Verify that the reloaded model has the same architecture and weights
         assert reloaded_model.config.to_dict() == model.config.to_dict()
 
         for p1, p2 in zip(model.parameters(), reloaded_model.parameters()):
@@ -164,11 +151,9 @@ def test_generation_output_shape(generation_model, generation_config):
         batch_size, generation_config.context_length, generation_config.feature_size
     )
 
-    # Generate a forecast
     with torch.no_grad():
         generated_sequence = model.generate(encoder_inputs=past_values)
 
-    # Check the output shape
     expected_shape = (
         batch_size,
         generation_config.prediction_length,
@@ -178,10 +163,17 @@ def test_generation_output_shape(generation_model, generation_config):
         f"Generated sequence shape is incorrect. Expected {expected_shape}, got {generated_sequence.shape}"
     )
 
-    # Test with a different batch size
     batch_size = 4
     past_values_b4 = torch.randn(
         batch_size, generation_config.context_length, generation_config.feature_size
     )
     with torch.no_grad():
         generated_sequence_b4 = model.generate(encoder_inputs=past_values_b4)
+        expected_shape_b4 = (
+            batch_size,
+            generation_config.prediction_length,
+            generation_config.feature_size,
+        )
+        assert generated_sequence_b4.shape == expected_shape_b4, (
+            f"Generated sequence shape for batch size 4 is incorrect. Expected {expected_shape_b4}, got {generated_sequence_b4.shape}"
+        )

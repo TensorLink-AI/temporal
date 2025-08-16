@@ -18,7 +18,7 @@ class AutoregressiveStepwiseMixin:
     def _get_scalar_value(self, value: Union[torch.Tensor, float, int, Any], name: str) -> Optional[float]:
         """ Safely converts a potential tensor value to a float scalar. """
         if value is None:
-            return 0.0
+            return None
         if torch.is_tensor(value):
             temp_value = value
             while temp_value.numel() > 1:
@@ -156,7 +156,7 @@ class AutoregressiveStepwiseMixin:
         self,
         encoder_inputs: Optional[torch.Tensor] = None,
         decoder_inputs: Optional[torch.Tensor] = None,
-        prediction_length: int = 0,
+        prediction_length: Optional[int] = None,
         attention_mask: Optional[torch.Tensor] = None,
         decoder_attention_mask: Optional[torch.Tensor] = None,
         use_cache: bool = True,
@@ -201,6 +201,9 @@ class AutoregressiveStepwiseMixin:
         self.eval()
         if encoder_inputs is None and decoder_inputs is None:
             raise ValueError("You must provide either 'encoder_inputs' or 'decoder_inputs'.")
+
+        if prediction_length is None:
+            prediction_length = getattr(self.config, 'prediction_length', 0)
 
         ref_tensor = decoder_inputs if encoder_inputs is None else encoder_inputs
         batch_size, device, dtype = ref_tensor.shape[0], ref_tensor.device, ref_tensor.dtype
@@ -287,7 +290,7 @@ class AutoregressiveStepwiseMixin:
                     break
         
         if not predictions:
-            return torch.empty((batch_size, 0, self.config.feature_size), device=device)
+            return torch.empty((batch_size, 0, self.config.feature_size), device=device, dtype=dtype)
 
         if isinstance(predictions[0], Dict):
             logger.info("AutoregressiveMixin returning a list of dictionaries. Skipping denormalization.")

@@ -1,14 +1,13 @@
 import torch
 import torch.nn as nn
 import copy
-from dataclasses import replace # FIX: Import the 'replace' function
+from dataclasses import replace 
 
 from temporal.models.mixin.adaptive_patching import PatchSplitting, PatchMerging
 from temporal.registry.core import register_module
 from temporal.models.module_builder_helper import ModuleBuilder
-from temporal.models.block_builder import BlockBuilder
 from temporal.models.outputs import DecoderLayerOutput
-from temporal.configs.transformer_block_config import TransformerBlockConfig, transformer_block_config_from_dict
+from temporal.configs.transformer_block_config import transformer_block_config_from_dict
 
 @register_module("block", "patch_transform_block")
 class PatchTransformBlock(nn.Module):
@@ -45,7 +44,6 @@ class PatchTransformBlock(nn.Module):
             self.patch_splitting = PatchSplitting(input_dim=d_model, expansion_factor=expansion_factor, use_mlp=True)
             self.patch_merging = PatchMerging(input_dim=inner_dim, merge_factor=expansion_factor, use_mlp=True)
             
-            # FIX: Create a new config with the modified d_model instead of assigning to a frozen one.
             temp_config = replace(original_config, d_model=inner_dim)
         
         elif self.order == 'merge_first':
@@ -58,7 +56,6 @@ class PatchTransformBlock(nn.Module):
             self.patch_merging = PatchMerging(input_dim=d_model, merge_factor=expansion_factor, use_mlp=True)
             self.patch_splitting = PatchSplitting(input_dim=inner_dim, expansion_factor=expansion_factor, use_mlp=True)
             
-            # FIX: Create a new config with the modified d_model.
             temp_config = replace(original_config, d_model=inner_dim)
 
         # --- Inner Layer Construction ---
@@ -70,8 +67,7 @@ class PatchTransformBlock(nn.Module):
             "kwargs": kwargs,
         }
         inner_layer_cfg = transformer_block_config_from_dict(inner_layer_cfg_dict)
-        # Assuming BlockBuilder is not needed and we can build directly
-        self.transformer_layer = temp_builder.module_builder._build("block", inner_layer_cfg)
+        self.transformer_layer = temp_builder.build_block(inner_layer_cfg)
 
     def forward(
         self,
