@@ -50,69 +50,40 @@ def generation_model(generation_config):
     torch.manual_seed(0)
     return build_time_series_transformer(generation_config)
 
+# In tests/test_model_integration.py
 
-def test_kv_cache_correctness(generation_model, generation_config):
-    """
-    Tests that a forward pass with KV caching token-by-token produces the
-    same result as a single forward pass with a causal mask.
-    This is a critical test for ensuring autoregressive generation is correct.
-    """
-    model = generation_model
-    model.eval()
-
-    batch_size = 2
-    past_values = torch.randn(
-        batch_size, generation_config.context_length, generation_config.feature_size
-    )
-    future_values = torch.randn(
-        batch_size, generation_config.prediction_length, generation_config.feature_size
-    )
-
-    # 1. Forward pass without cache (full sequence at once)
-    with torch.no_grad():
-        full_pass_output = model(
-            encoder_inputs=past_values, decoder_inputs=future_values
-        )
-    full_pass_logits = full_pass_output["logits"]
-
-    # 2. Forward pass with cache (token-by-token)
-    iterative_logits = []
-    past_key_values = None
-
-    # Encoder forward pass to get encoder_hidden_states
-    preprocessor_output = model.preprocessor.process(
-        past_values,
-    )
-    encoder_output = model.encoder(**preprocessor_output)
-    encoder_hidden_states = encoder_output.last_hidden_state
-
-    with torch.no_grad():
-        for i in range(generation_config.prediction_length):
-            # Use the single next token as input to the decoder
-            next_token_input = future_values[:, i : i + 1, :]
-            
-            preprocessor_output = model.preprocessor.process(next_token_input)
-            
-            output = model.decoder(
-                **preprocessor_output,
-                encoder_hidden_states=encoder_hidden_states,
-                past_key_values=past_key_values,
-                use_cache=True,
+    def test_kv_cache_correctness(generation_model, generation_config):
+        # ... (all the setup code remains the same) ...
+    
+        # 1. Forward pass without cache (full sequence at once)
+        with torch.no_grad():
+            full_pass_output = model(
+                encoder_inputs=past_values, decoder_inputs=future_values
             )
+        full_pass_logits = full_pass_output["logits"]
+    
+        # ... (iterative pass setup remains the same) ...
+    
+        iterative_logits = torch.cat(iter_logits, dim=1)
+    
+        # --- DEBUGGING: ADD THESE PRINT STATEMENTS ---
+        print("\n--- KV CACHE DEBUG ---")
+        print(f"Full Pass Logits Shape: {full_pass_logits.shape}")
+        print(f"Iterative Logits Shape: {iterative_logits.shape}")
+        print("\nFull Pass Logits:")
+        print(full_pass_logits)
+        print("\nIterative Logits:")
+        print(iterative_logits)
+        
+        abs_diff = torch.abs(full_pass_logits - iterative_logits)
+        print(f"\nMax Absolute Difference: {abs_diff.max().item()}")
+        print("--- END DEBUG ---\n")
+        # ---------------------------------------------
 
-            hidden_state = output.last_hidden_state
-            next_logit = model.output_heads(hidden_state)
-
-            iterative_logits.append(next_logit)
-            past_key_values = output.past_key_values
-
-    iterative_logits = torch.cat(iterative_logits, dim=1)
-
-    # 3. Compare the results
-    assert torch.allclose(full_pass_logits, iterative_logits, atol=1e-5), (
-        "Logits from single forward pass and iterative pass with KV cache do not match."
-    )
-
+        # 3. Compare the results
+        assert torch.allclose(full_pass_logits, iterative_logits, atol=1e-5), (
+            "Logits from single forward pass and iterative pass with KV cache do not match."
+        )
 import os
 import tempfile
 import torch
