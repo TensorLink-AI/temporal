@@ -274,7 +274,17 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             if decoder_inputs is None:
                 raise ValueError("The model's decoder requires 'decoder_inputs'.")
             
-            past_kv_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+
+            # NEW
+            past_kv_length = 0
+            if past_key_values is not None:
+                try:
+                    # first layer's self-attn key: (B, H, T_cached, Dh) -> use T_cached
+                    k0 = past_key_values[0][0]
+                    past_kv_length = k0.size(-2)
+                except Exception:
+                    # very safe fallback: everything before current step is "past"
+                    past_kv_length = decoder_inputs.size(1) - 1
 
             processed_decoder = self.preprocessor.process(
                 input_values=decoder_inputs,
