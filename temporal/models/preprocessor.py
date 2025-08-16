@@ -121,6 +121,8 @@ class InputPreprocessor(nn.Module):
         return data
 
 
+    # In temporal/models/preprocessor.py
+
     def _prepare_attention_mask(
         self,
         attention_mask: Optional[torch.Tensor],
@@ -129,55 +131,36 @@ class InputPreprocessor(nn.Module):
         past_key_values_length: int,
         is_causal: bool,
     ) -> Optional[torch.Tensor]:
-        """
-        Creates a 4D attention mask, correctly handling both causal masking
-        and padding with a KV cache.
-        """
         bsz, seq_len = input_shape
         dtype = inputs_embeds.dtype
         device = inputs_embeds.device
         final_mask = None
 
-        # 1. Create the causal mask if required.
-        # This mask is correctly shaped [B, 1, seq_len, total_len].
         if is_causal:
             final_mask = self._make_causal_mask(
-                (bsz, seq_len),
-                dtype,
-                device,
-                past_key_values_length=past_key_values_length,
+                (bsz, seq_len), dtype, device, past_key_values_length
             )
 
-        # 2. Process the padding mask if one is provided.
         if attention_mask is not None:
-            # Downsample the padding mask if using patches.
+            processed_mask = attention_mask
             if self.is_patched:
-                processed_mask = attention_mask.unfold(1, self.patch_size, self.patch_stride).any(dim=-1)
-            else:
-                processed_mask = attention_mask
-
-            processed_mask = processed_mask.to(device=device, dtype=torch.bool) # Use bool for clarity
+                processed_mask = processed_mask.unfold(1, self.patch_size, self.patch_stride).any(dim=-1)
+            
+            processed_mask = processed_mask.to(device=device)
 
             # *** THE CRITICAL FIX ***
-            # When caching, the padding mask must account for the past keys, which are not padded.
-            # We left-pad the mask with `True` (attendable) for the length of the cache.
+            # When caching, pad the 2D mask on the left for the past keys.
             if is_causal and past_key_values_length > 0:
                 pad_left = (past_key_values_length, 0)
                 processed_mask = torch.nn.functional.pad(
-                    processed_mask, pad_left, value=True
+                    processed_mask, pad_left, value=1.0 # 1.0 means "attendable"
                 )
 
-            # Expand the 2D padding mask to a 4D attention mask.
-            # After padding, its last dimension correctly matches the total key length.
             expanded_padding_mask = self._expand_mask(
                 processed_mask, dtype=dtype, tgt_len=seq_len
             ).to(device)
 
-            # Combine the causal and padding masks.
-            if final_mask is None:
-                final_mask = expanded_padding_mask
-            else:
-                final_mask = final_mask + expanded_padding_mask
+            final_mask = expanded_padding_mask if final_mask is None else (final_mask + expanded_padding_mask)
                 
         return final_mask
 
