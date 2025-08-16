@@ -95,37 +95,58 @@ class FlexibleValueEmbedding(BaseEmbedding):
 # Sinusoidal Positional Embedding
 # -----------------------------
 
+
 @register_module("embedding", "sinusoidal")
 class SinusoidalPositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, max_seq_len: int = 2048):
-        super().__init__(d_model)  # <-- important
-        self.max_seq_len = max_seq_len
-
-        # canonical interleaved sin/cos
-        position = torch.arange(max_seq_len, dtype=torch.float32).unsqueeze(1)  # [T,1]
+        super().__init__(d_model)
+        self.d_model = d_model
+        pe = torch.zeros(max_seq_len, d_model)
+        position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(
-            torch.arange(0, d_model, 2, dtype=torch.float32) * (-math.log(10000.0) / d_model)
-        )  # [D/2]
-        pe = torch.zeros(max_seq_len, d_model, dtype=torch.float32)             # [T,D]
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe, persistent=False)
+        self.register_buffer("pe", pe.unsqueeze(0))  # [1, T, D]
 
-    @torch.no_grad()
     def forward(
         self,
-        batch_size: int,
-        seq_len: int,
+        x: torch.Tensor | None = None,
+        *,
+        batch_size: int | None = None,
+        seq_len: int | None = None,
         past_key_values_length: int = 0,
+        **kwargs
     ) -> torch.Tensor:
-        start = past_key_values_length
-        end = start + seq_len
-        if end > self.max_seq_len:
-            raise IndexError(
-                f"Requested positions [{start}:{end}) exceed max_seq_len={self.max_seq_len}"
+        """
+        Two calling conventions:
+          1) emb(x): returns x + PE  (shape [B, T, D])
+          2) emb(batch_size=..., seq_len=..., [x=...]): returns PE only (shape [B, T, D])
+             (x is ignored in this mode; it is accepted for API symmetry)
+        """
+        # additive mode (emb(x))
+        if x is not None and (batch_size is None or seq_len is None):
+            B, T, D = x.shape
+            positions = torch.arange(
+                past_key_values_length, past_key_values_length + T,
+                dtype=torch.long, device=x.device
             )
-        # [seq_len, d_model] -> [1, seq_len, d_model] -> [B, seq_len, d_model]
-        return self.pe[start:end].unsqueeze(0).expand(batch_size, -1, -1)
+            pe = self.pe[:, positions, :].to(dtype=x.dtype, device=x.device)  # [1, T, D]
+            return x + pe.expand(B, -1, -1)
+
+        # PE-only mode (emb(batch_size=..., seq_len=...))
+        if batch_size is None or seq_len is None:
+            raise TypeError("SinusoidalPositionalEmbedding.forward expected either "
+                            "`x` or both `batch_size` and `seq_len`.")
+        device = self.pe.device if x is None else x.device
+        dtype = self.pe.dtype if x is None else x.dtype
+        positions = torch.arange(
+            past_key_values_length, past_key_values_length + seq_len,
+            dtype=torch.long, device=device
+        )
+        pe = self.pe[:, positions, :].to(dtype=dtype, device=device)  # [1, T, D]
+        return pe.expand(batch_size, -1, -1)
 
 # Patch Embedding
 @register_module("embedding", "patch")
@@ -325,54 +346,32 @@ class FourierFeatureEmbedding(BaseEmbedding):
 # -----------------------------
 # Time2Vec Embedding
 # -----------------------------
-
 @register_module("embedding", "time2vec")
 class Time2VecEmbedding(BaseEmbedding):
-    """
-    Time2Vec positional embedding: 1 linear + sinusoidal components.
-    If use_cos=True, uses (d_model - 1) // 2 sin/cos pairs (RoPE-compatible).
-    If use_cos=False, uses (d_model - 1) sin components (original Time2Vec).
-    """
     def __init__(self, d_model: int, use_cos: bool = True):
-        """
-        Args:
-            d_model: Output embedding dimension (must be >= 2).
-            use_cos: If True, use sin+cos pairs (RoPE-aligned). If False, sin only.
-        """
         super().__init__(d_model)
-        assert d_model >= 2, "d_model must be >= 2"
-
+        assert d_model >= 2
         self.use_cos = use_cos
         self.linear = nn.Linear(1, 1)
 
-        if use_cos:
-            self.num_freqs = (d_model - 1) // 2
-            out_dim = 2 * self.num_freqs
-        else:
-            self.num_freqs = d_model - 1
-            out_dim = self.num_freqs
+        base_freqs = (d_model - 1) // 2 if use_cos else (d_model - 1)
+        self.periodic = nn.Linear(1, base_freqs)
+        out_dim = 1 + (2 * base_freqs if use_cos else base_freqs)
+        self._needs_proj = (out_dim != d_model)
+        if self._needs_proj:
+            self.out_proj = nn.Linear(out_dim, d_model, bias=False)
 
-        self.periodic = nn.Linear(1, self.num_freqs)
-        self.d_model = 1 + out_dim  # 1 linear + sin/cos or sin only
-
-    def forward(self, x: torch.Tensor, past_key_values_length: int = 0, **kwargs) -> torch.Tensor:
-        batch_size, seq_len, _ = x.shape
+    def forward(self, batch_size: int, seq_len: int, past_key_values_length: int = 0, **_):
         device = next(self.parameters()).device
-        t = torch.arange(past_key_values_length, past_key_values_length + seq_len, device=device, dtype=torch.float32).view(-1, 1)  # [T, 1]
-
-        lin_part = self.linear(t)  # [T, 1]
-        freq_proj = self.periodic(t)  # [T, num_freqs]
-
-        if self.use_cos:
-            sin_part = torch.sin(freq_proj)
-            cos_part = torch.cos(freq_proj)
-            per_part = torch.cat([sin_part, cos_part], dim=-1)  # [T, 2 * num_freqs]
-        else:
-            per_part = torch.sin(freq_proj)  # [T, d_model - 1]
-
-        embeddings = torch.cat([lin_part, per_part], dim=-1)  # [T, d_model]
-        embeddings = embeddings.unsqueeze(0).expand(batch_size, -1, -1)  # [B, T, d_model]
-        return embeddings
+        t = torch.arange(past_key_values_length, past_key_values_length + seq_len,
+                         device=device, dtype=torch.float32).view(-1, 1)  # [T,1]
+        lin = self.linear(t)                # [T,1]
+        f = self.periodic(t)                # [T,F]
+        per = torch.cat([torch.sin(f), torch.cos(f)], dim=-1) if self.use_cos else torch.sin(f)
+        emb = torch.cat([lin, per], dim=-1)  # [T,out_dim]
+        if self._needs_proj:
+            emb = self.out_proj(emb)         # [T,d_model]
+        return emb.unsqueeze(0).expand(batch_size, -1, -1)
 
 
 

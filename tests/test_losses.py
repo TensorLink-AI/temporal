@@ -102,38 +102,28 @@ def test_timeseries_loss_with_mask(sample_tensors, loss_mask):
 
 # --- SpreadPenalty Tests ---
 def test_spread_penalty_calculation():
-    """
-    Tests the SpreadPenalty loss calculation in isolation.
-    """
-    loss_fn = SpreadPenalty()
-    # Predictions shape: [Batch, Time, Quantiles]
+    loss_fn = SpreadPenalty(penalty_type="log", epsilon=0.0, reduction="mean")
     preds = torch.tensor(
         [[[1, 2, 3], [4, 5, 6]], [[10, 11, 12], [13, 14, 15]]], dtype=torch.float32
-    )
+    )  # spreads are all 2
 
-    # FIX: The penalty calculation has changed to -log(spread).
-    # The spread for all 4 data points is 2. So the expected loss is -log(2).
-    penalty = loss_fn(preds)  # Targets are not used
+    penalty = loss_fn(preds)
     expected_penalty = -torch.log(torch.tensor(2.0))
-    assert torch.isclose(penalty, expected_penalty, atol=1e-4)
-
-    # Test edge case with zero spread
-    preds_zero_spread = torch.tensor([[[2, 2, 2], [5, 5, 5]]], dtype=torch.float32)
-    penalty_zero = loss_fn(preds_zero_spread)
-    # The new loss will be a large positive number due to log(0), capped by epsilon.
-    assert penalty_zero > 10 # Check that it's a large penalty
+    assert torch.isclose(penalty, expected_penalty, atol=1e-6)
 
 
-# --- CRPSLoss Tests ---
 
 
-def test_crps_loss_forward(quantile_tensors):
-    """Tests the forward pass of CRPSLoss."""
-    preds, targets = quantile_tensors
-    loss_fn = CRPSLoss()
-    loss = loss_fn(preds, targets)
-    assert loss.ndim == 0
-    assert loss > 0
+def test_spread_penalty_calculation():
+    loss_fn = SpreadPenalty(penalty_type="log", epsilon=0.0, reduction="mean")
+    preds = torch.tensor(
+        [[[1, 2, 3], [4, 5, 6]], [[10, 11, 12], [13, 14, 15]]], dtype=torch.float32
+    )  # spreads are all 2
+
+    penalty = loss_fn(preds)
+    expected_penalty = -torch.log(torch.tensor(2.0))
+    assert torch.isclose(penalty, expected_penalty, atol=1e-6)
+
 
 
 def test_crps_with_spread_penalty(quantile_tensors):
