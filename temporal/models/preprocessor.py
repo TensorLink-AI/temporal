@@ -64,7 +64,16 @@ class InputPreprocessor(nn.Module):
         Processes raw input tensors into embeddings and masks.
         """
         if verbose: print(f"[Preprocessor] Initial input shape: {input_values.shape}")
-
+        if not hasattr(self, "_running_offset"):
+            self._running_offset = 0
+        if past_key_values_length is None:
+            if L == 1:
+                past_key_values_length = self._running_offset
+                self._running_offset += 1
+            else:
+                # any multi-token call resets the cursor
+                self._running_offset = 0
+                past_key_values_length = 0
         # --- Apply Instance Normalization if configured ---
         if self.instance_norm is not None:
             input_values = self.instance_norm(input_values, mode='norm', mask=attention_mask)
@@ -86,6 +95,8 @@ class InputPreprocessor(nn.Module):
             seq_len=seq_len_after_patching,
             past_key_values_length=past_key_values_length
         )
+        pos_embed= pos_embed.to(dtype=value_embeds.dtype, device=value_embeds.device)
+
         if verbose: print(f"[Preprocessor] Positional embedding shape: {pos_embed.shape}")
 
         if validate_shapes:
