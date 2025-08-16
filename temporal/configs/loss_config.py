@@ -18,16 +18,31 @@ class LossConfig(BaseConfig):
         super().__post_init__()
         pass
 
-# FIX: Added a new config class for the 'timeseries_generic' loss type.
+# temporal/configs/loss_config.py
+from typing import Optional, List
+
+PROBABILISTIC_LOSSES = ["quantile", "mq", "crps"]
+
 @register_config_type("timeseries_generic")
 @dataclass(frozen=True, kw_only=True)
 class TimeSeriesLossConfig(LossConfig):
-    """
-    Configuration for the generic TimeSeriesLoss, which can handle mse, mae, etc.
-    """
     type: str = field(default="timeseries_generic")
-    loss_type: str = field(default="mse") # The actual underlying loss (e.g., 'mse', 'mae')
-    quantiles: List[float] = field(default_factory=lambda: [ 0.5])
+    loss_type: str = field(default="mse")
+    # Use Optional so we can omit it when not needed
+    quantiles: Optional[List[float]] = field(default=None)
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.loss_type in PROBABILISTIC_LOSSES:
+            qs = self.quantiles
+            if not qs or not all(0.0 < q < 1.0 for q in qs):
+                raise ValueError(
+                    f"{self.loss_type} requires quantiles in (0,1); got {qs}"
+                )
+        else:
+            # Ensure non-probabilistic configs don’t carry stray quantiles
+            object.__setattr__(self, "quantiles", None)
+
 
 
 @register_config_type("mse_loss")

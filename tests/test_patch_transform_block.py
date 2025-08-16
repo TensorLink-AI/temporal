@@ -40,9 +40,9 @@ def test_patch_transform_block_init(mock_builder, order):
     expansion_factor = 2
     d_model = mock_builder.config.d_model
 
-    # Create default AttentionConfig and FeedForwardConfig instances
-    default_attention_config = AttentionConfig()
-    default_ffn_config = FeedForwardConfig()
+    # Create default AttentionConfig and FeedForwardConfig instances with required args
+    default_attention_config = AttentionConfig(num_heads=4) # num_heads is a required kw_only arg
+    default_ffn_config = FeedForwardConfig(intermediate_size=2048) # intermediate_size is required for StandardFeedForwardConfig
 
     # Create the AdaptivePatchTransformerBlockConfig to pass to PatchTransformBlock
     patch_block_config = AdaptivePatchTransformerBlockConfig(
@@ -74,9 +74,9 @@ def test_patch_transform_block_forward_split_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    # Create default AttentionConfig and FeedForwardConfig instances
-    default_attention_config = AttentionConfig()
-    default_ffn_config = FeedForwardConfig()
+    # Create default AttentionConfig and FeedForwardConfig instances with required args
+    default_attention_config = AttentionConfig(num_heads=4)
+    default_ffn_config = FeedForwardConfig(intermediate_size=2048)
 
     # Create the AdaptivePatchTransformerBlockConfig
     patch_block_config = AdaptivePatchTransformerBlockConfig(
@@ -104,9 +104,9 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    # Create default AttentionConfig and FeedForwardConfig instances
-    default_attention_config = AttentionConfig()
-    default_ffn_config = FeedForwardConfig()
+    # Create default AttentionConfig and FeedForwardConfig instances with required args
+    default_attention_config = AttentionConfig(num_heads=4)
+    default_ffn_config = FeedForwardConfig(intermediate_size=2048)
 
     # Create the AdaptivePatchTransformerBlockConfig
     patch_block_config = AdaptivePatchTransformerBlockConfig(
@@ -148,9 +148,9 @@ def test_patch_transform_block_merge_first_invalid_expansion(mock_builder):
     # after the config is passed.
     expansion_factor = 3 # Invalid for merge_first
 
-    # Create default AttentionConfig and FeedForwardConfig instances
-    default_attention_config = AttentionConfig()
-    default_ffn_config = FeedForwardConfig()
+    # Create default AttentionConfig and FeedForwardConfig instances with required args
+    default_attention_config = AttentionConfig(num_heads=4)
+    default_ffn_config = FeedForwardConfig(intermediate_size=2048)
 
     with pytest.raises(
         ValueError,
@@ -180,8 +180,8 @@ def test_patch_transform_block_non_divisible_d_model_split_first(mock_builder):
     expansion_factor = 2
 
     # Create default AttentionConfig and FeedForwardConfig instances for the bad_builder context
-    default_attention_config = AttentionConfig() # These defaults are fine, as the problem is with d_model/expansion_factor
-    default_ffn_config = FeedForwardConfig()
+    default_attention_config = AttentionConfig(num_heads=4) # Provide required arg
+    default_ffn_config = FeedForwardConfig(intermediate_size=2048) # Provide required arg
 
     # The validation for non-divisible d_model happens in PatchTransformBlock's __init__
     with pytest.raises(
