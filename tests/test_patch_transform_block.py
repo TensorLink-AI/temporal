@@ -15,7 +15,7 @@ from dataclasses import replace
 from temporal.configs.transformer_block_config import transformer_block_config_from_dict, AdaptivePatchTransformerBlockConfig # Import AdaptivePatchTransformerBlockConfig
 from temporal.models.mixin.adaptive_patching import PatchSplitting, PatchMerging
 from temporal.configs.attention_config import AttentionConfig # Import AttentionConfig
-from temporal.configs.feedforward_config import FeedForwardConfig # Import FeedForwardConfig
+from temporal.configs.feedforward_config import FeedForwardConfig, StandardFeedForwardConfig # Import FeedForwardConfig and StandardFeedForwardConfig
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def test_patch_transform_block_init(mock_builder, order):
 
     # Create default AttentionConfig and FeedForwardConfig instances with required args
     default_attention_config = AttentionConfig(num_heads=4) # num_heads is a required kw_only arg
-    default_ffn_config = FeedForwardConfig(intermediate_size=2048) # intermediate_size is required for StandardFeedForwardConfig
+    default_ffn_config = StandardFeedForwardConfig(intermediate_size=2048) # intermediate_size is required for StandardFeedForwardConfig
 
     # Create the AdaptivePatchTransformerBlockConfig to pass to PatchTransformBlock
     patch_block_config = AdaptivePatchTransformerBlockConfig(
@@ -76,7 +76,7 @@ def test_patch_transform_block_forward_split_first(mock_builder):
 
     # Create default AttentionConfig and FeedForwardConfig instances with required args
     default_attention_config = AttentionConfig(num_heads=4)
-    default_ffn_config = FeedForwardConfig(intermediate_size=2048)
+    default_ffn_config = StandardFeedForwardConfig(intermediate_size=2048)
 
     # Create the AdaptivePatchTransformerBlockConfig
     patch_block_config = AdaptivePatchTransformerBlockConfig(
@@ -106,7 +106,7 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
 
     # Create default AttentionConfig and FeedForwardConfig instances with required args
     default_attention_config = AttentionConfig(num_heads=4)
-    default_ffn_config = FeedForwardConfig(intermediate_size=2048)
+    default_ffn_config = StandardFeedForwardConfig(intermediate_size=2048)
 
     # Create the AdaptivePatchTransformerBlockConfig
     patch_block_config = AdaptivePatchTransformerBlockConfig(
@@ -131,6 +131,10 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
 def test_patch_transform_block_invalid_order(mock_builder):
     """Tests that PatchTransformBlock raises an error for an invalid order."""
     expansion_factor = 2
+    # Create default AttentionConfig and FeedForwardConfig instances with required args
+    default_attention_config = AttentionConfig(num_heads=4)
+    default_ffn_config = StandardFeedForwardConfig(intermediate_size=2048)
+
     # The validation for 'order' now happens in AdaptivePatchTransformerBlockConfig's __post_init__
     with pytest.raises(
         ValueError, match="order must be one of 'split_first' or 'merge_first'"
@@ -139,6 +143,8 @@ def test_patch_transform_block_invalid_order(mock_builder):
             expansion_factor=expansion_factor,
             wrapped_block_type="default_encoder",
             order="invalid_order",
+            attention_config=default_attention_config, # Added missing argument
+            ffn_config=default_ffn_config, # Added missing argument
         )
 
 
@@ -150,7 +156,7 @@ def test_patch_transform_block_merge_first_invalid_expansion(mock_builder):
 
     # Create default AttentionConfig and FeedForwardConfig instances with required args
     default_attention_config = AttentionConfig(num_heads=4)
-    default_ffn_config = FeedForwardConfig(intermediate_size=2048)
+    default_ffn_config = StandardFeedForwardConfig(intermediate_size=2048)
 
     with pytest.raises(
         ValueError,
@@ -181,7 +187,7 @@ def test_patch_transform_block_non_divisible_d_model_split_first(mock_builder):
 
     # Create default AttentionConfig and FeedForwardConfig instances for the bad_builder context
     default_attention_config = AttentionConfig(num_heads=4) # Provide required arg
-    default_ffn_config = FeedForwardConfig(intermediate_size=2048) # Provide required arg
+    default_ffn_config = StandardFeedForwardConfig(intermediate_size=2048) # Provide required arg
 
     # The validation for non-divisible d_model happens in PatchTransformBlock's __init__
     with pytest.raises(
