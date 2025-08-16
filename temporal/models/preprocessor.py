@@ -155,6 +155,7 @@ class InputPreprocessor(nn.Module):
 
         return final_mask
 
+
     def _make_causal_mask(
         self,
         input_ids_shape: torch.Size,
@@ -163,19 +164,28 @@ class InputPreprocessor(nn.Module):
         past_key_values_length: int = 0
     ) -> torch.Tensor:
         """
-        Creates a lower-triangular causal mask.
+        Creates a lower-triangular causal mask correctly handling past_key_values.
         """
         bsz, tgt_len = input_ids_shape
-        mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
+        
+        # --- FIX: The mask must cover the TOTAL length (past + current) ---
+        total_len = tgt_len + past_key_values_length
+        
+        # Create a mask for the full sequence length
+        mask = torch.full((total_len, total_len), torch.finfo(dtype).min, device=device)
         mask_cond = torch.arange(mask.size(-1), device=device)
         mask.masked_fill_(mask_cond[None, :] <= mask_cond[:, None], 0)
         
-        if past_key_values_length > 0:
-            mask = torch.cat(
-                [torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1
-            )
+        # When generating step-by-step (tgt_len=1), we only need the last row of this full mask
+        # which shows what the current token can attend to.
+        # The final mask shape needs to be (bsz, 1, tgt_len, total_len)
+        final_mask = mask[None, None, :, :].expand(bsz, 1, total_len, total_len)
         
-        return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
+        # When decoding, we only care about the queries related to new tokens
+        if tgt_len != total_len:
+            final_mask = final_mask[:, :, -tgt_len:, :]
+            
+        return final_mask
 
     def _expand_mask(
         self,
