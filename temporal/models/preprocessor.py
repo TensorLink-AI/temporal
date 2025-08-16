@@ -79,7 +79,13 @@ class InputPreprocessor(nn.Module):
         # --- Positional Embedding ---
         # FIX: Pass the value_embeds tensor to positional embedding. This is more robust
         # for device placement and for embeddings that modify the input tensor directly.
-        pos_embed = self.positional_embedding(x=value_embeds)
+        # ACTION: Standardized the call to self.positional_embedding for consistency.
+        pos_embed = self.positional_embedding(
+            x=value_embeds,
+            batch_size=batch_size_embed,
+            seq_len=seq_len_after_patching,
+            past_key_values_length=past_key_values_length
+        )
         if verbose: print(f"[Preprocessor] Positional embedding shape: {pos_embed.shape}")
 
         if validate_shapes:
@@ -183,6 +189,7 @@ class InputPreprocessor(nn.Module):
         inverted_mask = (1.0 - expanded_mask).to(dtype)
         
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
+    
     def _prepare_decoder_inputs_for_generation(
             self,
             patch_embeds: torch.Tensor,

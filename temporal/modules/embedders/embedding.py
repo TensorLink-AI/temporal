@@ -103,18 +103,17 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         pe[:, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
 
-    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, past_key_values_length: int = 0, **kwargs) -> torch.Tensor:
         """
-        Adds positional encoding to the input tensor.
+        Returns positional encoding.
         Args:
-            x: Input tensor of shape [B, L, D].
+            x: Input tensor of shape [B, L, D] (used for shape and device).
+            past_key_values_length: The length of the past key values.
         Returns:
-            Tensor with positional encodings added.
+            Positional encoding tensor.
         """
-        # The positional encoding is sliced up to the sequence length of the input
-        # and added to the input tensor `x`.
-        x = x + self.pe[:x.size(1), :]
-        return x
+        seq_len = x.size(1)
+        return self.pe[past_key_values_length : past_key_values_length + seq_len, :]
 
 # Patch Embedding
 @register_module("embedding", "patch")
@@ -224,7 +223,8 @@ class LearnedAbsolutePositionalEmbedding(BaseEmbedding):
         super().__init__(d_model)
         self.max_seq_len = max_seq_len
         self.embedding = nn.Embedding(max_seq_len, d_model)
-    def forward(self, batch_size: int, seq_len: int, past_key_values_length: int = 0) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, past_key_values_length: int = 0) -> torch.Tensor:
+        batch_size, seq_len, _ = x.shape
         start = past_key_values_length
         end = start + seq_len
         if end > self.max_seq_len:
@@ -327,7 +327,7 @@ class Time2VecEmbedding(BaseEmbedding):
             d_model: Output embedding dimension (must be >= 2).
             use_cos: If True, use sin+cos pairs (RoPE-aligned). If False, sin only.
         """
-        super().__init__()
+        super().__init__(d_model)
         assert d_model >= 2, "d_model must be >= 2"
 
         self.use_cos = use_cos
@@ -343,9 +343,10 @@ class Time2VecEmbedding(BaseEmbedding):
         self.periodic = nn.Linear(1, self.num_freqs)
         self.d_model = 1 + out_dim  # 1 linear + sin/cos or sin only
 
-    def forward(self, batch_size: int, seq_len: int, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, past_key_values_length: int = 0, **kwargs) -> torch.Tensor:
+        batch_size, seq_len, _ = x.shape
         device = next(self.parameters()).device
-        t = torch.arange(seq_len, device=device, dtype=torch.float32).view(-1, 1)  # [T, 1]
+        t = torch.arange(past_key_values_length, past_key_values_length + seq_len, device=device, dtype=torch.float32).view(-1, 1)  # [T, 1]
 
         lin_part = self.linear(t)  # [T, 1]
         freq_proj = self.periodic(t)  # [T, num_freqs]

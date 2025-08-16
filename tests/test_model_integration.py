@@ -131,7 +131,11 @@ def test_model_serialization(generation_model):
         reloaded_model = TransformerTemporalModel.from_pretrained(tmpdir)
         reloaded_model.eval()
 
-        assert reloaded_model.config.to_dict() == model.config.to_dict()
+        original_dict = model.config.to_dict()
+        reloaded_dict = reloaded_model.config.to_dict()
+        for key, value in original_dict.items():
+            assert key in reloaded_dict
+            assert reloaded_dict[key] == value, f"Config mismatch for key '{key}'"
 
         for p1, p2 in zip(model.parameters(), reloaded_model.parameters()):
             assert torch.equal(

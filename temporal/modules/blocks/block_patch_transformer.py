@@ -36,7 +36,6 @@ class PatchTransformBlock(nn.Module):
         d_model = original_config.d_model
 
         if self.order == 'split_first':
-            # --- Configure for Split -> Transform -> Merge ---
             inner_dim = d_model // expansion_factor
             if d_model % expansion_factor != 0:
                 raise ValueError(f"d_model ({d_model}) must be divisible by expansion_factor ({expansion_factor})")
@@ -47,7 +46,6 @@ class PatchTransformBlock(nn.Module):
             temp_config = replace(original_config, d_model=inner_dim)
         
         elif self.order == 'merge_first':
-            # --- Configure for Merge -> Transform -> Split ---
             if self.expansion_factor != 2:
                 raise ValueError(f"For 'merge_first' order with an MLP, expansion_factor must be 2. Got {self.expansion_factor}.")
             
@@ -58,7 +56,6 @@ class PatchTransformBlock(nn.Module):
             
             temp_config = replace(original_config, d_model=inner_dim)
 
-        # --- Inner Layer Construction ---
         temp_builder = ModuleBuilder(temp_config)
         inner_layer_cfg_dict = {
             "type": wrapped_block_type,
@@ -67,7 +64,7 @@ class PatchTransformBlock(nn.Module):
             "kwargs": kwargs,
         }
         inner_layer_cfg = transformer_block_config_from_dict(inner_layer_cfg_dict)
-        self.transformer_layer = temp_builder.build_block(inner_layer_cfg)
+        self.transformer_layer = temp_builder._build("block", inner_layer_cfg)
 
     def forward(
         self,
@@ -75,23 +72,21 @@ class PatchTransformBlock(nn.Module):
         attention_mask=None,
         past_key_value=None,
         **kwargs,
-    ) -> DecoderLayerOutput: # Return a consistent output object
+    ) -> DecoderLayerOutput:
         if past_key_value is not None:
             raise NotImplementedError("KV caching not yet supported with patch transform blocks.")
 
         if self.order == 'split_first':
             return self.forward_split_first(hidden_states, attention_mask, **kwargs)
-        else: # 'merge_first'
+        else:
             return self.forward_merge_first(hidden_states, attention_mask, **kwargs)
 
     def _extract_layer_output(self, layer_output):
-        """Helper to robustly extract hidden states from various output types."""
         if isinstance(layer_output, torch.Tensor):
             return layer_output
         if hasattr(layer_output, 'last_hidden_state') and layer_output.last_hidden_state is not None:
             return layer_output.last_hidden_state 
         if hasattr(layer_output, 'hidden_states') and layer_output.hidden_states is not None:
-            # hidden_states is often a tuple of all layer outputs, take the last one
             return layer_output.hidden_states[-1] if isinstance(layer_output.hidden_states, (list, tuple)) else layer_output.hidden_states
         if isinstance(layer_output, tuple) and len(layer_output) > 0 and isinstance(layer_output[0], torch.Tensor):
             return layer_output[0]
