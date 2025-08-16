@@ -9,6 +9,7 @@ from .autoregressive_stepwise import AutoregressiveStepwiseMixin
 
 logger = logging.getLogger(__name__)
 
+
 class AutoregressiveDispatchMixin:
     """
     A mixin that dynamically dispatches calls to the correct implementation

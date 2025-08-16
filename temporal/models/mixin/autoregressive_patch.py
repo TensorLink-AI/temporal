@@ -16,7 +16,17 @@ class AutoregressivePatchMixin:
     The class also retains legacy helper methods for traditional, step-by-step
     autoregressive generation.
     """
-
+    @staticmethod
+    def _get_cache_length(past_key_values) -> int:
+        """
+        Helper function to correctly get the cache length from the nested tuple.
+        """
+        if past_key_values is None:
+            return 0
+        # Get the key tensor from the first layer: shape (B, H, L, D)
+        key_tensor = past_key_values[0][0]
+        # Return the sequence length L (dimension at index 2)
+        return key_tensor.size(2)
     def enable_dropout(self):
         """Enable dropout for MC sampling during autoregressive generation."""
         for m in self.modules():
@@ -219,8 +229,8 @@ class AutoregressivePatchMixin:
         # --- Step 3: Autoregressively generate patch embeddings ---
         for _ in range(num_patches_to_generate):
             input_patches_for_step = decoder_sequence_patches[:, -1:, :] if use_cache and past_key_values else decoder_sequence_patches
-            past_kv_length = past_key_values[0][0][0].shape[2] if past_key_values is not None else 0
-            
+            past_kv_length = _get_cache_length(past_key_values)
+                        
             processed_decoder = self.preprocessor._prepare_decoder_inputs_for_generation(
                 patch_embeds=input_patches_for_step,
                 attention_mask=decoder_attention_mask if not (use_cache and past_key_values) else None,

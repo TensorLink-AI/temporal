@@ -9,6 +9,17 @@ class AutoregressiveStepwiseMixin:
     """
     A mixin class for autoregressive generation capabilities in neural network models.
     """
+    @staticmethod
+    def _get_cache_length(past_key_values) -> int:
+        """
+        Helper function to correctly get the cache length from the nested tuple.
+        """
+        if past_key_values is None:
+            return 0
+        # Get the key tensor from the first layer: shape (B, H, L, D)
+        key_tensor = past_key_values[0][0]
+        # Return the sequence length L (dimension at index 2)
+        return key_tensor.size(2)
     def enable_dropout(self):
         """Enable dropout for MC sampling during autoregressive generation."""
         for m in self.modules():
@@ -239,7 +250,7 @@ class AutoregressiveStepwiseMixin:
         eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
 
         for _ in range(prediction_length):
-            past_kv_length = past_key_values[0][0][0].shape[2] if past_key_values is not None else 0
+            past_kv_length = _get_cache_length(past_key_values)
 
             step_input = decoder_inputs[:, -1:, :] if use_cache and past_key_values is not None else decoder_inputs
             
