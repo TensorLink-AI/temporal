@@ -109,23 +109,25 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         Args:
             x: Input tensor of shape [B, L, D] (used for shape and device).
             past_key_values_length: The length of the past key values.
+            **kwargs: Can contain 'batch_size' and 'seq_len' to override inference from x.
         Returns:
             Positional encoding tensor.
         """
-        if seq_len is None:
-            seq_len = x.shape[1]
-        if batch_size is None:
-            batch_size = x.shape[0]
+        # FIX: Safely get seq_len and batch_size from kwargs or infer from the input tensor x.
+        seq_len = kwargs.get("seq_len", x.shape[1])
+        batch_size = kwargs.get("batch_size", x.shape[0])
 
         positions = torch.arange(
             past_key_values_length,
             past_key_values_length + seq_len,
             dtype=torch.long,
-            device=x.device,
+            device=self.pe.device,
         )
+        
+        # self.pe has shape [1, max_seq_len, d_model]
         pos_embedding = self.pe[:, positions, :]
         return pos_embedding.expand(batch_size, -1, -1)
-        
+
 # Patch Embedding
 @register_module("embedding", "patch")
 class TimeSeriesPatchEmbedding(BaseEmbedding):
