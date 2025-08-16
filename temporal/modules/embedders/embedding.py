@@ -96,7 +96,7 @@ class FlexibleValueEmbedding(BaseEmbedding):
 # -----------------------------
 # In temporal/modules/embedders/embedding.py
 
-class SinusoidalPositionalEmbedding(PositionalEmbedding):
+class SinusoidalPositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, max_seq_len: int = 2048):
         super().__init__()
         self.d_model = d_model
