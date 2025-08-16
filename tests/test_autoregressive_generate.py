@@ -6,7 +6,7 @@ from temporal.configs.transformer_block_config import (
     EncoderBlockConfig,
     DecoderBlockConfig,
 )
-from temporal.configs.embedding_config import EmbeddingConfig
+from temporal.configs.embedding_config import EmbeddingConfig, TimeSeriesPatchEmbeddingConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
 from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.architecture_config import (
@@ -44,7 +44,7 @@ def patched_model_config():
                 ),
             )
         ],
-        value_embedding_config=EmbeddingConfig(type="patch", kwargs={"patch_size": 2}),
+        value_embedding_config=TimeSeriesPatchEmbeddingConfig(patch_size=2, feature_size=3),
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=3),
     )

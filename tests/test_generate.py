@@ -6,7 +6,7 @@ from temporal.configs.transformer_block_config import (
     EncoderBlockConfig,
     DecoderBlockConfig,
 )
-from temporal.configs.embedding_config import EmbeddingConfig
+from temporal.configs.embedding_config import EmbeddingConfig, TimeSeriesPatchEmbeddingConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
 from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.architecture_config import (
@@ -53,8 +53,8 @@ def encoder_decoder_config():
 def patched_config(encoder_decoder_config):
     """Provides a config with patch embedding."""
     config_dict = encoder_decoder_config.to_dict()
-    config_dict["value_embedding_config"] = EmbeddingConfig(
-        type="patch", kwargs={"patch_size": 2}
+    config_dict["value_embedding_config"] = TimeSeriesPatchEmbeddingConfig(
+        patch_size=2, feature_size=1
     ).to_dict()
     return TransformerTimeSeriesConfig.from_dict(config_dict)
 
@@ -178,5 +178,4 @@ def test_generate_multistep_patched(patched_model):
     )
 
     expected_pred_len = num_iterations * config.prediction_length
-    # The generation logic seems to have an issue. For now, let's assert the actual output shape to pass the test and flag this.
-    assert predictions.shape == (batch_size, 0, config.feature_size)
+    assert predictions.shape == (batch_size, expected_pred_len, config.feature_size)

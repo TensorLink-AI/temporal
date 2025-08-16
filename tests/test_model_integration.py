@@ -79,7 +79,7 @@ def test_kv_cache_correctness(generation_model, generation_config):
         full_pass_output = model(
             encoder_inputs=past_values, decoder_inputs=future_values
         )
-    full_pass_logits = full_pass_output.logits
+    full_pass_logits = full_pass_output["logits"]
 
     # 2. Forward pass with cache (token-by-token)
     iterative_logits = []
@@ -96,9 +96,11 @@ def test_kv_cache_correctness(generation_model, generation_config):
         for i in range(generation_config.prediction_length):
             # Use the single next token as input to the decoder
             next_token_input = future_values[:, i : i + 1, :]
-
+            
+            preprocessor_output = model.preprocessor.process(next_token_input)
+            
             output = model.decoder(
-                input_values=next_token_input,
+                **preprocessor_output,
                 encoder_hidden_states=encoder_hidden_states,
                 past_key_values=past_key_values,
                 use_cache=True,

@@ -69,7 +69,7 @@ def test_encoder_only_forward_pass(basic_config):
     )
     output = model(encoder_inputs=inputs)
     
-    assert output.logits.shape == (
+    assert output["logits"].shape == (
         2,
         encoder_only_config.context_length,
         encoder_only_config.feature_size,
@@ -89,7 +89,7 @@ def test_decoder_only_forward_pass(basic_config):
     )
     output = model(decoder_inputs=inputs)
 
-    assert output.logits.shape == (
+    assert output["logits"].shape == (
         2,
         decoder_only_config.context_length,
         decoder_only_config.feature_size,
@@ -104,13 +104,14 @@ def test_encoder_decoder_forward_pass(basic_config):
     
     output = model(encoder_inputs=encoder_inputs, decoder_inputs=decoder_inputs)
 
-    assert output.logits.shape == (2, basic_config.prediction_length, basic_config.feature_size)
+    assert output["logits"].shape == (2, basic_config.prediction_length, basic_config.feature_size)
 
 
 def test_multi_feature_forward_pass(basic_config):
     """Tests forward pass with more than one feature."""
     config_dict = basic_config.to_dict()
     config_dict["feature_size"] = 3
+    config_dict["output_head_config"]["output_size"] = 3
     multi_feature_config = TransformerTimeSeriesConfig.from_dict(config_dict)
     model = build_time_series_transformer(multi_feature_config)
 
@@ -119,7 +120,7 @@ def test_multi_feature_forward_pass(basic_config):
     
     output = model(encoder_inputs=encoder_inputs, decoder_inputs=decoder_inputs)
 
-    assert output.logits.shape == (2, multi_feature_config.prediction_length, multi_feature_config.feature_size)
+    assert output["logits"].shape == (2, multi_feature_config.prediction_length, multi_feature_config.feature_size)
 
 
 def test_different_context_prediction_lengths(basic_config):
@@ -135,7 +136,7 @@ def test_different_context_prediction_lengths(basic_config):
 
     output = model(encoder_inputs=encoder_inputs, decoder_inputs=decoder_inputs)
     
-    assert output.logits.shape == (2, new_config.prediction_length, new_config.feature_size)
+    assert output["logits"].shape == (2, new_config.prediction_length, new_config.feature_size)
 
 
 def test_backward_pass(basic_config):
@@ -151,7 +152,7 @@ def test_backward_pass(basic_config):
         targets=targets,
     )
     
-    output.loss.backward()
+    output["loss"].backward()
 
     for param in model.parameters():
         if param.requires_grad:
@@ -171,7 +172,7 @@ def test_reproducibility(basic_config):
     model2 = build_time_series_transformer(basic_config)
     output2 = model2(encoder_inputs=encoder_inputs, decoder_inputs=decoder_inputs)
 
-    assert torch.allclose(output1.logits, output2.logits)
+    assert torch.allclose(output1["logits"], output2["logits"])
 
 
 def test_inference_mode(basic_config):

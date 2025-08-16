@@ -12,6 +12,8 @@ from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from dataclasses import replace
+from temporal.configs.transformer_block_config import transformer_block_config_from_dict
+from temporal.modules.layers.patching import PatchSplitting, PatchMerging
 
 
 @pytest.fixture
