@@ -344,6 +344,8 @@ class WaveletPositionalEmbeddingConfig(EmbeddingConfig):
 def embedding_config_from_dict(data: Dict[str, Any], **kwargs) -> EmbeddingConfig:
     if 'feature_size' in kwargs:
         data['feature_size'] = kwargs['feature_size']
+    if 'patch_size' in kwargs:
+        data['patch_size'] = kwargs['patch_size']
         
     embedding_type = data.get("type", "value") # Default to 'value' if type not specified
     # Map config type names to registry keys if they differ (e.g., "value" -> "value_embedding")

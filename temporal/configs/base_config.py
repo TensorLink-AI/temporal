@@ -53,13 +53,24 @@ class BaseConfig:
         # This is the set of "known" parameters for the target version.
         known_keys = {f.name for f in fields(target_cls) if f.init}
 
-        # Separate known keys from unknown keys. Unknown keys will be stored in 'kwargs'.
-        known_data = {k: v for k, v in data.items() if k in known_keys}
-        unknown_data = {k: v for k, v in data.items() if k not in known_keys}
+        # Separate known keys from unknown keys.
+        # Unknown keys will either be passed to kwargs or discarded if no kwargs field exists.
+        known_data = {}
+        unknown_data = {}
 
-        # If the target class has a 'kwargs' field, store the unknown data there.
+        for k, v in data.items():
+            if k in known_keys:
+                known_data[k] = v
+            else:
+                unknown_data[k] = v
+
+        # If the target class has a 'kwargs' field, absorb unknown data into it.
+        # Prioritize explicitly passed kwargs over those in unknown_data.
         if 'kwargs' in known_keys:
-            known_data['kwargs'] = unknown_data
+            existing_kwargs = known_data.get('kwargs', {})
+            # Merge unknown_data into existing_kwargs, existing_kwargs values take precedence
+            merged_kwargs = {**unknown_data, **existing_kwargs}
+            known_data['kwargs'] = merged_kwargs
         elif unknown_data:
             # If there are unknown keys but no 'kwargs' field, you might want to log this.
             print(f"Warning: Discarding unknown keys for {target_cls.__name__}: {list(unknown_data.keys())}")
