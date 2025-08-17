@@ -13,7 +13,8 @@ from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
-from temporal.configs.loss_config import LossConfig
+# FIX: Import the specific TimeSeriesLossConfig instead of the base LossConfig
+from temporal.configs.loss_config import TimeSeriesLossConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
 
 
@@ -30,7 +31,9 @@ def generation_config():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        loss_config=LossConfig(type="timeseries_generic"),
+        # FIX: Instantiate the correct, specific config class.
+        # This ensures the object before and after serialization are identical.
+        loss_config=TimeSeriesLossConfig(loss_type="mse"),
         use_cache=True,
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
         encoder_blocks=[
@@ -49,6 +52,7 @@ def generation_model(generation_config):
     """Provides a model instance for generation and serialization tests."""
     torch.manual_seed(0)
     return build_time_series_transformer(generation_config)
+
 
 # In tests/test_model_integration.py
 
