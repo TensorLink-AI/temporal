@@ -13,12 +13,12 @@ from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.transformer_block_config import (
-    transformer_block_config_from_dict, 
+    transformer_block_config_from_dict,
     AdaptivePatchTransformerBlockConfig
 )
 from temporal.configs.attention_config import AttentionConfig
 from temporal.configs.feedforward_config import (
-    FeedForwardConfig, 
+    FeedForwardConfig,
     StandardFeedForwardConfig
 )
 
@@ -44,11 +44,10 @@ def test_patch_transform_block_init(mock_builder, order):
     expansion_factor = 2
     d_model = mock_builder.config.d_model
 
-    # Create default AttentionConfig and FeedForwardConfig instances with required args
-    default_attention_config = AttentionConfig(num_heads=4, is_causal=False) 
-    default_ffn_config = StandardFeedForwardConfig(intermediate_size=64) 
+    # FIX: Removed the unexpected 'is_causal' keyword argument.
+    default_attention_config = AttentionConfig(num_heads=4)
+    default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
-    # Create the AdaptivePatchTransformerBlockConfig to pass to PatchTransformBlock
     patch_block_config = AdaptivePatchTransformerBlockConfig(
         expansion_factor=expansion_factor,
         wrapped_block_type="default_encoder",
@@ -78,11 +77,10 @@ def test_patch_transform_block_forward_split_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    # Create default AttentionConfig and FeedForwardConfig instances with required args
-    default_attention_config = AttentionConfig(num_heads=4, is_causal=False)
+    # FIX: Removed the unexpected 'is_causal' keyword argument.
+    default_attention_config = AttentionConfig(num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
-    # Create the AdaptivePatchTransformerBlockConfig
     patch_block_config = AdaptivePatchTransformerBlockConfig(
         expansion_factor=expansion_factor,
         wrapped_block_type="default_encoder",
@@ -108,11 +106,10 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    # Create default AttentionConfig and FeedForwardConfig instances with required args
-    default_attention_config = AttentionConfig(num_heads=4, is_causal=False)
+    # FIX: Removed the unexpected 'is_causal' keyword argument.
+    default_attention_config = AttentionConfig(num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
-    # Create the AdaptivePatchTransformerBlockConfig
     patch_block_config = AdaptivePatchTransformerBlockConfig(
         expansion_factor=expansion_factor,
         wrapped_block_type="default_encoder",
@@ -135,8 +132,8 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
 def test_patch_transform_block_invalid_order(mock_builder):
     """Tests that PatchTransformBlock raises an error for an invalid order."""
     expansion_factor = 2
-    # Create default AttentionConfig and FeedForwardConfig instances with required args
-    default_attention_config = AttentionConfig(num_heads=4, is_causal=False)
+    # FIX: Removed the unexpected 'is_causal' keyword argument.
+    default_attention_config = AttentionConfig(num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
     with pytest.raises(
@@ -155,8 +152,8 @@ def test_patch_transform_block_merge_first_invalid_expansion(mock_builder):
     """Tests that 'merge_first' order raises an error with expansion_factor != 2."""
     expansion_factor = 3  # Invalid for merge_first
 
-    # Create default AttentionConfig and FeedForwardConfig instances with required args
-    default_attention_config = AttentionConfig(num_heads=4, is_causal=False)
+    # FIX: Removed the unexpected 'is_causal' keyword argument.
+    default_attention_config = AttentionConfig(num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
     with pytest.raises(
@@ -185,8 +182,8 @@ def test_patch_transform_block_non_divisible_d_model_split_first(mock_builder):
 
     expansion_factor = 2
 
-    # Create default AttentionConfig and FeedForwardConfig instances
-    default_attention_config = AttentionConfig(num_heads=4, is_causal=False)
+    # FIX: Removed the unexpected 'is_causal' keyword argument.
+    default_attention_config = AttentionConfig(num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
     with pytest.raises(
