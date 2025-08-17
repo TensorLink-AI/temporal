@@ -53,7 +53,6 @@ def test_patch_transform_block_init(mock_builder, order):
     expansion_factor = 2
     d_model = mock_builder.config.d_model
 
-    # FIX: Changed attention type from "vanilla" to the correct, registered type "full".
     default_attention_config = AttentionConfig(type="full", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
@@ -74,10 +73,13 @@ def test_patch_transform_block_init(mock_builder, order):
     assert block.expansion_factor == expansion_factor
     assert hasattr(block, "transformer_layer")
 
+    # FIX: Check the actual dimension of the created layer's FFN
+    # instead of a non-existent config attribute.
+    inner_ffn_dim = block.transformer_layer.ffn.w_1.in_features
     if order == "split_first":
-        assert block.transformer_layer.config.d_model == d_model // expansion_factor
+        assert inner_ffn_dim == d_model // expansion_factor
     else:  # merge_first
-        assert block.transformer_layer.config.d_model == d_model * expansion_factor
+        assert inner_ffn_dim == d_model * expansion_factor
 
 
 def test_patch_transform_block_forward_split_first(mock_builder):
@@ -86,7 +88,6 @@ def test_patch_transform_block_forward_split_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    # FIX: Changed attention type from "vanilla" to the correct, registered type "full".
     default_attention_config = AttentionConfig(type="full", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
@@ -104,7 +105,10 @@ def test_patch_transform_block_forward_split_first(mock_builder):
     )
 
     input_tensor = torch.randn(2, seq_len, d_model)
-    output, _ = block(input_tensor)
+
+    # FIX: Handle the DecoderLayerOutput object correctly.
+    layer_output = block(input_tensor)
+    output = layer_output.hidden_states
 
     assert output.shape == input_tensor.shape
 
@@ -115,7 +119,6 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    # FIX: Changed attention type from "vanilla" to the correct, registered type "full".
     default_attention_config = AttentionConfig(type="full", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
@@ -133,7 +136,10 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
     )
 
     input_tensor = torch.randn(2, seq_len, d_model)
-    output, _ = block(input_tensor)
+
+    # FIX: Handle the DecoderLayerOutput object correctly.
+    layer_output = block(input_tensor)
+    output = layer_output.hidden_states
 
     assert output.shape == input_tensor.shape
 
@@ -141,7 +147,6 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
 def test_patch_transform_block_invalid_order(mock_builder):
     """Tests that PatchTransformBlock raises an error for an invalid order."""
     expansion_factor = 2
-    # FIX: Changed attention type from "vanilla" to the correct, registered type "full".
     default_attention_config = AttentionConfig(type="full", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
@@ -161,7 +166,6 @@ def test_patch_transform_block_merge_first_invalid_expansion(mock_builder):
     """Tests that 'merge_first' order raises an error with expansion_factor != 2."""
     expansion_factor = 3  # Invalid for merge_first
 
-    # FIX: Changed attention type from "vanilla" to the correct, registered type "full".
     default_attention_config = AttentionConfig(type="full", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
@@ -186,12 +190,11 @@ def test_patch_transform_block_non_divisible_d_model_split_first(mock_builder):
     """Tests that 'split_first' order raises an error if d_model is not divisible by expansion_factor."""
     config_dict = mock_builder.config.to_dict()
     config_dict["d_model"] = 33  # Not divisible by 2
-    bad_config = TransformerConfig.from_dict(config_dict)
+    bad_config = TransformerConfig._from_dict(config_dict)
     bad_builder = ModuleBuilder(bad_config)
 
     expansion_factor = 2
 
-    # FIX: Changed attention type from "vanilla" to the correct, registered type "full".
     default_attention_config = AttentionConfig(type="full", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
