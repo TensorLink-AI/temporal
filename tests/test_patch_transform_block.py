@@ -13,7 +13,6 @@ from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.transformer_block_config import (
-    # FIX: Explicitly import EncoderBlockConfig to trigger its registration in the registry.
     EncoderBlockConfig,
     transformer_block_config_from_dict,
     AdaptivePatchTransformerBlockConfig
@@ -23,6 +22,12 @@ from temporal.configs.feedforward_config import (
     FeedForwardConfig,
     StandardFeedForwardConfig
 )
+# FIX: Import the registry and manually add the missing config to it.
+from temporal.configs.base_config import CONFIG_REGISTRY
+
+# This ensures the 'default_encoder' key is available before any tests run.
+if "default_encoder" not in CONFIG_REGISTRY:
+    CONFIG_REGISTRY["default_encoder"] = EncoderBlockConfig
 
 
 @pytest.fixture
