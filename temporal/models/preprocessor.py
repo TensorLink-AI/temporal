@@ -208,8 +208,8 @@ class InputPreprocessor(nn.Module):
         tgt_len = tgt_len if tgt_len is not None else src_len
         
         expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len)
-        inverted_mask = (1.0 - expanded_mask).to(dtype)
-        
+        inverted_mask = (~expanded_mask.to(torch.bool)).to(dtype)
+                
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
     
     def _prepare_decoder_inputs_for_generation(

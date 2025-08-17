@@ -43,6 +43,6 @@ def expand_mask(
     
     # Invert the mask: 1s become 0s, and 0s become a large negative number.
     # This is because the mask is added to the attention scores.
-    inverted_mask = (1.0 - expanded_mask.to(dtype)) * torch.finfo(dtype).min
+    inverted_mask = torch.where(expanded_mask, 0.0, torch.finfo(dtype).min)
     
     return inverted_mask
