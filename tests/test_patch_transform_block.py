@@ -44,8 +44,8 @@ def test_patch_transform_block_init(mock_builder, order):
     expansion_factor = 2
     d_model = mock_builder.config.d_model
 
-    # FIX: Removed the unexpected 'is_causal' keyword argument.
-    default_attention_config = AttentionConfig(num_heads=4)
+    # FIX: Add the required 'type' keyword argument.
+    default_attention_config = AttentionConfig(type="vanilla", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
     patch_block_config = AdaptivePatchTransformerBlockConfig(
@@ -77,8 +77,8 @@ def test_patch_transform_block_forward_split_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    # FIX: Removed the unexpected 'is_causal' keyword argument.
-    default_attention_config = AttentionConfig(num_heads=4)
+    # FIX: Add the required 'type' keyword argument.
+    default_attention_config = AttentionConfig(type="vanilla", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
     patch_block_config = AdaptivePatchTransformerBlockConfig(
@@ -106,8 +106,8 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
     d_model = mock_builder.config.d_model
     seq_len = 20
 
-    # FIX: Removed the unexpected 'is_causal' keyword argument.
-    default_attention_config = AttentionConfig(num_heads=4)
+    # FIX: Add the required 'type' keyword argument.
+    default_attention_config = AttentionConfig(type="vanilla", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
     patch_block_config = AdaptivePatchTransformerBlockConfig(
@@ -132,8 +132,8 @@ def test_patch_transform_block_forward_merge_first(mock_builder):
 def test_patch_transform_block_invalid_order(mock_builder):
     """Tests that PatchTransformBlock raises an error for an invalid order."""
     expansion_factor = 2
-    # FIX: Removed the unexpected 'is_causal' keyword argument.
-    default_attention_config = AttentionConfig(num_heads=4)
+    # FIX: Add the required 'type' keyword argument.
+    default_attention_config = AttentionConfig(type="vanilla", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
     with pytest.raises(
@@ -152,8 +152,8 @@ def test_patch_transform_block_merge_first_invalid_expansion(mock_builder):
     """Tests that 'merge_first' order raises an error with expansion_factor != 2."""
     expansion_factor = 3  # Invalid for merge_first
 
-    # FIX: Removed the unexpected 'is_causal' keyword argument.
-    default_attention_config = AttentionConfig(num_heads=4)
+    # FIX: Add the required 'type' keyword argument.
+    default_attention_config = AttentionConfig(type="vanilla", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
     with pytest.raises(
@@ -182,8 +182,8 @@ def test_patch_transform_block_non_divisible_d_model_split_first(mock_builder):
 
     expansion_factor = 2
 
-    # FIX: Removed the unexpected 'is_causal' keyword argument.
-    default_attention_config = AttentionConfig(num_heads=4)
+    # FIX: Add the required 'type' keyword argument.
+    default_attention_config = AttentionConfig(type="vanilla", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
     with pytest.raises(
