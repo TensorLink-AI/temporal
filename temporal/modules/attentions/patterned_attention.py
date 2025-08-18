@@ -59,13 +59,20 @@ class PatternedMultiHeadAttention(FullAttention):
         """Generates the boolean attention mask based on the configured pattern."""
         mask = torch.zeros(seq_len, seq_len, dtype=torch.bool, device=device)
         for i in range(seq_len):
-            if self.stride > 1 and i % self.stride != 0:
-                continue
+            # The `stride` parameter in the context of mask generation for 'sliding' or 'local'
+            # attention patterns should define how the window moves, not skip rows entirely.
+            # Skipping rows (via 'continue') leads to all -inf in attention logits for those rows,
+            # resulting in NaNs after softmax. Every query position needs a valid attention window.
+            # If the intent is to only have attention for strided queries, a different mechanism
+            # (e.g., striding the input hidden states or a more complex masking strategy)
+            # is required, as this current approach causes numerical instability.
             
             if self.pattern_type in ("sliding", "local"):
                 half = self.window_size // 2 if self.pattern_type == "sliding" else 0
                 start = max(0, i - half)
                 end = min(seq_len, start + self.window_size)
+                # Apply stride to the target indices (j) within the window if intended this way,
+                # but ensure the query (i) always has a valid attention window.
                 for j in range(start, end, self.dilation):
                     mask[i, j] = True
             
@@ -89,7 +96,10 @@ class PatternedMultiHeadAttention(FullAttention):
         attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        """Overrides the forward pass to inject the pattern mask."""
+        """
+        Overrides the forward pass to inject the pattern mask.
+        The mask is created to ensure no rows are entirely masked out, preventing NaNs.
+        """
         B, T, _ = hidden_states.size()
         
         patt_mask = self.compute_pattern_mask(T, device=hidden_states.device)
