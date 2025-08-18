@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List, Literal
 from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY
 
 #: List of loss types treated as probabilistic. Each requires valid quantile values in (0, 1).
-PROBABILISTIC_LOSSES = ["quantile", "mq", "crps"]
+PROBABILISTIC_LOSSES = ["quantile", "mq", "crps", "crps_huber"]
 
 @dataclass(frozen=True, kw_only=True)
 class LossConfig(BaseConfig):
@@ -21,7 +21,7 @@ class LossConfig(BaseConfig):
 # temporal/configs/loss_config.py
 from typing import Optional, List
 
-PROBABILISTIC_LOSSES = ["quantile", "mq", "crps"]
+PROBABILISTIC_LOSSES = ["quantile", "mq", "crps", "crps_huber"]
 
 @register_config_type("timeseries_generic")
 @dataclass(frozen=True, kw_only=True)
@@ -42,7 +42,6 @@ class TimeSeriesLossConfig(LossConfig):
         else:
             # Ensure non-probabilistic configs don’t carry stray quantiles
             object.__setattr__(self, "quantiles", None)
-
 
 
 @register_config_type("mse_loss")
@@ -78,6 +77,36 @@ class CRPSLossConfig(LossConfig):
             raise ValueError(f"spread_lambda must be in [0, 1], got {self.spread_lambda}")
         if self.spread_penalty_type not in ["log", "inverse", "symmetric_log", "none"]:
             raise ValueError(f"spread_penalty_type must be 'log', 'inverse', 'symmetric_log', or 'none', got {self.spread_penalty_type}")
+
+@register_config_type("crps_huber_loss")
+@dataclass(frozen=True, kw_only=True)
+class CRPSHuberLossConfig(LossConfig):
+    """
+    Configuration for Continuous Ranked Probability Score (CRPS) Huber loss.
+    """
+    type: str = field(default="crps_huber")
+    huber_loss_threshold: float = field(default=0.0)
+    reduction: str = field(default="mean")
+    estimator: str = field(default="pinball")
+    spread_lambda: float = field(default=0.0)
+    spread_penalty_type: str = field(default="log")
+    spread_penalty_epsilon: float = field(default=0.0)
+    spread_target_spread: float = field(default=0.0)
+    scaling_type: str = field(default="none")
+    scaling_dim: int = field(default=1)
+    scaling_eps: float = field(default=1e-8)
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not (self.huber_loss_threshold >= 0.0):
+            raise ValueError(f"huber_loss_threshold must be non-negative, got {self.huber_loss_threshold}")
+        if self.estimator not in ["pinball", "pwm", "nrg", "fair"]:
+            raise ValueError(f"CRPS estimator must be 'pinball', 'pwm', 'nrg', or 'fair', got {self.estimator}")
+        if not (0.0 <= self.spread_lambda <= 1.0):
+            raise ValueError(f"spread_lambda must be in [0, 1], got {self.spread_lambda}")
+        if self.spread_penalty_type not in ["log", "inverse", "symmetric_log", "none"]:
+            raise ValueError(f"spread_penalty_type must be 'log', 'inverse', 'symmetric_log', or 'none', got {self.spread_penalty_type}")
+
 
 @register_config_type("quantile_loss")
 @dataclass(frozen=True, kw_only=True)
@@ -128,6 +157,7 @@ def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
         "timeseries_generic": "timeseries_generic",
         "mse": "mse_loss",
         "crps": "crps_loss",
+        "crps_huber": "crps_huber_loss",
         "quantile": "quantile_loss",
         "mq": "quantile_loss",
         "timeflow": "timeflow_loss",
