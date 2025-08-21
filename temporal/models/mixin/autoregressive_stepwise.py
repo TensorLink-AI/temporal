@@ -9,7 +9,7 @@ class AutoregressiveStepwiseMixin:
     """
     A mixin class for autoregressive generation capabilities in neural network models.
     Assumes the host model defines:
-      - self.config with .feature_size, .hidden_size, optionally .prediction_length, .num_attention_heads
+      - self.config with .feature_size, .hidden_size (or decoder hidden dim), optionally .prediction_length, .num_attention_heads
       - self.preprocessor with .process(...) and optional .denormalize(...)
       - self.decoder (and optional self.encoder)
       - self.output_heads (nn.Module or nn.ModuleList)
@@ -134,9 +134,9 @@ class AutoregressiveStepwiseMixin:
             per_head = []
             for h, y in zip(self.output_heads, raw_head_output):
                 if prediction_strategy is not None and hasattr(h, "predict") and callable(getattr(h, "predict")):
-                    per_head.append(h.predict(y, method=prediction_strategy))  # [B,1,F] or [B,1,1]
+                    per_head.append(h.predict(y, method=prediction_strategy))
                 elif levels is not None and hasattr(h, "sample_quantiles") and callable(getattr(h, "sample_quantiles")):
-                    qy = h.sample_quantiles(y, quantile_levels=levels)        # [B,1,F,Q] or [B,1,Q]
+                    qy = h.sample_quantiles(y, quantile_levels=levels)
                     per_head.append(qy)
                 else:
                     per_head.append(y)
@@ -276,21 +276,41 @@ class AutoregressiveStepwiseMixin:
                 # Avoid constant BOS; decoder-only needs a real prompt
                 raise ValueError("Decoder-only generation needs a real prompt in decoder_inputs; avoid constant start tokens.")
 
-        # -------------- preallocate output (shape inferred via head only) --------------
-        _dummy_last_hidden = torch.zeros((batch_size, 1, getattr(self.config, "hidden_size", 1)), device=device, dtype=dtype)
-        _dummy_head_out = self._get_head_output(_dummy_last_hidden)
-        _prediction_to_store = self._compute_prediction_to_store(
-            _dummy_head_out, prediction_strategy, quantile_levels, primary_output_head
+        # -------------- preallocate output (shape inferred via a REAL step) --------------
+        warm_step = decoder_inputs
+        warm_mask = (
+            decoder_attention_mask
+            if decoder_attention_mask is not None
+            else torch.ones(warm_step.size(0), warm_step.size(1), device=warm_step.device, dtype=torch.float32)
+        )
+        warm_proc = self.preprocessor.process(
+            input_values=warm_step,
+            past_key_values_length=0,
+            attention_mask=warm_mask,
+            is_causal=True,
+            validate_shapes=validate_shapes,
+            verbose=verbose,
+        )
+        warm_out = self.decoder(
+            hidden_states=warm_proc["hidden_states"],
+            attention_mask=warm_proc["attention_mask"],
+            encoder_hidden_states=encoder_hidden_states,
+            use_cache=False,
+            return_dict=True,
+        )
+        warm_last = warm_out.last_hidden_state[:, -1:, :]  # [B,1,D]
+        warm_head = self._get_head_output(warm_last)
+        warm_pred = self._compute_prediction_to_store(
+            warm_head, prediction_strategy, quantile_levels, primary_output_head
         )
 
-        use_preallocation = isinstance(_prediction_to_store, torch.Tensor)
+        use_preallocation = torch.is_tensor(warm_pred)
         if use_preallocation:
-            # Expect _prediction_to_store shape [B, 1, *S]
-            step_out_shape = _prediction_to_store.shape[2:]  # after [B,1,...]
+            step_out_shape = warm_pred.shape[2:]  # after [B,1,...]
             all_predictions = torch.zeros(
                 (batch_size, prediction_length, *step_out_shape),
-                device=device,
-                dtype=_prediction_to_store.dtype,
+                device=warm_pred.device,
+                dtype=warm_pred.dtype,
             )
         else:
             predictions_list: List[Any] = []
@@ -331,7 +351,8 @@ class AutoregressiveStepwiseMixin:
                 output_hidden_states=output_hidden_states,
                 return_dict=True,
             )
-            last_hidden = decoder_outputs.last_hidden_state  # [B, 1, D]
+
+            last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]  # [B, 1, D]
 
             # Heads
             current_step_raw_head_output = self._get_head_output(last_hidden)
@@ -354,7 +375,7 @@ class AutoregressiveStepwiseMixin:
             next_decoder_input_value = self._compute_next_decoder_input_value(
                 current_step_raw_head_output, prediction_strategy, primary_output_head
             )
-            next_input = next_decoder_input_value  # subsequent steps: single token
+            next_input = next_decoder_input_value  # subsequent steps: single token [B,1,F]
 
             if use_cache:
                 past_key_values = decoder_outputs.past_key_values
