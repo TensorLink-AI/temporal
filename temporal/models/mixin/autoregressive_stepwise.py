@@ -9,7 +9,7 @@ class AutoregressiveStepwiseMixin:
     """
     A mixin class for autoregressive generation capabilities in neural network models.
     """
-    @staticmethod
+    # FIX: Removed @staticmethod decorator
     def _get_cache_length(self, past_key_values) -> int:
         if past_key_values is None:
             return 0
@@ -162,22 +162,22 @@ class AutoregressiveStepwiseMixin:
         all_predictions = torch.zeros((batch_size, prediction_length, *_prediction_to_store.shape[2:]), device=device, dtype=_prediction_to_store.dtype)
 
         for i in range(prediction_length):
-            processed_decoder = self.preprocessor.process(input_values=next_input, past_key_values_length=self._get_cache_length(self, past_key_values), is_causal=True)
+            # FIX: Corrected the call to be self._get_cache_length(past_key_values)
+            processed_decoder = self.preprocessor.process(input_values=next_input, past_key_values_length=self._get_cache_length(past_key_values), is_causal=True)
+            
             decoder_outputs = self.decoder(
                 hidden_states=processed_decoder["hidden_states"], attention_mask=processed_decoder["attention_mask"],
                 encoder_hidden_states=encoder_hidden_states, past_key_values=past_key_values, use_cache=use_cache, return_dict=True
             )
             last_hidden = decoder_outputs.last_hidden_state
 
-            # FIX 1: Handle non-standard decoders that output a full sequence
             if last_hidden.shape[1] > 1:
                 last_hidden = last_hidden.mean(dim=1, keepdim=True)
 
             current_step_raw_head_output = self._get_head_output(last_hidden)
             prediction_to_store = self._compute_prediction_to_store(current_step_raw_head_output, prediction_strategy, quantile_levels, primary_output_head)
             all_predictions[:, i] = prediction_to_store.squeeze(1)
-
-            # FIX 2 is applied inside this helper function
+            
             next_input = self._compute_next_decoder_input_value(current_step_raw_head_output, prediction_strategy, primary_output_head)
             
             if use_cache:
