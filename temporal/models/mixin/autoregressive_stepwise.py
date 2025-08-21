@@ -11,15 +11,27 @@ class AutoregressiveStepwiseMixin:
     """
     @staticmethod
     def _get_cache_length(past_key_values) -> int:
-        """
-        Helper function to correctly get the cache length from the nested tuple.
-        """
         if past_key_values is None:
             return 0
-        # Get the key tensor from the first layer: shape (B, H, L, D)
-        key_tensor = past_key_values[0][0]
-        # Return the sequence length L (dimension at index 2)
-        return key_tensor.size(2)
+        # layer 0, key tensor
+        first_layer = past_key_values[0]
+        key_tensor = first_layer[0] if isinstance(first_layer, (tuple, list)) else first_layer["k"]
+        # handle common shapes
+        if key_tensor.ndim == 4:
+            # possibilities: (B,H,L,D) or (B,L,H,D)
+            nh = getattr(self.config, "num_attention_heads", None)
+            if nh is not None:
+                if key_tensor.shape[1] == nh:   # (B,H,L,D)
+                    return int(key_tensor.shape[2])
+                if key_tensor.shape[2] == nh:   # (B,L,H,D)
+                    return int(key_tensor.shape[1])
+            # fallback: take the larger of the middle dims as length
+            return int(max(key_tensor.shape[1], key_tensor.shape[2]))
+        if key_tensor.ndim == 3:
+            # e.g., fused heads: (B,L,D)
+            return int(key_tensor.shape[1])
+        raise ValueError(f"Unexpected KV shape: {tuple(key_tensor.shape)}")
+
     def enable_dropout(self):
         """Enable dropout for MC sampling during autoregressive generation."""
         for m in self.modules():
@@ -249,10 +261,16 @@ class AutoregressiveStepwiseMixin:
         past_key_values = None
         eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
 
-        for _ in range(prediction_length):
-            past_kv_length = self._get_cache_length(past_key_values)
+        # The next input to the decoder starts as the initial token(s).
+        next_input = decoder_inputs
 
-            step_input = decoder_inputs[:, -1:, :] if use_cache and past_key_values is not None else decoder_inputs
+        for _ in range(prediction_length):
+            # The input for this step is just the single, most recent token.
+            # The model's history is managed by `past_key_values`.
+            step_input = next_input
+
+            # Get the length of the cache for the preprocessor
+            past_kv_length = self._get_cache_length(past_key_values)
             
             processed_decoder = self.preprocessor.process(
                 input_values=step_input,
@@ -272,7 +290,7 @@ class AutoregressiveStepwiseMixin:
                 output_hidden_states=output_hidden_states,
                 return_dict=True,
             )
-            last_hidden = decoder_outputs.last_hidden_state[:, -1:, :].contiguous()
+            last_hidden = decoder_outputs.last_hidden_state # Shape: [B, 1, D]
 
             current_step_raw_head_output = self._get_head_output(last_hidden)
 
@@ -290,8 +308,11 @@ class AutoregressiveStepwiseMixin:
                 primary_output_head
             )
 
-            decoder_inputs = torch.cat([decoder_inputs, next_decoder_input_value], dim=1)
+            # --- KEY CHANGE ---
+            # Instead of concatenating, the output of this step becomes the input for the next.
+            next_input = next_decoder_input_value
 
+            # Update the cache for the next iteration. This is the crucial step.
             if use_cache:
                 past_key_values = decoder_outputs.past_key_values
 

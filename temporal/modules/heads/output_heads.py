@@ -263,38 +263,55 @@ class DistPredHead(BaseOutputHead):
 
         return projected_output.view(*projected_output.shape[:-1], self.feature_size, self.num_outputs)
 
-    def predict(self, x: torch.Tensor, method: Union[str, float, int] = "median") -> torch.Tensor:
-        """
-        Collapse an ensemble head output [B, T, K] or [B, T, F, K] to [B, T, 1] or [B, T, F].
+def predict(self, x: torch.Tensor, method: Union[str, float, int] = "median") -> torch.Tensor:
+    """
+    Collapse [B,T,K] or [B,T,F,K] over the sample dim K.
+    Returns [B,T,1] for 3D input, [B,T,F] for 4D input.
+    """
+    is_multi = (x.ndim == 4)  # [B, T, F, K]
+    K = x.shape[-1]
 
-        Args:
-            x (torch.Tensor): Head output of shape [B, T, K] or [B, T, F, K].
-            method (str|float|int): Collapse strategy — 'mean', 'median',
-                quantile (float), or direct index (int).
+    def _reduce_mean(z):
+        # keepdim for 3D so we return [B,T,1]; drop dim for 4D -> [B,T,F]
+        return z.mean(dim=-1, keepdim=(z.ndim == 3))
 
-        Returns:
-            torch.Tensor: Collapsed prediction tensor.
-        """
-        is_multi = (x.ndim == 4)  # [B, T, F, K]
-        K = x.shape[-1]
+    def _reduce_median(z):
+        # true median (not index pick); nanmedian if needed
+        m = torch.median(z, dim=-1, keepdim=(z.ndim == 3)).values
+        return m
 
-        if isinstance(method, str):
-            if method == "mean":
-                return x.mean(dim=-1, keepdim=not is_multi)
-            elif method == "median":
-                idx = K // 2
-            else:
-                raise ValueError(f"Unsupported method string: {method!r}")
-        elif isinstance(method, float):
-            idx = int(method * K)
-        elif isinstance(method, int):
-            idx = method if method >= 0 else K + method
-            if not (0 <= idx < K):
-                raise IndexError(f"Index {method} out of range for K={K}")
+    def _reduce_quantile(z, q: float):
+        if not (0.0 <= q <= 1.0):
+            raise ValueError(f"quantile must be in [0,1], got {q}")
+        # torch.quantile handles sorting internally
+        return torch.quantile(z, q=q, dim=-1, keepdim=(z.ndim == 3), interpolation="linear")
+
+    if isinstance(method, str):
+        if method == "mean":
+            return _reduce_mean(x)
+        elif method == "median":
+            return _reduce_median(x)
         else:
-            raise TypeError(f"method must be str|float|int, not {type(method)}")
+            raise ValueError(f"Unsupported method string: {method!r}")
 
-        return x[..., idx] if is_multi else x[..., idx:idx+1]
+    elif isinstance(method, float):
+        # interpret as quantile in [0,1]
+        return _reduce_quantile(x, method)
+
+    elif isinstance(method, int):
+        # direct sample index (rarely what you want)
+        idx = method if method >= 0 else K + method
+        if not (0 <= idx < K):
+            raise IndexError(f"Index {method} out of range for K={K}")
+        out = x[..., idx]
+        # keepdim for 3D input to yield [B,T,1]
+        if x.ndim == 3:
+            out = out.unsqueeze(-1)
+        return out
+
+    else:
+        raise TypeError(f"method must be str|float|int, not {type(method)}")
+
         
     def sample_quantiles(self, x: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
         """
