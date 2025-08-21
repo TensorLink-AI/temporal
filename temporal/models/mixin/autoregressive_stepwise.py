@@ -21,9 +21,9 @@ class AutoregressiveStepwiseMixin:
             # possibilities: (B,H,L,D) or (B,L,H,D)
             nh = getattr(self.config, "num_attention_heads", None)
             if nh is not None:
-                if key_tensor.shape[1] == nh:   # (B,H,L,D)
+                if key_tensor.shape[1] == nh:  # (B,H,L,D)
                     return int(key_tensor.shape[2])
-                if key_tensor.shape[2] == nh:   # (B,L,H,D)
+                if key_tensor.shape[2] == nh:  # (B,L,H,D)
                     return int(key_tensor.shape[1])
             # fallback: take the larger of the middle dims as length
             return int(max(key_tensor.shape[1], key_tensor.shape[2]))
@@ -102,7 +102,7 @@ class AutoregressiveStepwiseMixin:
                 if prediction_strategy is not None and hasattr(h, "predict") and callable(getattr(h, "predict")):
                     per_head.append(h.predict(y, method=prediction_strategy))  # tensor [B,1,F] or similar
                 elif levels is not None and hasattr(h, "sample_quantiles") and callable(getattr(h, "sample_quantiles")):
-                    qy = h.sample_quantiles(y, quantile_levels=levels)         # tensor [B,1,F,Q] or [B,1,Q]
+                    qy = h.sample_quantiles(y, quantile_levels=levels)        # tensor [B,1,F,Q] or [B,1,Q]
                     per_head.append(qy)
                 else:
                     per_head.append(y)
@@ -196,30 +196,6 @@ class AutoregressiveStepwiseMixin:
     ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
         Autoregressively generates a sequence of features.
-
-        Args:
-            encoder_inputs (torch.Tensor): The initial input sequence to the encoder.
-            decoder_inputs (torch.Tensor, optional): The initial input sequence for the decoder.
-            prediction_length (int): The number of future steps to predict.
-            attention_mask (Optional[torch.Tensor]): Mask for encoder attention.
-            decoder_attention_mask (Optional[torch.Tensor]): Mask for decoder attention.
-            use_cache (bool): Whether to use past key values for faster decoding.
-            decoder_start_token_id (Optional[Any]): The ID for the starting token of the
-                decoder sequence. Defaults to 0 if not provided in config.
-            eos_token_id (Optional[Any]): The end-of-sequence token ID for early stopping.
-            early_stopping (bool): Whether to stop generation if `eos_token_id` is predicted.
-            output_attentions (bool): Whether to return attentions from the model.
-            output_hidden_states (bool): Whether to return hidden states from the model.
-            prediction_strategy (Optional[Union[str, float, int]]): Strategy to collapse the
-                head's output into a single feature value.
-            quantile_levels (Optional[List[float]]): A list of quantile levels to sample.
-            validate_shapes (bool): Whether to validate input shapes.
-            verbose (bool): Whether to print processing information.
-            **kwargs: Additional arguments passed to the encoder/decoder.
-
-        Returns:
-            Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
-                The generated sequence of predicted features.
         """
         self.eval()
         if encoder_inputs is None and decoder_inputs is None:
@@ -227,12 +203,15 @@ class AutoregressiveStepwiseMixin:
 
         if prediction_length is None:
             prediction_length = getattr(self.config, 'prediction_length', 0)
+        
+        if prediction_length == 0:
+            return torch.empty(0)
 
         ref_tensor = decoder_inputs if encoder_inputs is None else encoder_inputs
         batch_size, device, dtype = ref_tensor.shape[0], ref_tensor.device, ref_tensor.dtype
 
         encoder_outputs = None
-        if self.encoder and encoder_inputs is not None:
+        if hasattr(self, 'encoder') and self.encoder and encoder_inputs is not None:
             processed_encoder = self.preprocessor.process(
                 input_values=encoder_inputs,
                 attention_mask=attention_mask,
@@ -256,17 +235,39 @@ class AutoregressiveStepwiseMixin:
             start_token_id = getattr(self.config, "decoder_start_token_id", 0) if decoder_start_token_id is None else decoder_start_token_id
             start_val = self._get_scalar_value(start_token_id, "decoder_start_token_id")
             decoder_inputs = torch.full((batch_size, 1, self.config.feature_size), start_val, device=device, dtype=dtype)
-
-        predictions = []
+        
         past_key_values = None
         eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
 
         # The next input to the decoder starts as the initial token(s).
         next_input = decoder_inputs
 
-        for _ in range(prediction_length):
+        # OPTIMIZATION: Pre-allocate the full output tensor to avoid memory spikes from list.append and torch.cat
+        # We perform a single dummy step to infer the output shape and dtype.
+        _processed_decoder = self.preprocessor.process(input_values=next_input, past_key_values_length=0, is_causal=True)
+        _decoder_outputs = self.decoder(hidden_states=_processed_decoder["hidden_states"])
+        _raw_head_output = self._get_head_output(_decoder_outputs.last_hidden_state)
+        _prediction_to_store = self._compute_prediction_to_store(
+            _raw_head_output, prediction_strategy, quantile_levels, primary_output_head
+        )
+        
+        # Handle case where the stored prediction is not a tensor (e.g., list of tensors from multi-head)
+        if isinstance(_prediction_to_store, torch.Tensor):
+            step_output_shape = _prediction_to_store.shape[2:] # Shape after [B, 1, ...]
+            all_predictions = torch.zeros(
+                (batch_size, prediction_length, *step_output_shape), 
+                device=device, 
+                dtype=_prediction_to_store.dtype
+            )
+            use_preallocation = True
+        else:
+            # Fallback to list append for complex types like dictionaries or lists of tensors
+            predictions_list = []
+            use_preallocation = False
+
+
+        for i in range(prediction_length):
             # The input for this step is just the single, most recent token.
-            # The model's history is managed by `past_key_values`.
             step_input = next_input
 
             # Get the length of the cache for the preprocessor
@@ -300,7 +301,12 @@ class AutoregressiveStepwiseMixin:
                 quantile_levels,
                 primary_output_head
             )
-            predictions.append(prediction_to_store)
+            
+            # OPTIMIZATION: Fill the pre-allocated tensor instead of appending to a list
+            if use_preallocation:
+                all_predictions[:, i] = prediction_to_store.squeeze(1)
+            else:
+                predictions_list.append(prediction_to_store)
 
             next_decoder_input_value = self._compute_next_decoder_input_value(
                 current_step_raw_head_output,
@@ -308,31 +314,36 @@ class AutoregressiveStepwiseMixin:
                 primary_output_head
             )
 
-            # --- KEY CHANGE ---
-            # Instead of concatenating, the output of this step becomes the input for the next.
             next_input = next_decoder_input_value
 
-            # Update the cache for the next iteration. This is the crucial step.
             if use_cache:
                 past_key_values = decoder_outputs.past_key_values
 
             if early_stopping and eos_value_scalar is not None:
+                # Truncate output if EOS is detected
                 if torch.isclose(next_decoder_input_value.squeeze(), torch.tensor(eos_value_scalar, device=device)).all():
-                    logger.info(f"Early stopping triggered at step {_ + 1} due to EOS token prediction.")
+                    logger.info(f"Early stopping triggered at step {i + 1} due to EOS token prediction.")
+                    if use_preallocation:
+                        all_predictions = all_predictions[:, :i+1]
                     break
         
-        if not predictions:
-            return torch.empty((batch_size, 0, self.config.feature_size), device=device, dtype=dtype)
-
-        if isinstance(predictions[0], Dict):
-            logger.info("AutoregressiveMixin returning a list of dictionaries. Skipping denormalization.")
-            return predictions
+        # OPTIMIZATION: The final result is already constructed.
+        if use_preallocation:
+             final_predictions = all_predictions
         else:
-            final_predictions = torch.cat(predictions, dim=1)
-            if hasattr(self.preprocessor, 'denormalize'):
-                logger.info("Denormalizing final predictions.")
-                final_predictions = self.preprocessor.denormalize(final_predictions)
-            return final_predictions
+            if not predictions_list:
+                return torch.empty((batch_size, 0, self.config.feature_size), device=device, dtype=dtype)
+            if isinstance(predictions_list[0], Dict):
+                 logger.info("AutoregressiveMixin returning a list of dictionaries. Skipping concatenation and denormalization.")
+                 return predictions_list
+            # Fallback to torch.cat if pre-allocation was not possible
+            final_predictions = torch.cat(predictions_list, dim=1)
+
+
+        if hasattr(self.preprocessor, 'denormalize'):
+            logger.info("Denormalizing final predictions.")
+            final_predictions = self.preprocessor.denormalize(final_predictions)
+        return final_predictions
 
     @torch.no_grad()
     def forecast(
@@ -344,19 +355,6 @@ class AutoregressiveStepwiseMixin:
     ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
         A user-friendly wrapper for the `generate` method, tailored for forecasting tasks.
-
-        This method simplifies the forecasting process by automatically handling the
-        distinction between encoder-decoder and decoder-only models based on the
-        model's architecture.
-
-        Args:
-            inputs (torch.Tensor): The input data.
-                - For Encoder-Decoder models: This is the historical context sequence.
-                - For Decoder-Only models: This is the initial prompt sequence.
-            prediction_length (int): The number of future steps to forecast.
-            quantiles (Optional[List[float]]): A list of quantile levels to sample.
-            **kwargs: Additional arguments to be passed directly to the
-                      underlying `generate` method (e.g., `prediction_strategy`).
         """
         if hasattr(self, 'encoder') and self.encoder is not None:
             return self.generate(
