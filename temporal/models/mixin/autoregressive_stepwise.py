@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import logging
-from typing import Optional, Union, Any, Dict, List
+from typing import Optional, Union, Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -9,10 +9,12 @@ class AutoregressiveStepwiseMixin:
     """
     A mixin class for autoregressive generation capabilities in neural network models.
     Assumes the host model defines:
-      - self.config with .feature_size, .hidden_size (or decoder hidden dim), optionally .prediction_length, .num_attention_heads
+      - self.config with .feature_size, .hidden_size (or decoder hidden dim),
+        optionally .prediction_length, .num_attention_heads
       - self.preprocessor with .process(...) and optional .denormalize(...)
       - self.decoder (and optional self.encoder)
       - self.output_heads (nn.Module or nn.ModuleList)
+      - (optional) self.head_aggregator for multi-head aggregation
     """
 
     # --------------------------- KV cache utilities ---------------------------
@@ -74,7 +76,7 @@ class AutoregressiveStepwiseMixin:
         except (TypeError, ValueError) as e:
             raise TypeError(f"Could not convert '{name}'={value} (type {type(value)}) to float scalar. Error: {e}")
 
-    def _get_head_output(self, last_hidden: torch.Tensor) -> Union[torch.Tensor, List[torch.Tensor]]:
+    def _get_head_output(self, last_hidden: torch.Tensor) -> Union[torch.Tensor, List[torch.Tensor], Dict[str, Any]]:
         """Apply output head(s) to the last hidden state."""
         if not hasattr(self, 'output_heads'):
             raise AttributeError("Model is missing output_heads, required for autoregressive generation.")
@@ -107,7 +109,54 @@ class AutoregressiveStepwiseMixin:
             if x.size(-1) == 1 and feature_size > 1:
                 x = x.expand(x.size(0), x.size(1), feature_size)
             return x
-        raise ValueError(f"Expected feedback tensor with 3 or 4 dims, got {x.shape}")
+        if x.ndim == 1:  # [B] -> [B,1,1] (then maybe expand)
+            x = x.view(x.shape[0], 1, 1)
+            if x.size(-1) == 1 and feature_size > 1:
+                x = x.expand(x.size(0), x.size(1), feature_size)
+            return x
+        raise ValueError(f"Expected feedback tensor with 1-4 dims, got {x.shape}")
+
+    # --------------------------- sampling helpers -----------------------------
+
+    def _get_primary_head(self) -> nn.Module:
+        """Return the primary head for feedback sampling."""
+        return self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
+
+    def _call_head_sample(
+        self,
+        output_head: nn.Module,
+        head_output: Union[torch.Tensor, Dict[str, Any], List[Any]],
+        *,
+        sampling_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
+        """
+        Call head.sample(...) if available.
+        - If sample returns (y, new_state), we propagate/merge new_state into self._gen_state.
+        - Returns (y_b1f, updated_state_or_None).
+        """
+        sampling_kwargs = dict(sampling_kwargs or {})
+        # Ensure a persistent gen state exists for heads that need it (e.g., DistPred)
+        if not hasattr(self, "_gen_state") or self._gen_state is None:
+            self._gen_state = {}
+
+        # If the head's sample accepts 'state', pass it through.
+        if "state" in getattr(output_head.sample, "__code__", None).co_varnames:
+            sampling_kwargs.setdefault("state", self._gen_state)
+
+        out = output_head.sample(head_output, **sampling_kwargs)  # could be Tensor or (Tensor, dict)
+        new_state = None
+        if isinstance(out, tuple) and len(out) == 2:
+            y, new_state = out
+        else:
+            y = out
+
+        # Merge/replace state if provided
+        if isinstance(new_state, dict):
+            # shallow merge is enough; heads use distinct keys
+            self._gen_state.update(new_state)
+
+        y = self._ensure_b1f(y, getattr(self.config, "feature_size", y.shape[-1]))
+        return y, new_state
 
     # --------------------------- store vs feedback ----------------------------
 
@@ -119,7 +168,7 @@ class AutoregressiveStepwiseMixin:
         output_head: nn.Module,  # primary head if ModuleList
     ) -> Union[torch.Tensor, Dict[str, Any], List[torch.Tensor]]:
         """
-        Decide what to store for this AR step:
+        Decide what to store for this AR step (DEFAULT path, not using sample()):
           - If strategy given and head supports predict(): use it
           - Else if quantiles requested and head supports sample_quantiles(): sample them
           - Else store raw output.
@@ -162,14 +211,22 @@ class AutoregressiveStepwiseMixin:
         raw_head_output: Union[torch.Tensor, List[torch.Tensor], Dict[str, Any]],
         prediction_strategy: Optional[Union[str, float, int]],
         output_head: nn.Module,  # primary head if ModuleList
+        *,
+        use_sampling: bool,
+        sampling_kwargs: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
         """
         Collapse head output into a single feedback value of shape [B, 1, F].
+        Prefers head.sample() when use_sampling=True and the head supports it.
         """
         feedback_source = raw_head_output
-        if isinstance(raw_head_output, list):  # multi-head, pick aggregator or head[0]
+        # If multiple heads and no aggregator, fallback to head[0]
+        if isinstance(raw_head_output, list):
             if hasattr(self, 'head_aggregator') and self.head_aggregator:
                 feedback_source = self.head_aggregator(raw_head_output)
+                # If aggregator returns tensors, sampling is not defined — fall back below.
+                if use_sampling and hasattr(output_head, "sample") and callable(getattr(output_head, "sample")):
+                    logger.warning("Aggregator used; sampling from primary head only.")
             else:
                 logger.warning(
                     "Multiple output heads detected without a 'head_aggregator'. "
@@ -177,7 +234,12 @@ class AutoregressiveStepwiseMixin:
                 )
                 feedback_source = raw_head_output[0]
 
-        # Prefer .predict() if available; default to "median" collapse
+        # Prefer sampling if available
+        if use_sampling and hasattr(output_head, "sample") and callable(getattr(output_head, "sample")):
+            y, _ = self._call_head_sample(output_head, feedback_source, sampling_kwargs=sampling_kwargs)
+            return self._ensure_b1f(y, self.config.feature_size)
+
+        # Else prefer .predict() if available; default to "median"
         if hasattr(output_head, "predict") and callable(getattr(output_head, "predict")):
             method = prediction_strategy if prediction_strategy is not None else "median"
             out = output_head.predict(feedback_source, method=method)
@@ -199,7 +261,7 @@ class AutoregressiveStepwiseMixin:
 
         if isinstance(feedback_source, dict):
             raise TypeError(
-                "Output head returning a dict must implement .predict() to provide a single tensor for AR feedback."
+                "Output head returning a dict must implement .sample() or .predict() to provide a tensor for AR feedback."
             )
         raise TypeError(f"Unhandled feedback_source type: {type(feedback_source)}")
 
@@ -214,7 +276,7 @@ class AutoregressiveStepwiseMixin:
         attention_mask: Optional[torch.Tensor] = None,
         decoder_attention_mask: Optional[torch.Tensor] = None,
         use_cache: bool = True,
-        decoder_start_token_id: Optional[Any] = None,
+        decoder_start_token_id: Optional[Any] = None,   # kept for signature compatibility
         eos_token_id: Optional[Any] = None,
         early_stopping: bool = False,
         output_attentions: bool = False,
@@ -223,15 +285,25 @@ class AutoregressiveStepwiseMixin:
         quantile_levels: Optional[List[float]] = None,
         validate_shapes: bool = True,
         verbose: bool = True,
+        *,
+        # NEW — sampling controls
+        sampling: bool = True,                          # use head.sample() for feedback if available
+        sampling_kwargs: Optional[Dict[str, Any]] = None,  # passed into head.sample()
+        store_sampled: bool = False,                    # if True, store the sampled feedback instead of predict()/quantiles/raw
+        enable_mc_dropout: bool = False,                # flips dropout on during generation for diversity
+        return_raw: bool = False,                       # bypass denorm
         **kwargs,
     ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
         Autoregressively generate a sequence of predictions.
+        - sampling=True uses each head's `sample()` for feedback (anti-collapse).
+        - store_sampled=True stores the *sampled trajectory*; otherwise uses predict()/quantiles/raw for storage.
+        - sampling_kwargs (dict) are passed to head.sample(); e.g. {'temperature':1.1, 'top_p':0.9, 'stickiness':0.9}
+        - enable_mc_dropout=True enables dropout layers for MC sampling.
         """
         self.eval()
-
-        # Optional flag: return raw (pre-denorm) to sanity-check normalization issues
-        return_raw = kwargs.pop("return_raw", False)
+        if enable_mc_dropout:
+            self.enable_dropout()
 
         if encoder_inputs is None and decoder_inputs is None:
             raise ValueError("You must provide either 'encoder_inputs' or 'decoder_inputs'.")
@@ -243,7 +315,6 @@ class AutoregressiveStepwiseMixin:
         batch_size, device, dtype = ref_tensor.shape[0], ref_tensor.device, ref_tensor.dtype
 
         if prediction_length == 0:
-            # Return an empty tensor compatible with typical head outputs
             return torch.empty((batch_size, 0, getattr(self.config, "feature_size", 1)), device=device, dtype=dtype)
 
         # Encoder pass (if present)
@@ -266,7 +337,7 @@ class AutoregressiveStepwiseMixin:
         encoder_hidden_states = encoder_outputs.last_hidden_state if encoder_outputs is not None else None
 
         # Select primary output head
-        primary_output_head = self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
+        primary_output_head = self._get_primary_head()
 
         # Seed decoder prompt
         if decoder_inputs is None:
@@ -300,9 +371,17 @@ class AutoregressiveStepwiseMixin:
         )
         warm_last = warm_out.last_hidden_state[:, -1:, :]  # [B,1,D]
         warm_head = self._get_head_output(warm_last)
-        warm_pred = self._compute_prediction_to_store(
-            warm_head, prediction_strategy, quantile_levels, primary_output_head
-        )
+
+        # Decide what one-step "store" looks like
+        if store_sampled and sampling and hasattr(primary_output_head, "sample"):
+            # produce a warm sample to infer shape
+            warm_sample_b1f, _ = self._call_head_sample(primary_output_head, warm_head,
+                                                        sampling_kwargs=sampling_kwargs)
+            warm_pred = warm_sample_b1f  # [B,1,F]
+        else:
+            warm_pred = self._compute_prediction_to_store(
+                warm_head, prediction_strategy, quantile_levels, primary_output_head
+            )
 
         use_preallocation = torch.is_tensor(warm_pred)
         if use_preallocation:
@@ -320,11 +399,15 @@ class AutoregressiveStepwiseMixin:
         eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
         next_input = decoder_inputs  # first iter uses full prompt (primes KV); next iters use single token
 
+        # Persistent per-sequence generation state (sticky paths, etc.)
+        if not hasattr(self, "_gen_state") or self._gen_state is None:
+            self._gen_state = {}
+
         for i in range(prediction_length):
             step_input = next_input
             past_kv_length = self._get_cache_length(past_key_values)
 
-            # Build 2D decoder mask matching training/TF behavior
+            # Build 2D decoder mask matching training behavior
             if decoder_attention_mask is not None:
                 if decoder_attention_mask.dim() != 2 or decoder_attention_mask.size(0) != step_input.size(0):
                     raise ValueError("decoder_attention_mask must be [B, T_step].")
@@ -354,28 +437,42 @@ class AutoregressiveStepwiseMixin:
 
             last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]  # [B, 1, D]
 
-            # Heads
+            # Heads (current step raw outputs)
             current_step_raw_head_output = self._get_head_output(last_hidden)
 
-            # Store
-            prediction_to_store = self._compute_prediction_to_store(
-                current_step_raw_head_output, prediction_strategy, quantile_levels, primary_output_head
-            )
-            if use_preallocation:
-                if not torch.is_tensor(prediction_to_store):
-                    # fall back to list if head returns non-tensor unexpectedly
-                    use_preallocation = False
-                    predictions_list = [prediction_to_store]
-                else:
-                    all_predictions[:, i] = prediction_to_store.squeeze(1)
-            else:
-                predictions_list.append(prediction_to_store)
-
-            # Feedback
+            # Feedback (prefer sampling)
             next_decoder_input_value = self._compute_next_decoder_input_value(
-                current_step_raw_head_output, prediction_strategy, primary_output_head
+                current_step_raw_head_output,
+                prediction_strategy,
+                primary_output_head,
+                use_sampling=sampling,
+                sampling_kwargs=sampling_kwargs,
             )
-            next_input = next_decoder_input_value  # subsequent steps: single token [B,1,F]
+
+            # Store output for this step
+            if store_sampled and torch.is_tensor(next_decoder_input_value):
+                # store the same sampled feedback
+                pred_to_store = next_decoder_input_value
+            else:
+                pred_to_store = self._compute_prediction_to_store(
+                    current_step_raw_head_output, prediction_strategy, quantile_levels, primary_output_head
+                )
+
+            # Accumulate
+            if use_preallocation and torch.is_tensor(pred_to_store):
+                all_predictions[:, i] = pred_to_store.squeeze(1)
+            else:
+                if use_preallocation and not torch.is_tensor(pred_to_store):
+                    # switch to list mode if head returns non-tensor unexpectedly
+                    use_preallocation = False
+                    predictions_list = []
+                    # backfill previous stored items from all_predictions
+                    for j in range(i):
+                        predictions_list.append(all_predictions[:, j:j+1])
+                predictions_list.append(pred_to_store)
+
+            # Prepare next input
+            next_input = next_decoder_input_value  # [B,1,F]
 
             if use_cache:
                 past_key_values = decoder_outputs.past_key_values
@@ -422,6 +519,11 @@ class AutoregressiveStepwiseMixin:
         User-friendly wrapper for generate():
           - Encoder-Decoder: pass inputs as encoder_inputs.
           - Decoder-Only: pass inputs as decoder_inputs (prompt).
+
+        Common sampling usage:
+            model.forecast(x, L, sampling=True,
+                           sampling_kwargs={'temperature':1.1,'top_p':0.9},
+                           store_sampled=True, enable_mc_dropout=True)
         """
         if hasattr(self, 'encoder') and self.encoder is not None:
             return self.generate(
