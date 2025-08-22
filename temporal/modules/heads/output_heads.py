@@ -268,12 +268,79 @@ class QuantileRegressionOutputHead(BaseOutputHead):
 # =========================
 # DistPred (Path-based)
 # =========================
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Union, List, Dict, Tuple
+
+from temporal.registry.core import register_module
+from temporal.modules.heads.base_output_head import BaseOutputHead
+
 
 @register_module("output_head", "distpred")
 class DistPredHead(BaseOutputHead):
     """
     DistPred outputs K candidate paths per feature; we sample a path per step.
+
+    forward(...) returns a dict:
+        {
+          "paths": [B, T, C, K]   (or [B, T, 1, K] if univariate),
+          "path_logits": [B, T, K]   # optional, if with_path_logits=True
+        }
+
+    .sample(...) supports sticky or mixture selection and returns:
+        (y_next, new_state)
+        where y_next is [B, 1, C] and new_state holds sticky path indices.
     """
+
+    # --------------------------- helpers (scoped) ---------------------------
+
+    @staticmethod
+    def _apply_top_p(probs: torch.Tensor, top_p: Optional[float]) -> torch.Tensor:
+        if top_p is None or top_p >= 1.0:
+            return probs
+        sorted_probs, idx = torch.sort(probs, dim=-1, descending=True)
+        cum = torch.cumsum(sorted_probs, dim=-1)
+        mask = cum <= top_p
+        mask[..., 0] = True
+        filtered = torch.zeros_like(probs).scatter_(-1, idx, sorted_probs * mask)
+        filtered = filtered / filtered.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        return filtered
+
+    @staticmethod
+    def _temperature_scale_logits(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+        return logits / max(float(temperature), 1e-6)
+
+    @staticmethod
+    def _add_jitter(y: torch.Tensor, rel_std: float, min_abs: float) -> torch.Tensor:
+        if rel_std <= 0 and min_abs <= 0:
+            return y
+        scale = torch.maximum(torch.abs(y) * rel_std, torch.tensor(min_abs, device=y.device, dtype=y.dtype))
+        return y + torch.randn_like(y) * scale
+
+    @staticmethod
+    def _ensure_bt1f(x: torch.Tensor, feature_size: int) -> torch.Tensor:
+        """
+        Normalize to [B, 1, C]. Accepts [B,1,C]/[B,1,1]/[B,C].
+        """
+        if x.ndim == 3:  # [B,1,C]
+            if x.size(-1) == 1 and feature_size > 1:
+                x = x.expand(x.size(0), x.size(1), feature_size)
+            return x
+        if x.ndim == 2:  # [B,C] -> [B,1,C]
+            x = x.unsqueeze(1)
+            if x.size(-1) == 1 and feature_size > 1:
+                x = x.expand(x.size(0), x.size(1), feature_size)
+            return x
+        if x.ndim == 1:  # [B] -> [B,1,1]
+            x = x.view(x.shape[0], 1, 1)
+            if feature_size > 1:
+                x = x.expand(x.size(0), x.size(1), feature_size)
+            return x
+        raise ValueError(f"Expected feedback tensor with 1–3 dims, got {x.shape}")
+
+    # --------------------------- init / forward -----------------------------
+
     def __init__(self, hidden_size: int, output_size: int, **kwargs):
         super().__init__()
         if 'num_outputs' not in kwargs:
@@ -292,126 +359,49 @@ class DistPredHead(BaseOutputHead):
         self.use_tanh = kwargs.get('use_tanh', False)
         self.tanh_scale = kwargs.get('tanh_scale', 10.0)
 
-        # optional per-step path logits projection (K) — if you want scores
+        # Optional scoring head for paths
         self.with_path_logits = kwargs.get('with_path_logits', False)
         if self.with_path_logits:
             self.logit_proj = nn.Linear(hidden_size, self.num_outputs)
 
-        # state key for sticky path selection
+        # Default state key for sticky path indices
         self.state_key_default = kwargs.get('state_key', "distpred.path_idx")
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Returns:
-          {
-            'paths': [B,T,F,K] (or [B,T,1,K] if F=1),
-            optional 'path_logits': [B,T,K] if with_path_logits=True
-          }
+        x: [B, T, H] -> returns dict with:
+          paths: [B, T, C, K]
+          path_logits: [B, T, K] (optional)
         """
-        y = self.proj(x)  # [B,T,F*K]
+        y = self.proj(x)  # [B, T, C*K]
         if self.use_tanh:
             y = self.tanh_scale * torch.tanh(y)
-        y = y.view(*y.shape[:-1], self.feature_size, self.num_outputs)  # [B,T,F,K]
+        y = y.view(*y.shape[:-1], self.feature_size, self.num_outputs)  # [B, T, C, K]
 
         out = {"paths": y}
         if self.with_path_logits:
-            out["path_logits"] = self.logit_proj(x)  # [B,T,K]
+            out["path_logits"] = self.logit_proj(x)  # [B, T, K]
         return out
 
-    @torch.no_grad()
-    def sample(
-        self,
-        head_out: Dict[str, torch.Tensor],        # output of forward()
-        *,
-        state: Optional[Dict[str, torch.Tensor]] = None,
-        temperature: float = 1.0,
-        top_p: Optional[float] = 0.9,
-        stickiness: float = 0.9,
-        reselection_hazard: Optional[float] = 0.02,
-        mode: str = "sticky",                     # {'sticky','mixture'}
-        mixture_sharpness: float = 1.0,
-        dirichlet_alpha: Optional[float] = None,
-        jitter_rel_std: float = 0.0,
-        jitter_min_abs: float = 1e-3,
-        state_key: Optional[str] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    # --------------------------- quantiles / predict -------------------------
+
+    def predict(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]],
+                method: Union[str, float, int] = "median") -> torch.Tensor:
         """
-        One AR step. Expects T=1 in head_out tensors.
-        Returns:
-          y_next: [B,1,F]
-          new_state: dict with updated path indices
+        Collapse [B,T,C,K] (or [B,T,K]) over K. Accepts dict from forward().
+        Returns [B,T,C] (or [B,T,1] for univariate).
         """
-        paths = head_out["paths"]                # [B,1,F,K]
-        if paths.ndim == 3:                      # fallback [B,1,K] -> [B,1,1,K]
-            paths = paths.unsqueeze(-2)
-        B, T, F, K = paths.shape
-        assert T == 1, "DistPredHead.sample expects T=1 during AR decoding."
+        # Unwrap dicts
+        if isinstance(x, dict):
+            if "paths" not in x:
+                raise TypeError("DistPredHead.predict expected a tensor or a dict with key 'paths'.")
+            x = x["paths"]
 
-        device, dtype = paths.device, paths.dtype
-        path_logits = head_out.get("path_logits", None)  # [B,1,K] if present
-        if path_logits is not None and path_logits.ndim == 3 and path_logits.shape[1] == 1:
-            path_logits = path_logits.squeeze(1)  # [B,K]
-        elif path_logits is None:
-            path_logits = torch.zeros(B, K, device=device, dtype=dtype)
-
-        scaled = _temperature_scale_logits(path_logits, temperature)
-        probs = F.softmax(scaled, dim=-1)        # [B,K]
-        probs = _apply_top_p(probs, top_p)
-
-        state_key = state_key or self.state_key_default
-        new_state = {} if state is None else dict(state)
-        if state is not None and state_key in state:
-            prev_idx = state[state_key].long()   # [B]
-            one_hot = F.one_hot(prev_idx, num_classes=K).to(dtype)
-            sticky_prior = stickiness * one_hot + (1.0 - stickiness) * probs
-            sticky_prior = sticky_prior / sticky_prior.sum(dim=-1, keepdim=True).clamp_min(1e-12)
-            if reselection_hazard and reselection_hazard > 0.0:
-                hazard = (torch.rand(B, device=device) < reselection_hazard).to(dtype).unsqueeze(-1)
-                probs = hazard * probs + (1.0 - hazard) * sticky_prior
-            else:
-                probs = sticky_prior
-
-        if mode == "mixture":
-            # optional Dirichlet noise across paths
-            if dirichlet_alpha and dirichlet_alpha > 0:
-                noise = torch.distributions.Dirichlet(torch.full((K,), dirichlet_alpha, device=device, dtype=dtype)).sample((B,))
-                probs = (probs + noise) / (probs + noise).sum(dim=-1, keepdim=True).clamp_min(1e-12)
-            if mixture_sharpness != 1.0:
-                logits = torch.log(probs.clamp_min(1e-12)) * mixture_sharpness
-                probs = F.softmax(logits, dim=-1)
-            # weighted sum over paths
-            w = probs.view(B, 1, 1, K)
-            y_next = (w * paths).sum(dim=-1)     # [B,1,F]
-            if jitter_rel_std > 0:
-                y_next = _add_jitter(y_next, jitter_rel_std, jitter_min_abs)
-            new_state[state_key] = probs.argmax(dim=-1)  # MAP index
-            return _ensure_bt1f(y_next), new_state
-
-        # hard selection (sticky)
-        cat = torch.distributions.Categorical(probs=probs)
-        idx = cat.sample()                        # [B]
-        new_state[state_key] = idx
-        gather_idx = idx.view(B, 1, 1, 1).expand(B, 1, F, 1)
-        y_next = paths.gather(dim=-1, index=gather_idx).squeeze(-1)  # [B,1,F]
-        if jitter_rel_std > 0:
-            y_next = _add_jitter(y_next, jitter_rel_std, jitter_min_abs)
-        return _ensure_bt1f(y_next), new_state
-
-    # Convenience reducers, if you want deterministic collapse during eval:
-    def predict(self, x: torch.Tensor, method: Union[str, float, int] = "median") -> torch.Tensor:
-        """
-        Collapse [B,T,F,K] or [B,T,K] over the sample dim K.
-        Returns [B,T,F] (or [B,T,1] for univariate).
-        """
-        is_multi = (x.ndim == 4)  # [B,T,F,K]
+        is_multi = (x.ndim == 4)  # [B,T,C,K]
         K = x.shape[-1]
 
-        def _reduce_mean(z):
-            return z.mean(dim=-1)
-
-        def _reduce_median(z):
-            return torch.median(z, dim=-1).values
-
+        def _reduce_mean(z):    return z.mean(dim=-1)
+        def _reduce_median(z):  return torch.median(z, dim=-1).values
         def _reduce_quantile(z, q: float):
             if not (0.0 <= q <= 1.0):
                 raise ValueError(f"quantile must be in [0,1], got {q}")
@@ -434,27 +424,124 @@ class DistPredHead(BaseOutputHead):
         else:
             raise TypeError(f"method must be str|float|int, not {type(method)}")
 
-        # ensure [B,T,F]
+        # ensure [B,T,C]
         if out.ndim == 2:
             out = out.unsqueeze(-1)  # [B,T] -> [B,T,1]
         return out
 
-    def sample_quantiles(self, x: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
+    def sample_quantiles(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]],
+                         quantile_levels: List[float]) -> torch.Tensor:
         """
-        Compute empirical quantiles from path ensemble.
-        x: [B,T,F,K] or [B,T,K]
-        Returns: [B,T,F,Q] (univariate -> F=1)
+        Empirical quantiles from ensemble.
+        Accepts tensor or dict from forward().
+        Returns: [B,T,C,Q] (univariate -> C=1)
         """
-        if x.ndim == 3:  # [B,T,K] -> [B,T,1,K]
-            x = x.unsqueeze(-2)
-        sorted_x, _ = torch.sort(x, dim=-1)
-        q_tensor = torch.tensor(quantile_levels, device=x.device, dtype=x.dtype).view(1, 1, 1, -1)
-        K = sorted_x.shape[-1]
-        indices = (q_tensor * (K - 1)).round().long().expand(sorted_x.shape[0], sorted_x.shape[1], sorted_x.shape[2], -1)
-        return torch.gather(sorted_x, -1, indices)  # [B,T,F,Q]
+        # Unwrap dicts
+        if isinstance(x, dict):
+            if "paths" not in x:
+                raise TypeError("DistPredHead.sample_quantiles expected a tensor or a dict with key 'paths'.")
+            x = x["paths"]  # [B,T,C,K] or [B,T,K]
 
-    def get_loss_fn(self) -> Optional[Callable]:
-        return None
+        # Normalize shapes
+        if x.ndim == 3:           # [B,T,K] -> [B,T,1,K]
+            x = x.unsqueeze(-2)
+        elif x.ndim != 4:         # must be [B,T,C,K]
+            raise ValueError(f"Unexpected DistPred paths shape: {x.shape}")
+
+        # Sort along K
+        sorted_x, _ = torch.sort(x, dim=-1)  # [B,T,C,K]
+
+        q_tensor = torch.tensor(quantile_levels, device=x.device, dtype=x.dtype).view(1, 1, 1, -1)  # [1,1,1,Q]
+        K = sorted_x.shape[-1]
+        indices = (q_tensor * (K - 1)).round().long()                    # [1,1,1,Q]
+        indices = indices.expand(sorted_x.shape[0], sorted_x.shape[1], sorted_x.shape[2], -1)  # [B,T,C,Q]
+
+        return torch.gather(sorted_x, -1, indices)  # [B,T,C,Q]
+
+    # --------------------------- sampling (sticky / mixture) -----------------
+
+    @torch.no_grad()
+    def sample(
+        self,
+        head_out: Dict[str, torch.Tensor],        # output of forward()
+        *,
+        state: Optional[Dict[str, torch.Tensor]] = None,
+        temperature: float = 1.0,
+        top_p: Optional[float] = 0.9,
+        stickiness: float = 0.9,
+        reselection_hazard: Optional[float] = 0.02,
+        mode: str = "sticky",                     # {'sticky','mixture'}
+        mixture_sharpness: float = 1.0,
+        dirichlet_alpha: Optional[float] = None,
+        jitter_rel_std: float = 0.0,
+        jitter_min_abs: float = 1e-3,
+        state_key: Optional[str] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        One AR step. Expects T=1 in head_out tensors.
+        Returns:
+          y_next: [B,1,C]
+          new_state: dict with updated path indices
+        """
+        paths = head_out["paths"]                 # [B,1,C,K] or [B,1,K]
+        if paths.ndim == 3:
+            paths = paths.unsqueeze(-2)          # -> [B,1,1,K]
+        B, T, C, K = paths.shape                 # <-- use C (channel/feature), not F
+        assert T == 1, "DistPredHead.sample expects T=1 during AR decoding."
+
+        device, dtype = paths.device, paths.dtype
+        path_logits = head_out.get("path_logits", None)
+        if path_logits is not None:
+            # [B,1,K] -> [B,K] or handle [B,T,K] with T=1
+            if path_logits.ndim == 3 and path_logits.shape[1] == 1:
+                path_logits = path_logits.squeeze(1)  # [B,K]
+        else:
+            path_logits = torch.zeros(B, K, device=device, dtype=dtype)
+
+        scaled = self._temperature_scale_logits(path_logits, temperature)
+        probs  = F.softmax(scaled, dim=-1)       # [B,K]
+        probs  = self._apply_top_p(probs, top_p)
+
+        state_key = state_key or self.state_key_default
+        new_state = {} if state is None else dict(state)
+        if state is not None and state_key in state:
+            prev_idx = state[state_key].long()   # [B]
+            one_hot  = F.one_hot(prev_idx, num_classes=K).to(dtype)
+            sticky_prior = stickiness * one_hot + (1.0 - stickiness) * probs
+            sticky_prior = sticky_prior / sticky_prior.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+            if reselection_hazard and reselection_hazard > 0.0:
+                hazard = (torch.rand(B, device=device) < reselection_hazard).to(dtype).unsqueeze(-1)
+                probs = hazard * probs + (1.0 - hazard) * sticky_prior
+            else:
+                probs = sticky_prior
+
+        if mode == "mixture":
+            if dirichlet_alpha and dirichlet_alpha > 0:
+                noise = torch.distributions.Dirichlet(
+                    torch.full((K,), dirichlet_alpha, device=device, dtype=dtype)
+                ).sample((B,))
+                probs = (probs + noise) / (probs + noise).sum(dim=-1, keepdim=True).clamp_min(1e-12)
+            if mixture_sharpness != 1.0:
+                logits = torch.log(probs.clamp_min(1e-12)) * mixture_sharpness
+                probs  = F.softmax(logits, dim=-1)
+            # Weighted sum over paths
+            w = probs.view(B, 1, 1, K)
+            y_next = (w * paths).sum(dim=-1)     # [B,1,C]
+            if jitter_rel_std > 0:
+                y_next = self._add_jitter(y_next, jitter_rel_std, jitter_min_abs)
+            new_state[state_key] = probs.argmax(dim=-1)
+            return self._ensure_bt1f(y_next, self.feature_size), new_state
+
+        # Hard (sticky) selection
+        cat = torch.distributions.Categorical(probs=probs)
+        idx = cat.sample()                        # [B]
+        new_state[state_key] = idx
+        gather_idx = idx.view(B, 1, 1, 1).expand(B, 1, C, 1)
+        y_next = paths.gather(dim=-1, index=gather_idx).squeeze(-1)   # [B,1,C]
+        if jitter_rel_std > 0:
+            y_next = self._add_jitter(y_next, jitter_rel_std, jitter_min_abs)
+        return self._ensure_bt1f(y_next, self.feature_size), new_state
+
 
 # =========================
 # Mixture (MDN)
