@@ -8,26 +8,34 @@ logger = logging.getLogger(__name__)
 
 class MultiStepMixin:
     """
-    Single-pass multi-step forecasting with chunked roll-forward.
+    Single-pass multi-step forecasting with fixed decoder context and chunked roll-forward.
 
-    Behavior:
-      - If prediction_length <= chunk_length: one decoder call over Tpred (true single pass).
-      - If prediction_length >  chunk_length: run ceil(Tpred/chunk_length) passes; each pass
-        predicts a full chunk_length in one shot and *rolls* those predictions as the next pass's inputs.
+    - Decoder input length is always `context_length` (default: config.context_length or inputs.shape[1]).
+    - If prediction_length <= chunk_length: one decoder call (true single pass).
+    - If prediction_length  > chunk_length: repeat:
+        * feed last `context_length` inputs (auto-padded if shorter),
+        * decode once,
+        * take head on the LAST `steps` hidden states,
+        * append median predictions to inputs (model input domain),
+        * slide window by `steps`.
+    - No per-step autoregression; exactly one decoder call per chunk.
 
-    Assumes the host model defines:
-      - self.config with .feature_size (and optionally .prediction_length, .num_attention_heads)
-      - self.preprocessor with .process(...) and optional .denormalize(...)
+    Requirements on the host model:
+      - self.config.feature_size (and optionally .context_length, .prediction_length, .num_attention_heads)
+      - self.preprocessor.process(...), optional self.preprocessor.denormalize(...)
       - self.decoder (and optional self.encoder)
       - self.output_heads (nn.Module or nn.ModuleList)
       - optional self.head_aggregator (for multi-head aggregation)
     """
 
-    # --------------------------- core helpers ---------------------------------
+    # --------------------------- small helpers --------------------------------
 
-    def _get_head_output(self, hidden: torch.Tensor) -> Union[torch.Tensor, List[torch.Tensor], Dict[str, Any]]:
-        if not hasattr(self, 'output_heads'):
-            raise AttributeError("Model is missing output_heads, required for generation.")
+    def _get_head_output(
+        self, hidden: torch.Tensor
+    ) -> Union[torch.Tensor, List[torch.Tensor], Dict[str, Any]]:
+        """Apply output head(s) to time-major hidden states [B, T, D]."""
+        if not hasattr(self, "output_heads"):
+            raise AttributeError("Model is missing output_heads.")
         if isinstance(self.output_heads, nn.ModuleList):
             return [head(hidden) for head in self.output_heads]
         return self.output_heads(hidden)
@@ -35,10 +43,10 @@ class MultiStepMixin:
     def _get_primary_head(self) -> nn.Module:
         return self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
 
-    def _normalize_levels(self, quantile_levels):
-        if quantile_levels is None:
+    def _normalize_levels(self, levels: Optional[List[float]]) -> Optional[List[float]]:
+        if levels is None:
             return None
-        qs = [float(q) for q in quantile_levels]
+        qs = [float(q) for q in levels]
         if not all(0.0 < q < 1.0 for q in qs):
             raise ValueError(f"All quantiles must be in (0,1). Got {qs}")
         return sorted(qs)
@@ -46,20 +54,19 @@ class MultiStepMixin:
     @staticmethod
     def _stack_distpred_chunks(chunks: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         """
-        Concatenate a list of full-horizon DistPred dicts along time.
-        Each item must have:
-          - 'paths': [B, Tp, F, K]
-          - optional 'path_logits': [B, Tp, K]
+        Concatenate a list of full-chunk DistPred dicts along time.
+        Each chunk dict must have:
+          - 'paths': [B, T_chunk, F, K]
+          - optional 'path_logits': [B, T_chunk, K]
         Returns:
-          {'paths': [B, sum(Tp), F, K], 'path_logits': [B, sum(Tp), K]?}
+          {'paths': [B, sum(T_chunk), F, K], 'path_logits': [B, sum(T_chunk), K]?}
         """
         if not chunks:
             raise ValueError("Empty chunks list for DistPred stacking.")
         paths = torch.cat([c["paths"] for c in chunks], dim=1)
         out = {"paths": paths}
         if "path_logits" in chunks[0] and chunks[0]["path_logits"] is not None:
-            logits = torch.cat([c["path_logits"] for c in chunks], dim=1)
-            out["path_logits"] = logits
+            out["path_logits"] = torch.cat([c["path_logits"] for c in chunks], dim=1)
         return out
 
     def _compute_prediction_to_store(
@@ -88,7 +95,7 @@ class MultiStepMixin:
                     per_head.append(h.sample_quantiles(y_in, quantile_levels=levels))
                 else:
                     per_head.append(y)
-            if hasattr(self, 'head_aggregator') and self.head_aggregator:
+            if hasattr(self, "head_aggregator") and self.head_aggregator:
                 try:
                     return self.head_aggregator(per_head)
                 except Exception as e:
@@ -105,95 +112,125 @@ class MultiStepMixin:
             return output_head.sample_quantiles(y_in, quantile_levels=levels)
         return y
 
-    def _build_future_inputs(
+    def _build_padded_context(
         self,
+        x: torch.Tensor,                       # [B, S_in, F] (model input domain)
+        context_length: int,
         *,
-        batch_size: int,
-        steps: int,
-        device: torch.device,
-        dtype: torch.dtype,
-        feature_size: int,
-        fill_future: str,
-        encoder_inputs: Optional[torch.Tensor],
-        previous_chunk_values: Optional[torch.Tensor],  # [B, steps_prev, F] in *model input domain*
-    ) -> torch.Tensor:
+        pad_context_mode: str = "left_zeros",  # {"left_zeros","left_repeat"}
+        pad_value: float = 0.0,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Build decoder_inputs for a single-pass chunk.
-        fill_future:
-          - 'zeros': zeros
-          - 'repeat_last': repeat encoder last value
-          - 'prev_pred': use the previous chunk's predictions (if provided), else fallback to 'repeat_last'
+        Ensure fixed-length decoder context and mask.
+          - If S_in >= context_length: take the last context_length; mask=1s
+          - If S_in  < context_length: left-pad to length.
+        Returns:
+          ctx      : [B, context_length, F]
+          ctx_mask : [B, context_length] (1 for real tokens, 0 for pad)
         """
-        if fill_future == "prev_pred" and previous_chunk_values is not None:
-            # Use previous predictions as direct inputs for the next pass
-            if previous_chunk_values.shape[1] != steps:
-                # If steps differ (e.g., remainder), pad or crop
-                if previous_chunk_values.shape[1] > steps:
-                    return previous_chunk_values[:, :steps]
-                else:
-                    pad = steps - previous_chunk_values.shape[1]
-                    pad_tail = torch.zeros(previous_chunk_values.shape[0], pad, previous_chunk_values.shape[2],
-                                           device=previous_chunk_values.device, dtype=previous_chunk_values.dtype)
-                    return torch.cat([previous_chunk_values, pad_tail], dim=1)
+        B, S_in, F = x.shape
+        device, dtype = x.device, x.dtype
 
-            return previous_chunk_values
+        if context_length <= 0:
+            raise ValueError(f"context_length must be positive, got {context_length}")
 
-        if fill_future == "repeat_last":
-            if encoder_inputs is None:
-                raise ValueError("fill_future='repeat_last' requires encoder_inputs.")
-            last = encoder_inputs[:, -1:, :]  # [B,1,F]
-            return last.expand(batch_size, steps, feature_size).contiguous()
+        if S_in >= context_length:
+            ctx = x[:, -context_length:, :].contiguous()
+            mask = torch.ones(B, context_length, device=device, dtype=torch.float32)
+            return ctx, mask
 
-        # zeros
-        return torch.zeros(batch_size, steps, feature_size, device=device, dtype=dtype)
+        pad_len = context_length - S_in
+        if pad_context_mode == "left_zeros":
+            pad = torch.full((B, pad_len, F), pad_value, device=device, dtype=dtype)
+        elif pad_context_mode == "left_repeat":
+            if S_in > 0:
+                first = x[:, :1, :]
+                pad = first.expand(B, pad_len, F).contiguous()
+            else:
+                pad = torch.full((B, pad_len, F), pad_value, device=device, dtype=dtype)
+        else:
+            raise ValueError(f"Unknown pad_context_mode: {pad_context_mode!r}")
+
+        ctx = torch.cat([pad, x], dim=1)  # [B, context_length, F]
+        mask = torch.cat(
+            [
+                torch.zeros(B, pad_len, device=device, dtype=torch.float32),
+                torch.ones(B, S_in, device=device, dtype=torch.float32),
+            ],
+            dim=1,
+        )
+        return ctx, mask
 
     # --------------------------- main API ------------------------------------
 
     @torch.no_grad()
     def forecast_single_pass_chunked(
         self,
-        inputs: torch.Tensor,                  # encoder inputs if encoder-decoder; decoder prompt otherwise
+        inputs: torch.Tensor,                    # [B, S_in, F] (history/context in *model input domain*)
         prediction_length: int,
         *,
         quantiles: Optional[List[float]] = None,
-        chunk_length: Optional[int] = None,    # default: config.prediction_length or 256
-        fill_future: str = "repeat_last",      # {'zeros','repeat_last','prev_pred'}
-        collect: str = "auto",                 # {'auto','none','distpred','per_chunk'}
+        chunk_length: int = 256,                 # stride size (e.g., 256)
+        context_length: Optional[int] = None,    # decoder input length (e.g., 1024)
+        collect: str = "auto",                   # {'auto','none','distpred','per_chunk'}
         prediction_strategy: Optional[Union[str, float, int]] = None,
         validate_shapes: bool = True,
         verbose: bool = True,
         return_raw: bool = False,
-        attention_mask: Optional[torch.Tensor] = None,
-        decoder_attention_mask: Optional[torch.Tensor] = None,
-    ) -> Union[torch.Tensor, Dict[str, torch.Tensor], List[Union[torch.Tensor, Dict[str, torch.Tensor]]]]:
+        attention_mask: Optional[torch.Tensor] = None,  # encoder mask if you use an encoder
+        pad_context_mode: str = "left_zeros",           # {"left_zeros","left_repeat"}
+        pad_value: float = 0.0,
+    ) -> Union[
+        torch.Tensor,
+        Dict[str, torch.Tensor],
+        List[Union[torch.Tensor, Dict[str, torch.Tensor]]],
+    ]:
         """
-        Single-pass multi-step with chunked roll-forward.
+        Single-pass multi-step with fixed-length decoder context and chunked roll-forward.
 
         Returns:
-          - collect='none'     -> aggregated tensor when possible (predict/quantiles/raw)
-          - collect='distpred' -> {'paths':[B,T,F,K], 'path_logits': [B,T,K]?}
-          - collect='per_chunk'-> list of per-chunk items (tensor or dict), already time-major
-          - collect='auto'     -> if DistPred dicts, returns stacked dict; else tensor
+          - collect='none'     -> aggregated tensor when possible (predict/quantiles/raw), [B, T, ...]
+          - collect='distpred' -> {'paths':[B,T,F,K], 'path_logits':[B,T,K]?}
+          - collect='per_chunk'-> list of per-chunk outputs (each [B, steps, ...] or a DistPred dict)
+          - collect='auto'     -> stacked DistPred dict if available, else tensor
         """
         self.eval()
-
-        # Resolve chunk length
-        if chunk_length is None:
-            chunk_length = getattr(self.config, "prediction_length", None) or 256
-        if chunk_length <= 0:
-            raise ValueError(f"chunk_length must be positive, got {chunk_length}")
 
         B, device, dtype = inputs.shape[0], inputs.device, inputs.dtype
         F = getattr(self.config, "feature_size", None)
         if F is None:
             raise ValueError("config.feature_size is required.")
 
-        # Optional encoder pass
+        # Determine decoder context length
+        if context_length is None:
+            context_length = getattr(self.config, "context_length", None) or inputs.shape[1]
+        if context_length <= 0:
+            raise ValueError(f"context_length must be positive, got {context_length}")
+
+        primary_head = self._get_primary_head()
+
+        total_T = int(prediction_length)
+        if total_T <= 0:
+            return torch.empty((B, 0, F), device=device, dtype=dtype)
+
+        # Chunk plan
+        n_full = total_T // chunk_length
+        rem = total_T % chunk_length
+        chunk_sizes: List[int] = ([chunk_length] * n_full) + ([rem] if rem > 0 else [])
+
+        # (1) Build initial decoder context (auto-pad if needed)
+        ctx, ctx_mask = self._build_padded_context(
+            inputs, context_length,
+            pad_context_mode=pad_context_mode,
+            pad_value=pad_value,
+        )  # ctx: [B, Ctx, F], ctx_mask: [B, Ctx]
+
+        # Optional encoder pass (if the model has one)
         encoder_hidden_states = None
-        if hasattr(self, 'encoder') and self.encoder is not None:
+        if hasattr(self, "encoder") and self.encoder is not None:
             enc = self.preprocessor.process(
-                input_values=inputs,
-                attention_mask=attention_mask,
+                input_values=ctx,            # padded context fed to encoder as well
+                attention_mask=ctx_mask,
                 is_causal=False,
                 validate_shapes=validate_shapes,
                 verbose=verbose,
@@ -203,131 +240,85 @@ class MultiStepMixin:
                 attention_mask=enc["attention_mask"],
                 return_dict=True,
             )
-            encoder_hidden_states = enc_out.last_hidden_state  # [B, S_enc, D]
+            encoder_hidden_states = enc_out.last_hidden_state  # [B, Ctx, D_enc]
 
-        primary_head = self._get_primary_head()
+        per_chunk_outs: List[Union[torch.Tensor, Dict[str, torch.Tensor]]] = []
 
-        total_T = prediction_length
-        n_full = total_T // chunk_length
-        rem = total_T % chunk_length
+        for steps in chunk_sizes:
+            # (2) Decoder sees EXACTLY `context_length` each chunk
+            dec_in = ctx                              # [B, Ctx, F]
+            dec_mask = ctx_mask                       # [B, Ctx]
 
-        chunk_sizes: List[int] = ([chunk_length] * n_full) + ([rem] if rem > 0 else [])
-        outputs_per_chunk: List[Union[torch.Tensor, Dict[str, torch.Tensor]]] = []
-
-        previous_chunk_values: Optional[torch.Tensor] = None  # in *model input domain* (not denormed)
-
-        for j, steps in enumerate(chunk_sizes):
-            # Build decoder inputs for this chunk
-            dec_in = self._build_future_inputs(
-                batch_size=B,
-                steps=steps,
-                device=device,
-                dtype=dtype,
-                feature_size=F,
-                fill_future=("prev_pred" if j > 0 else fill_future),
-                encoder_inputs=inputs,
-                previous_chunk_values=previous_chunk_values,
-            )  # [B, steps, F]
-
-            # Mask for this chunk
-            dec_mask = decoder_attention_mask
-            if dec_mask is None:
-                dec_mask = torch.ones(B, steps, device=device, dtype=torch.float32)
-
-            # One-pass processing for the chunk
             dec_proc = self.preprocessor.process(
                 input_values=dec_in,
                 past_key_values_length=0,
                 attention_mask=dec_mask,
-                is_causal=True,  # causal across the steps of THIS chunk
+                is_causal=True,
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
             dec_out = self.decoder(
-                hidden_states=dec_proc["hidden_states"],   # [B, steps, D]
+                hidden_states=dec_proc["hidden_states"],   # [B, Ctx, D]
                 attention_mask=dec_proc["attention_mask"],
                 encoder_hidden_states=encoder_hidden_states,
                 use_cache=False,
                 return_dict=True,
             )
-            hidden_all = dec_out.last_hidden_state  # [B, steps, D]
+            h_all = dec_out.last_hidden_state              # [B, Ctx, D]
 
-            # Head over the entire chunk
-            head_out = self._get_head_output(hidden_all)  # tensor | dict | list
+            # (3) Take LAST `steps` hidden positions and run the head (time-major for this chunk)
+            tail_hidden = h_all[:, -steps:, :]             # [B, steps, D]
+            head_out = self._get_head_output(tail_hidden)  # tensor | dict | list
 
-            # Package per-chunk output
+            # (4) What to return/store for this chunk
             store_item = self._compute_prediction_to_store(
                 head_out, prediction_strategy, quantiles, primary_head
             )
+            per_chunk_outs.append(store_item)
 
-            # Keep per-chunk (for later stacking/concat)
-            outputs_per_chunk.append(store_item)
-
-            # Prepare next chunk's decoder inputs (roll forward) in *model input domain*:
-            # - If store_item is a tensor of [B, steps, F] or [B, steps, F, Q], we prefer the median track for roll.
-            # - If it's a DistPred dict, roll the median (or mean) across K.
-            if j < len(chunk_sizes) - 1:  # not last chunk
+            # (5) Roll: append median predictions (model input domain) to form next context
+            if steps > 0:
                 if isinstance(head_out, dict) and "paths" in head_out:
-                    # roll the median path over K (no denorm here)
-                    paths = head_out["paths"]        # [B, steps, F, K]
-                    med = torch.quantile(paths, q=0.5, dim=-1)  # [B, steps, F]
-                    previous_chunk_values = med
+                    # DistPred: median across K
+                    rolled = torch.quantile(head_out["paths"], q=0.5, dim=-1)  # [B, steps, F]
                 elif torch.is_tensor(store_item):
-                    # If it's [B, steps, F, Q], roll the median quantile; else assume [B, steps, F]
+                    # Tensor: [B, steps, F] or [B, steps, F, Q]
                     if store_item.ndim == 4:
-                        qdim = store_item.shape[-1]
-                        if qdim == 1:
-                            previous_chunk_values = store_item.squeeze(-1)
-                        else:
-                            # median over Q
-                            previous_chunk_values = torch.median(store_item, dim=-1).values
+                        rolled = torch.median(store_item, dim=-1).values       # [B, steps, F]
                     else:
-                        previous_chunk_values = store_item
+                        rolled = store_item                                     # [B, steps, F]
                 else:
-                    # Multi-head list or unsupported type — fallback: use primary_head.predict(median) if possible
+                    # Multi-head or other type: fallback to primary_head.predict median
                     if hasattr(primary_head, "predict") and callable(getattr(primary_head, "predict")):
-                        mid = primary_head.predict(head_out, method="median")
-                        previous_chunk_values = mid
+                        rolled = primary_head.predict(head_out, method="median")  # [B, steps, F]
                     else:
-                        raise TypeError(
-                            "Cannot roll forward: head output type unsupported for building next chunk inputs."
-                        )
+                        raise TypeError("Cannot roll forward: unsupported head output type for context building.")
 
-        # ---- stack chunks along time ----
+                # Update context: keep exactly `context_length` and set mask to ones from now on
+                ctx = torch.cat([ctx, rolled], dim=1)[:, -context_length:, :].contiguous()
+                ctx_mask = torch.ones(B, context_length, device=device, dtype=torch.float32)
+
+        # (6) Package across chunks
+        first = per_chunk_outs[0]
         if collect == "per_chunk":
-            final = outputs_per_chunk
+            final = per_chunk_outs
+        elif (collect in ("auto", "distpred")) and isinstance(first, dict) and "paths" in first:
+            final = self._stack_distpred_chunks(per_chunk_outs)  # {'paths':[B,T,F,K], 'path_logits':[B,T,K]?}
+        elif torch.is_tensor(first):
+            # concatenate along time
+            try:
+                final = torch.cat(per_chunk_outs, dim=1)         # [B, T, ...]
+            except Exception as e:
+                logger.warning(f"Concat failed for tensor chunks; returning per-chunk list. Error: {e}")
+                final = per_chunk_outs
         else:
-            first = outputs_per_chunk[0]
+            final = per_chunk_outs
 
-            # DistPred dict path
-            if (collect in ("auto", "distpred")) and isinstance(first, dict):
-                # If the item is an aggregated dict (e.g., predict() returned a dict), prefer raw head dicts
-                # If your heads return proper DistPred dicts on forward for full horizon, you might want to
-                # re-run stacking on raw head dicts instead. Here we assume store_item preserved DistPred dict.
-                dist_chunks = []
-                for item in outputs_per_chunk:
-                    if not (isinstance(item, dict) and "paths" in item):
-                        raise TypeError("collect='distpred' requested but a chunk is not a DistPred dict.")
-                    dist_chunks.append(item)
-                final = self._stack_distpred_chunks(dist_chunks)
-
-            # Tensor path
-            elif torch.is_tensor(first):
-                try:
-                    final = torch.cat(outputs_per_chunk, dim=1)  # [B, T, ...]
-                except Exception as e:
-                    # Some heads may yield shape changes — fall back to list
-                    logger.warning(f"Concat failed for tensor outputs; returning per-chunk list. Error: {e}")
-                    final = outputs_per_chunk
-            else:
-                # Multi-head or mixed objects: return the list
-                final = outputs_per_chunk
-
-        # ---- optional denormalize for tensors with last-dim == feature_size ----
+        # (7) Optional denorm if returning a plain tensor with last-dim == F
         if isinstance(final, torch.Tensor):
             last_dim = final.size(-1) if final.dim() >= 2 else None
             can_denorm = (last_dim == getattr(self.config, "feature_size", last_dim))
-            if hasattr(self.preprocessor, 'denormalize') and can_denorm and not return_raw:
+            if hasattr(self.preprocessor, "denormalize") and can_denorm and not return_raw:
                 logger.info("Denormalizing single-pass chunked predictions.")
                 final = self.preprocessor.denormalize(final)
 
