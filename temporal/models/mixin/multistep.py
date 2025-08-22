@@ -6,7 +6,7 @@ from typing import Optional, Union, Any, Dict, List, Tuple
 logger = logging.getLogger(__name__)
 
 
-class MultistepMixin:
+class MultiStepMixin:
     """
     Multistep autoregressive generation with first-class collection/stacking.
 
