@@ -689,6 +689,68 @@ class MixtureOutputHead(BaseOutputHead):
                 out[out_key] = tensor.squeeze(-1) if tensor.shape[-1] == 1 else tensor
                 processed.add(out_key)
         return out
+    def predict(self, params: Dict[str, Union[torch.Tensor, List[str]]], method: str = "mean") -> torch.Tensor:
+        """
+        Return a point forecast from mixture params.
+        Currently supports method == "mean" (mixture mean).
+        Output shape: [B, T, 1] (univariate mixture).
+        """
+        if method not in ("mean", "median"):
+            raise ValueError(f"MixtureOutputHead.predict: unsupported method '{method}'. Use 'mean' or 'median'.")
+
+        # Mixture weights
+        logits = params["mixture_logits"]  # [B,T,M] or [B,1,M] or [B,M]
+        if logits.ndim == 2:
+            logits = logits.unsqueeze(1)    # -> [B,1,M]
+        w = torch.softmax(logits, dim=-1)   # [B,T,M]
+
+        comps: List[str] = params["components"]
+        B, T, M = w.shape
+        device, dtype = w.device, w.dtype
+
+        # Build per-component mean tensors of shape [B,T,1]
+        comp_means = []
+        for cname in comps:
+            if cname == "normal":
+                mu = params["normal_mu"]     # [B,T] or [B,1]
+                if mu.ndim == 2:
+                    mu = mu.unsqueeze(-1)    # [B,T,1]
+                comp_means.append(mu)
+            elif cname == "fixed_normal":
+                mu = params["normal_mu"]
+                if mu.ndim == 2:
+                    mu = mu.unsqueeze(-1)
+                comp_means.append(mu)
+            elif cname == "student_t":
+                mu = params["student_mu"]
+                if mu.ndim == 2:
+                    mu = mu.unsqueeze(-1)
+                # E[Y] = mu (df > 1 ensured by head’s floor) → OK
+                comp_means.append(mu)
+            elif cname == "log_normal":
+                mu = params["lognorm_mu"]
+                sigma = params["lognorm_sigma"]
+                if mu.ndim == 2:    mu = mu.unsqueeze(-1)
+                if sigma.ndim == 2: sigma = sigma.unsqueeze(-1)
+                comp_means.append(torch.exp(mu + 0.5 * (sigma * sigma)))
+            elif cname == "neg_binomial":
+                # Our paramization uses r (total_count) and p (success prob for "r successes")
+                # Mean of #failures until r successes: r * (1-p) / p
+                r = params["nb_r"]
+                p = params["nb_p"].clamp(1e-6, 1 - 1e-6)
+                if r.ndim == 2: r = r.unsqueeze(-1)
+                if p.ndim == 2: p = p.unsqueeze(-1)
+                comp_means.append(r * (1.0 - p) / p)
+            else:
+                raise NotImplementedError(f"MixtureOutputHead.predict: mean for component '{cname}' not implemented.")
+
+        # Stack component means → [B,T,M,1]
+        means_stack = torch.stack([m if m.ndim == 3 else m.unsqueeze(1) for m in comp_means], dim=2)
+        # Weight and sum over M
+        y_mean = (w.unsqueeze(-1) * means_stack).sum(dim=2)  # [B,T,1]
+
+        # For symmetric choices ("median"), return the same as mean (reasonable default)
+        return y_mean
 
     @torch.no_grad()
     def sample(
