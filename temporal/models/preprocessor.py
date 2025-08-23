@@ -63,7 +63,7 @@ class InputPreprocessor(nn.Module):
         """
         Processes raw input tensors into embeddings and masks.
         """
-        if verbose: print(f"[Preprocessor] Initial input shape: {input_values.shape}")
+        #if verbose: print(f"[Preprocessor] Initial input shape: {input_values.shape}")
 
         # --- Apply Instance Normalization if configured ---
         if self.instance_norm is not None:
@@ -72,7 +72,7 @@ class InputPreprocessor(nn.Module):
         # --- Value Embedding (Handles Patching Internally) ---
         # FIX: Removed the buggy manual patching logic. The embedding layer now handles this.
         value_embeds = self.value_embedding(input_values)
-        if verbose: print(f"[Preprocessor] Value embedding shape: {value_embeds.shape}")
+        #if verbose: print(f"[Preprocessor] Value embedding shape: {value_embeds.shape}")
 
         batch_size_embed, seq_len_after_patching, d_model = value_embeds.shape 
         
@@ -88,7 +88,7 @@ class InputPreprocessor(nn.Module):
         )
         pos_embed= pos_embed.to(dtype=value_embeds.dtype, device=value_embeds.device)
 
-        if verbose: print(f"[Preprocessor] Positional embedding shape: {pos_embed.shape}")
+        #if verbose: print(f"[Preprocessor] Positional embedding shape: {pos_embed.shape}")
 
         if validate_shapes:
             assert value_embeds.shape == pos_embed.shape, \
@@ -97,7 +97,7 @@ class InputPreprocessor(nn.Module):
         hidden_states = value_embeds + pos_embed
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        if verbose: print(f"[Preprocessor] Final hidden_states shape: {hidden_states.shape}")
+        #if verbose: print(f"[Preprocessor] Final hidden_states shape: {hidden_states.shape}")
 
         # --- Attention Mask Creation ---
         final_attention_mask = self._prepare_attention_mask(
@@ -223,7 +223,7 @@ class InputPreprocessor(nn.Module):
             """
             Prepares a single, already-embedded patch for the decoder during generation.
             """
-            if verbose: print(f"[Preprocessor Gen Step] Initial patch embed shape: {patch_embeds.shape}")
+            #if verbose: print(f"[Preprocessor Gen Step] Initial patch embed shape: {patch_embeds.shape}")
             
             batch_size, seq_len, d_model = patch_embeds.shape
 
@@ -233,12 +233,12 @@ class InputPreprocessor(nn.Module):
                 seq_len=seq_len,
                 past_key_values_length=past_key_values_length
             )
-            if verbose: print(f"[Preprocessor Gen Step] Positional embedding shape: {pos_embed.shape}")
+           # if verbose: print(f"[Preprocessor Gen Step] Positional embedding shape: {pos_embed.shape}")
 
             hidden_states = patch_embeds + pos_embed
             hidden_states = self.layernorm_embedding(hidden_states)
             hidden_states = self.dropout(hidden_states)
-            if verbose: print(f"[Preprocessor Gen Step] Final hidden_states shape: {hidden_states.shape}")
+            #if verbose: print(f"[Preprocessor Gen Step] Final hidden_states shape: {hidden_states.shape}")
             
             final_attention_mask = self._prepare_attention_mask(
                 attention_mask,
@@ -247,8 +247,8 @@ class InputPreprocessor(nn.Module):
                 past_key_values_length,
                 is_causal=is_causal
             )
-            if verbose and final_attention_mask is not None: 
-                print(f"[Preprocessor Gen Step] Final attention mask shape (4D): {final_attention_mask.shape}")
+           # if verbose and final_attention_mask is not None: 
+            #    print(f"[Preprocessor Gen Step] Final attention mask shape (4D): {final_attention_mask.shape}")
 
             return {
                 "hidden_states": hidden_states,
