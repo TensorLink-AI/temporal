@@ -830,45 +830,31 @@ class MixtureOutputHead(BaseOutputHead):
         return None
 
 
-
-
 @register_module("output_head", "student_t")
 class StudentTHead(BaseOutputHead):
     """
     Student's t output head.
 
-    Parameters produced by forward():
-      - mu         : location                       [B, T, F]
-      - log_scale  : log of scale (>0)              [B, T, F]
-      - log_df     : log of degrees of freedom ν    [B, T, F]
-    Returned as a single concat tensor: [B, T, 3F]  in the order [mu, log_scale, log_df].
-
-    API:
-      - predict("mean"|"median") -> [B, T, F]
-      - sample(...)              -> [B, T, F]
-      - sample_quantiles(qs)     -> [B, T, F, Q]
-
-    Notes:
-      - We enforce numerical stability with clamps and floors:
-          ν = exp(log_df) + df_floor   (df_floor ≥ 1.001 ensures mean exists)
-          s = exp(log_scale)           (then clamped with sigma_floor)
-      - For a symmetric t, median == mu and mean == mu (when ν>1).
+    forward(x): concat params [mu, log_scale, log_df] with shape [B, T, 3F]
+    predict("mean"|"median"): [B, T, F]
+    sample(...): [B, T, F]
+    sample_quantiles(qs): [B, T, F, Q]  (without using torch.distributions.StudentT.icdf)
     """
 
     def __init__(
         self,
         hidden_size: int,
-        output_size: int = 1,             # number of features F
+        output_size: int = 1,             # F
         *,
-        # log-parameter clamping
+        # stability clamps
         min_log_scale: float = -7.0,
         max_log_scale: float =  5.0,
-        min_log_df: float    = -2.0,      # exp(-2)=~0.135 → +df_floor ensures > 1.136
-        max_log_df: float    =  6.0,      # exp(6)=403 → plenty large
+        min_log_df: float    = -2.0,
+        max_log_df: float    =  6.0,
         # floors
-        sigma_floor: float   = 1e-4,      # minimum scale after exp()
-        df_floor: float      = 1.001,     # ensures mean exists
-        # optional bias inits (convenient for stable starts)
+        sigma_floor: float   = 1e-4,      # min scale
+        df_floor: float      = 1.001,     # ensure mean exists
+        # optional bias inits
         init_log_scale: Optional[float] = None,
         init_log_df: Optional[float]    = None,
         **kwargs,
@@ -885,104 +871,130 @@ class StudentTHead(BaseOutputHead):
         self.sigma_floor = float(sigma_floor)
         self.df_floor    = float(df_floor)
 
-        # Optional: initialize the log-scale / log-df halves with biases
         if init_log_scale is not None or init_log_df is not None:
             with torch.no_grad():
                 if self.proj.bias is None:
                     self.proj.bias = nn.Parameter(torch.zeros(3 * self.feature_size))
-                # layout: [mu(F), log_scale(F), log_df(F)]
                 if init_log_scale is not None:
                     self.proj.bias[self.feature_size : 2 * self.feature_size] = float(init_log_scale)
                 if init_log_df is not None:
                     self.proj.bias[2 * self.feature_size : 3 * self.feature_size] = float(init_log_df)
 
-    # -------------------- internals --------------------
+    # ---------- internals ----------
 
     def _split_params(self, y: torch.Tensor):
-        """
-        y: [B, T, 3F]  -> (mu, log_scale, log_df), each [B, T, F] (or [B,1,F])
-        Applies in-place clamps to log_* for stability.
-        """
+        """ y: [B,T,3F] -> (mu, log_scale, log_df) each [B,T,F], with clamps. """
         mu, log_scale, log_df = torch.split(y, self.feature_size, dim=-1)
         log_scale = log_scale.clamp_(self.min_log_scale, self.max_log_scale)
         log_df    = log_df.clamp_(self.min_log_df,    self.max_log_df)
         return mu, log_scale, log_df
 
     def _scale_df(self, log_scale: torch.Tensor, log_df: torch.Tensor):
-        """
-        Convert log params to positive scale, df with floors.
-          s  = clamp(exp(log_scale), sigma_floor, +inf)
-          nu = exp(log_df) + df_floor
-        """
+        """ Positive scale & df with floors. """
         scale = torch.exp(log_scale).clamp_min(self.sigma_floor)
         nu    = torch.exp(log_df) + self.df_floor
         return scale, nu
 
-    # -------------------- API -------------------------
+    # CDF for standard t via regularized incomplete beta (vectorized).
+    # x: arbitrary shape, nu: broadcastable to x.
+    def _student_t_cdf(self, x: torch.Tensor, nu: torch.Tensor) -> torch.Tensor:
+        # CDF(t; nu) = 1 - 0.5 * I_{nu/(nu + t^2)}(nu/2, 1/2), for t >= 0
+        #           = 0.5 * I_{nu/(nu + t^2)}(nu/2, 1/2),     for t < 0
+        x_abs = x.abs()
+        z = nu / (nu + x_abs * x_abs)
+        a = nu / 2.0
+        b = torch.tensor(0.5, device=nu.device, dtype=nu.dtype)
+
+        # torch.special.betainc is the regularized incomplete beta I_x(a,b)
+        I = torch.special.betainc(a, b, z)
+        cdf_pos = 1.0 - 0.5 * I
+        return torch.where(x >= 0, cdf_pos, 0.5 * I)
+
+    # Inverse CDF via vectorized bisection on the *last* dim (quantile dim).
+    # q: [*, Q] in (0,1); nu: broadcastable to q (no quantile dim)
+    def _student_t_icdf_bisect(
+        self, q: torch.Tensor, nu: torch.Tensor, *, iters: int = 40
+    ) -> torch.Tensor:
+        # clamp away from 0/1 for numerical safety
+        q = q.clamp(1e-9, 1 - 1e-9)
+
+        # use symmetry: solve for q>=0.5, then reflect
+        q_mirror = torch.where(q < 0.5, 1.0 - q, q)  # >= 0.5
+        # broadcast nu to have a quantile dim
+        while nu.dim() < q_mirror.dim():
+            nu = nu.unsqueeze(-1)
+
+        lo = torch.zeros_like(q_mirror)
+        hi = torch.ones_like(q_mirror)
+
+        # Exponentially expand hi until CDF(hi) >= target (per element)
+        for _ in range(16):
+            c = self._student_t_cdf(hi, nu)
+            mask = c < q_mirror
+            if not mask.any():
+                break
+            hi = torch.where(mask, hi * 2.0, hi)
+
+        # Bisection
+        for _ in range(iters):
+            mid = (lo + hi) / 2.0
+            c = self._student_t_cdf(mid, nu)
+            go_right = c < q_mirror
+            lo = torch.where(go_right, mid, lo)
+            hi = torch.where(go_right, hi, mid)
+
+        t_pos = (lo + hi) / 2.0
+        # reflect back to q<0.5
+        t = torch.where(q < 0.5, -t_pos, t_pos)
+        return t
+
+    # ---------- API ----------
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, T, hidden_size]
-        returns: [B, T, 3F] in order [mu, log_scale, log_df], with log_* clamped
-        """
-        out = self.proj(x)  # [B, T, 3F]
+        out = self.proj(x)  # [B,T,3F]
         mu, log_scale, log_df = self._split_params(out)
         return torch.cat([mu, log_scale, log_df], dim=-1)
 
     def predict(self, params: torch.Tensor, method: str = "mean") -> torch.Tensor:
-        """
-        params: [B, T, 3F] (or [B, 1, 3F])
-        returns: [B, T, F]
-        """
         mu, log_scale, log_df = self._split_params(params)
-        # For Student's t, mean == median == mu (we enforce nu>1 via df_floor)
         if method not in ("mean", "median"):
-            raise ValueError(f"StudentTHead.predict: unsupported method '{method}'. Use 'mean' or 'median'.")
-        return mu
+            raise ValueError("StudentTHead.predict: use 'mean' or 'median'.")
+        return mu  # mean == median (df_floor>1)
 
     def sample(
         self,
-        params: torch.Tensor,                     # [B, T, 3F] or [B, 1, 3F]
+        params: torch.Tensor,
         *,
-        method: str = "reparam",                  # {"reparam","mean"}
-        temperature: float = 1.0,                 # scales the 'scale' parameter
-        eta_blend_mean: float = 0.0,              # 0..1: blend sample toward mean
+        method: str = "reparam",
+        temperature: float = 1.0,
+        eta_blend_mean: float = 0.0,
         generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
-        """
-        Reparameterized sampling using the chi-square construction:
-          Z ~ N(0,1),  U ~ Chi2(nu),  T = Z / sqrt(U/nu)
-          Y = mu + scale * T
-        Returns: [B, T, F]
-        """
         mu, log_scale, log_df = self._split_params(params)
         scale, nu = self._scale_df(log_scale, log_df)
 
         if method == "mean" or temperature == 0.0:
             return mu
 
-        # temperature scales the dispersion
         if temperature != 1.0:
             scale = scale * float(temperature)
 
-        # U ~ Chi2(nu)  via Gamma(k=nu/2, rate=1/2)
+        # U ~ Chi2(nu) via Gamma(nu/2, rate=1/2); this returns shape broadcast(nu, rate)
         gamma = torch.distributions.Gamma(concentration=nu / 2.0, rate=torch.tensor(0.5, device=nu.device, dtype=nu.dtype))
-        U = gamma.rsample(sample_shape=mu.shape[:-1]) if generator is None else gamma.rsample(mu.shape[:-1], generator=generator)
-        # NOTE: Gamma.rsample accepts sample_shape first; above form ensures shape [B,T,F]
+        U = gamma.rsample()  # [B,T,F]
 
         # Z ~ N(0,1)
-        Z = torch.randn_like(mu, generator=generator)
+        Z = torch.randn_like(mu, generator=generator)  # [B,T,F]
 
-        T0 = Z * torch.sqrt(nu / U)   # Z / sqrt(U/nu)
-        y  = mu + scale * T0
+        T0 = Z * torch.sqrt(nu / U)  # Z / sqrt(U/nu)
+        y = mu + scale * T0
         if eta_blend_mean:
             y = (1.0 - float(eta_blend_mean)) * y + float(eta_blend_mean) * mu
         return y
 
     def sample_quantiles(self, params: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
         """
-        params: [B, T, 3F]
-        returns: [B, T, F, Q]
+        Returns [B, T, F, Q] without relying on StudentT.icdf().
         """
         mu, log_scale, log_df = self._split_params(params)
         scale, nu = self._scale_df(log_scale, log_df)
@@ -991,11 +1003,13 @@ class StudentTHead(BaseOutputHead):
         if not torch.all((q > 0.0) & (q < 1.0)):
             raise ValueError(f"Quantiles must be in (0,1), got {quantile_levels}")
 
-        # Standard t quantiles, then affine transform
-        t_base = torch.distributions.StudentT(df=nu)
-        z = t_base.icdf(q)  # [B, T, F, Q] via broadcasting
-        return mu.unsqueeze(-1) + scale.unsqueeze(-1) * z
+        # Expand to [B,T,F,Q]
+        q4 = q.view(1, 1, 1, -1).expand(*mu.shape, q.numel())
+        nu4 = nu.unsqueeze(-1).expand_as(q4)
+
+        # Vectorized inverse-CDF via bisection
+        t = self._student_t_icdf_bisect(q4, nu4, iters=40)  # [B,T,F,Q]
+        return mu.unsqueeze(-1) + scale.unsqueeze(-1) * t
 
     def get_loss_fn(self) -> Optional[Callable]:
         return None
-
