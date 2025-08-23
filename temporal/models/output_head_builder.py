@@ -108,8 +108,8 @@ class OutputHeadBuilder:
 
         if head_type == "linear":
             return feature_size
-        elif head_type == "gaussian":
-            return feature_size * 2  # Mean and std dev
+ #       elif head_type == "gaussian":
+  #          return feature_size * 2  # Mean and std dev
         elif head_type == "t_distribution":
             return feature_size * 3  # Mean, scale, and degrees of freedom
         elif head_type == "quantile_regression": # Use the direct config field
