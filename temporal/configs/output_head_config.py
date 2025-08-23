@@ -17,6 +17,21 @@ class OutputHeadConfig(BaseConfig):
         if self.output_size is None or self.output_size <= 0:
             raise ValueError("output_size must be a positive integer.")
 
+@register_config_type("gaussian_output_head")
+@dataclass(frozen=True, kw_only=True)
+class GaussianOutputHeadConfig(OutputHeadConfig):
+    """
+    Configuration for a Gaussian (Normal) distribution output head.
+    """
+    # This type string is the user-facing identifier
+    type: str = field(default="gaussian")
+
+    # Parameters specific to the GaussianHead, moved from kwargs
+    min_log_sigma: float = -7.0
+    max_log_sigma: float = 5.0
+    sigma_floor: float = 1e-4
+    init_log_sigma: Optional[float] = None
+
 @register_config_type("distpred_output_head")
 @dataclass(frozen=True, kw_only=True)
 class DistPredOutputHeadConfig(OutputHeadConfig):
@@ -123,7 +138,7 @@ def output_head_config_from_dict(data: Dict[str, Any]) -> OutputHeadConfig:
     # Map config type names to registry keys if they differ
     type_to_registry_key = {
         "linear": "output_head", # Default for the base OutputHeadConfig
-        "gaussian": "output_head",
+        "gaussian": "gaussian_output_head", # <-- UPDATE THIS LINE
         "distpred": "distpred_output_head",
         "quantile_regression": "quantile_regression_output_head", # ADDED
         "mixture": "mixture_output_head", # ADDED

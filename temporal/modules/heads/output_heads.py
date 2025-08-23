@@ -138,7 +138,6 @@ class LinearOutputHead(BaseOutputHead):
 # =========================
 # Gaussian
 # =========================
-
 @register_module("output_head", "gaussian")
 class GaussianHead(BaseOutputHead):
     """
@@ -157,33 +156,48 @@ class GaussianHead(BaseOutputHead):
         min_log_sigma: float = -7.0,       # clamp range for stability
         max_log_sigma: float = 5.0,
         sigma_floor: float = 1e-4,         # minimum stdev after exp()
-        init_log_sigma: Optional[float] = None,  # optional bias init for log_sigma
+        init_log_sigma: Optional[float] = None,
+        allow_lazy_infer: bool = True,     # <<< new: auto-fix in_features on first forward
         **kwargs,
     ):
         super().__init__()
         self.feature_size = int(output_size)
-        self.proj = nn.Linear(hidden_size, 2 * self.feature_size)
         self.min_log_sigma = float(min_log_sigma)
         self.max_log_sigma = float(max_log_sigma)
-        self.sigma_floor = float(sigma_floor)
+        self.sigma_floor   = float(sigma_floor)
+        self.allow_lazy_infer = bool(allow_lazy_infer)
 
-        # Optional: initialize the log_sigma half with a bias
+        # If hidden_size looks bogus (e.g., 0/1 while your decoder is 256/512/etc),
+        # we’ll still build something, but we’ll fix it on first forward if allowed.
+        in_features = max(int(hidden_size), 1)
+        self.proj = nn.Linear(in_features, 2 * self.feature_size)
+
         if init_log_sigma is not None:
             with torch.no_grad():
-                # bias layout: [mu(F), log_sigma(F)]
                 if self.proj.bias is None:
                     self.proj.bias = nn.Parameter(torch.zeros(2 * self.feature_size))
+                # bias layout: [mu(F), log_sigma(F)]
                 self.proj.bias[self.feature_size:] = float(init_log_sigma)
 
     # ---- internals ---------------------------------------------------------
 
+    def _maybe_fix_in_features(self, x_last_dim: int):
+        if self.proj.in_features == x_last_dim:
+            return
+        if not self.allow_lazy_infer:
+            raise RuntimeError(
+                f"GaussianHead expected hidden_size={self.proj.in_features} but got {x_last_dim}. "
+                f"Construct the head with hidden_size=decoder_hidden_size (e.g. 512) and "
+                f"output_size=feature_size."
+            )
+        # Lazy re-init to match the true hidden size
+        old_out = self.proj.out_features
+        new = nn.Linear(x_last_dim, old_out)
+        # (Optional) leave weights random; copying isn’t possible due to size change.
+        self.proj = new
+
     def _split_params(self, y: torch.Tensor):
-        """
-        y: [B, T, 2F] or [B, 1, 2F]
-        returns (mu, log_sigma) both [B, T, F] (or [B, 1, F])
-        """
         mu, log_sigma = y.chunk(2, dim=-1)
-        # clamp in-place for stability
         log_sigma = log_sigma.clamp_(self.min_log_sigma, self.max_log_sigma)
         return mu, log_sigma
 
@@ -194,17 +208,13 @@ class GaussianHead(BaseOutputHead):
         x: [B, T, hidden_size]
         returns: [B, T, 2F]  (concat of mu and log_sigma)
         """
-        out = self.proj(x)                  # [B, T, 2F]
-        # clamp log_sigma region
+        # Ensure the linear matches the actual hidden size
+        self._maybe_fix_in_features(x.size(-1))
+        out = self.proj(x)  # [B, T, 2F]
         mu, log_sigma = self._split_params(out)
         return torch.cat([mu, log_sigma], dim=-1)
 
     def predict(self, params: torch.Tensor, method: str = "mean") -> torch.Tensor:
-        """
-        params: [B, T, 2F] or [B, 1, 2F]
-        method: "mean" | "median"
-        returns: [B, T, F] (or [B, 1, F])
-        """
         mu, log_sigma = self._split_params(params)
         if method not in ("mean", "median"):
             raise ValueError(f"GaussianHead.predict: unsupported method '{method}'. Use 'mean' or 'median'.")
@@ -221,9 +231,6 @@ class GaussianHead(BaseOutputHead):
         eta_blend_mean: float = 0.0,              # 0..1: blend sample towards mean
         generator: Optional[torch.Generator] = None,
     ) -> torch.Tensor:
-        """
-        Returns a sample with same time shape as params: [B, T, F] or [B, 1, F]
-        """
         mu, log_sigma = self._split_params(params)
         if method == "mean" or temperature == 0.0:
             return mu
@@ -233,29 +240,22 @@ class GaussianHead(BaseOutputHead):
         if temperature != 1.0:
             sigma = sigma * float(temperature)
 
-        eps = _randn_like(mu, generator=generator)
+        if generator is None:
+            eps = torch.randn_like(mu)
+        else:
+            eps = torch.randn(mu.shape, device=mu.device, dtype=mu.dtype, generator=generator)
         y = mu + eps * sigma
         if eta_blend_mean:
             y = (1.0 - float(eta_blend_mean)) * y + float(eta_blend_mean) * mu
         return y
 
     def sample_quantiles(self, params: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
-        """
-        params: [B, T, 2F] or [B, 1, 2F]
-        returns: [B, T, F, Q]
-        """
         mu, log_sigma = self._split_params(params)
         sigma = torch.exp(log_sigma)
-
         q = torch.tensor(quantile_levels, dtype=mu.dtype, device=mu.device)  # [Q]
-        # standard normal quantiles
         z = torch.distributions.Normal(0.0, 1.0).icdf(q)                     # [Q]
+        return mu.unsqueeze(-1) + sigma.unsqueeze(-1) * z.view(1, 1, 1, -1)  # [B,T,F,Q]
 
-        # Broadcast: [B,T,F,1] + [1,1,1,Q] -> [B,T,F,Q]
-        return mu.unsqueeze(-1) + sigma.unsqueeze(-1) * z.view(1, 1, 1, -1)
-
-    def get_loss_fn(self) -> Optional[Callable]:
-        return None
 
 
 # =========================
@@ -620,14 +620,12 @@ class DistPredHead(BaseOutputHead):
 @register_module("output_head", "mixture")
 class MixtureOutputHead(BaseOutputHead):
     """
-    Mixture Density head (univariate per component).
-    Supports components in DIST_PARAM_COUNTS.
-    forward(x) -> dict with per-component params and 'mixture_logits' [B,T,M].
-    sample(params) -> one-step sample [B,1,1].
-    predict(params) -> mixture mean [B,T,1].
-    sample_quantiles(params, qs) -> MC quantiles [B,T,1,Q].
+    Mixture Density head (univariate per time step).
+    Returns params in a dict from forward(), and provides:
+      - predict(...): mixture mean -> [B,T,1]
+      - sample(...): one-step sample -> [B,1,1]
+      - sample_quantiles(...): MC-approx quantiles -> [B,T,1,Q]
     """
-
     DIST_PARAM_COUNTS = {
         "student_t": {"df": 1, "mu": 1, "scale": 1},
         "log_normal": {"mu": 1, "sigma": 1},
@@ -651,17 +649,21 @@ class MixtureOutputHead(BaseOutputHead):
         if self.num_components <= 0:
             raise ValueError("MixtureOutputHead requires at least one component.")
 
+        # Univariate mixture (F=1) — consistent with your current parameterization
+        self.feature_size = int(kwargs.get("feature_size", 1))
+        if self.feature_size != 1:
+            raise NotImplementedError("Current MixtureOutputHead is univariate (feature_size=1).")
+
+        # Build flat projection size
         total_params_dim = 0
         self.param_indices: Dict[str, Tuple[int, int]] = {}
         current_idx = 0
 
         for dist_name in self.components:
             if dist_name not in self.DIST_PARAM_COUNTS:
-                raise ValueError(f"Unknown distribution component '{dist_name}'. Supported: {list(self.DIST_PARAM_COUNTS.keys())}")
-            param_counts_for_dist = self.DIST_PARAM_COUNTS[dist_name]
-            output_keys_for_dist = self.DIST_OUTPUT_KEYS[dist_name]
-            for param_key, count in param_counts_for_dist.items():
-                out_key = output_keys_for_dist[param_key]
+                raise ValueError(f"Unknown component '{dist_name}'. Supported: {list(self.DIST_PARAM_COUNTS.keys())}")
+            for param_key, count in self.DIST_PARAM_COUNTS[dist_name].items():
+                out_key = self.DIST_OUTPUT_KEYS[dist_name][param_key]
                 self.param_indices[out_key] = (current_idx, current_idx + count)
                 current_idx += count
                 total_params_dim += count
@@ -672,17 +674,77 @@ class MixtureOutputHead(BaseOutputHead):
         self.output_projection = nn.Linear(hidden_size, total_params_dim)
         if "output_size" in kwargs and kwargs["output_size"] != total_params_dim:
             raise ValueError(
-                f"MixtureOutputHead: provided 'output_size' ({kwargs['output_size']}) "
-                f"does not match derived total param dim ({total_params_dim})."
+                f"MixtureOutputHead: provided output_size={kwargs['output_size']} "
+                f"!= derived={total_params_dim}"
             )
+
+    # ---------------- helpers ----------------
+
+    def _get_params_per_component(self, params: Dict[str, torch.Tensor], min_std: float = 1e-4) -> List[Dict[str, torch.Tensor]]:
+        """Return list of per-component param dicts, each tensors [B,T,1]."""
+        comps = params["components"]
+        out: List[Dict[str, torch.Tensor]] = []
+        for cname in comps:
+            cp: Dict[str, torch.Tensor] = {}
+            if cname == "normal":
+                mu = params["normal_mu"]; sigma = params["normal_sigma"]
+                mu   = mu.unsqueeze(-1) if mu.ndim == 2 else mu  # [B,T,1]
+                sigma= sigma.unsqueeze(-1) if sigma.ndim == 2 else sigma
+                cp["mu"] = mu
+                cp["sigma"] = _safe_softplus(sigma, min_value=min_std)
+            elif cname == "fixed_normal":
+                mu = params["normal_mu"]
+                mu   = mu.unsqueeze(-1) if mu.ndim == 2 else mu
+                cp["mu"] = mu
+                cp["sigma"] = torch.full_like(mu, min_std)
+            elif cname == "student_t":
+                df = params["student_df"]; mu = params["student_mu"]; sc = params["student_scale"]
+                df = df.unsqueeze(-1) if df.ndim == 2 else df
+                mu = mu.unsqueeze(-1) if mu.ndim == 2 else mu
+                sc = sc.unsqueeze(-1) if sc.ndim == 2 else sc
+                cp["df"]    = 2.0 + F.softplus(df)                          # > 2
+                cp["mu"]    = mu
+                cp["scale"] = _safe_softplus(sc, min_value=min_std)
+            elif cname == "log_normal":
+                mu = params["lognorm_mu"]; sig = params["lognorm_sigma"]
+                mu = mu.unsqueeze(-1) if mu.ndim == 2 else mu
+                sig= sig.unsqueeze(-1) if sig.ndim == 2 else sig
+                cp["mu"] = mu
+                cp["sigma"] = _safe_softplus(sig, min_value=min_std)
+            elif cname == "neg_binomial":
+                r = params["nb_r"]; p = params["nb_p"]
+                r = r.unsqueeze(-1) if r.ndim == 2 else r
+                p = p.unsqueeze(-1) if p.ndim == 2 else p
+                cp["r"] = _safe_softplus(r, min_value=1e-6)
+                cp["p"] = torch.sigmoid(p).clamp(1e-6, 1 - 1e-6)
+            else:
+                raise NotImplementedError(f"Mixture params for '{cname}' not implemented.")
+            out.append(cp)
+        return out  # each param [B,T,1]
+
+    def _weights(self, params: Dict[str, torch.Tensor], temperature: float = 1.0, top_p: Optional[float] = None) -> torch.Tensor:
+        """Return mixture weights w: [B,T,M]."""
+        logits = params["mixture_logits"]  # [B,T,M]
+        if logits.ndim != 3:
+            # accept [B,1,M] or [B,M] produced in some flows
+            if logits.ndim == 2:  # [B,M] -> [B,1,M]
+                logits = logits.unsqueeze(1)
+            elif logits.ndim == 3 and logits.shape[1] == 1:
+                pass
+            else:
+                raise ValueError(f"Unexpected mixture_logits shape {tuple(logits.shape)}")
+        scaled = _temperature_scale_logits(logits, temperature)
+        w = F.softmax(scaled, dim=-1)
+        w = _apply_top_p(w, top_p)
+        return w  # [B,T,M]
+
+    # ---------------- forward / predict / quantiles ----------------
 
     def forward(self, x: torch.Tensor) -> Dict[str, Union[torch.Tensor, List[str]]]:
         flat = self.output_projection(x)  # [B,T,Dp]
         out: Dict[str, Union[torch.Tensor, List[str]]] = {"components": self.components}
-        # mixture logits
         s, e = self.mixture_logits_indices
         out["mixture_logits"] = flat[..., s:e]  # [B,T,M]
-        # component params
         processed = set()
         for dist_name in self.components:
             keymap = self.DIST_OUTPUT_KEYS[dist_name]
@@ -691,206 +753,199 @@ class MixtureOutputHead(BaseOutputHead):
                 if out_key in processed:
                     continue
                 a, b = self.param_indices[out_key]
-                tensor = flat[..., a:b]
+                tensor = flat[..., a:b]              # [B,T,1] or [B,T]
                 out[out_key] = tensor.squeeze(-1) if tensor.shape[-1] == 1 else tensor
                 processed.add(out_key)
         return out
 
-    # ---------- helpers to normalize param shapes to [B,T,1] ----------
-
-    @staticmethod
-    def _bt1(t: torch.Tensor) -> torch.Tensor:
-        # Accept [B,T], [B,1], [B,T,1], [B] and normalize to [B,T,1]
-        if t.ndim == 3 and t.shape[-1] == 1:
-            return t  # [B,T,1]
-        if t.ndim == 2:
-            return t.unsqueeze(-1)  # [B,T,1]
-        if t.ndim == 1:
-            return t.view(t.shape[0], 1, 1)  # [B,1,1]
-        raise ValueError(f"Unexpected tensor shape for param: {t.shape}")
-
-    def _get_params_per_component(self, params: Dict[str, torch.Tensor], min_std: float) -> List[Dict[str, torch.Tensor]]:
-        """Return list of per-component param dicts, each tensors [B,T,1]."""
-        comps = params["components"]
-        out: List[Dict[str, torch.Tensor]] = []
-        for cname in comps:
-            cp: Dict[str, torch.Tensor] = {}
-            if cname == "normal":
-                mu = self._bt1(params["normal_mu"])
-                sigma = self._bt1(params["normal_sigma"])
-                cp["mu"] = mu
-                cp["sigma"] = _safe_softplus(sigma, min_value=min_std)
-            elif cname == "fixed_normal":
-                mu = self._bt1(params["normal_mu"])
-                cp["mu"] = mu
-                cp["sigma"] = torch.full_like(mu, min_std)
-            elif cname == "student_t":
-                df = self._bt1(params["student_df"])
-                mu = self._bt1(params["student_mu"])
-                sc = self._bt1(params["student_scale"])
-                cp["df"] = 2.0 + F.softplus(df)                      # ensure df>2 for variance
-                cp["mu"] = mu
-                cp["scale"] = _safe_softplus(sc, min_value=min_std)
-            elif cname == "log_normal":
-                mu = self._bt1(params["lognorm_mu"])
-                sig = self._bt1(params["lognorm_sigma"])
-                cp["mu"] = mu
-                cp["sigma"] = _safe_softplus(sig, min_value=min_std)
-            elif cname == "neg_binomial":
-                r = self._bt1(params["nb_r"])
-                p = self._bt1(params["nb_p"]).clamp(1e-6, 1 - 1e-6)
-                cp["r"] = _safe_softplus(r, min_value=1e-6)          # total_count > 0
-                cp["p"] = p
-            else:
-                raise NotImplementedError(f"Mixture component '{cname}' not implemented.")
-            out.append(cp)
-        return out
-
-    # ---------- point prediction (mixture mean) ----------
-
     def predict(self, params: Dict[str, torch.Tensor], method: str = "mean") -> torch.Tensor:
+        """
+        Mixture mean (univariate) -> [B, T, 1]
+        """
         if method not in ("mean", "median"):
-            raise ValueError(f"Unsupported method: {method}")
-        logits = params["mixture_logits"]
-        if logits.ndim == 2:
-            logits = logits.unsqueeze(1)      # [B,1,M]
-        w = torch.softmax(logits, dim=-1)      # [B,T,M]
+            raise ValueError("MixtureOutputHead.predict supports 'mean' or 'median' (median≈mean for our components).")
+        w = self._weights(params)  # [B,T,M]
+        comps = self._get_params_per_component(params)  # list of dicts, tensors [B,T,1]
 
-        comp_params = self._get_params_per_component(params, min_std=1e-4)  # [B,T,1] tensors
-        # mixture mean by component type
-        means = []
-        for cp, cname in zip(comp_params, params["components"]):
+        means_per_comp: List[torch.Tensor] = []
+        for cname, cp in zip(self.components, comps):
             if cname in ("normal", "fixed_normal", "student_t"):
-                means.append(cp["mu"])  # [B,T,1]
+                means_per_comp.append(cp["mu"])                      # [B,T,1]
             elif cname == "log_normal":
-                means.append(torch.exp(cp["mu"] + 0.5 * (cp["sigma"]**2)))
+                means_per_comp.append(torch.exp(cp["mu"] + 0.5 * cp["sigma"]**2))
             elif cname == "neg_binomial":
-                # mean under (r,p) (#failures until r successes with prob p of success) = r*(1-p)/p
-                means.append(cp["r"] * (1.0 - cp["p"]) / cp["p"])
-        means = torch.stack(means, dim=-1)     # [B,T,1,M]
-        y = (w.unsqueeze(-2) * means).sum(dim=-1)  # [B,T,1]
-        return y
+                # mean in our (r,p_success) paramization for "failures until r successes": r*(1-p)/p
+                r = cp["r"]; p = cp["p"]
+                means_per_comp.append(r * (1 - p) / p)
+            else:
+                raise NotImplementedError
 
-    # ---------- quantiles via Monte Carlo ----------
+        mean = torch.zeros_like(means_per_comp[0])  # [B,T,1]
+        for j, m_j in enumerate(means_per_comp):
+            mean = mean + w[..., j:j+1] * m_j
+        return mean  # [B,T,1]
 
     @torch.no_grad()
     def sample_quantiles(
         self,
-        params: Dict[str, Union[torch.Tensor, List[str]]],
+        params: Dict[str, torch.Tensor],
         quantile_levels: List[float],
         *,
-        mc_samples: int = 512,
+        num_mc: int = 256,
         temperature: float = 1.0,
         top_p: Optional[float] = None,
-        mixture_sharpness: float = 1.0,
-        dirichlet_alpha: Optional[float] = None,
         min_std: float = 1e-4,
-        seed: Optional[int] = None,
     ) -> torch.Tensor:
         """
-        Monte Carlo quantiles from the mixture.
-        Args:
-          params: dict from forward(); expects 'mixture_logits' and per-component params.
-          quantile_levels: list in (0,1)
-          mc_samples: number of MC draws per time step
-          temperature/top_p/mixture_sharpness/dirichlet_alpha: sampling controls on mixture probs
-          min_std: floor for std/scale
-          seed: optional RNG seed for reproducibility
-        Returns:
-          Tensor [B, T, 1, Q]
+        Monte Carlo mixture quantiles.
+        Returns **[B, T, 1, Q]** to match the global convention [B,T,F,Q].
         """
-        q = torch.tensor(quantile_levels, dtype=params["mixture_logits"].dtype, device=params["mixture_logits"].device)
+        device = params["mixture_logits"].device
+        dtype  = params["mixture_logits"].dtype
+        q = torch.tensor(quantile_levels, device=device, dtype=dtype)
         if not torch.all((q > 0.0) & (q < 1.0)):
             raise ValueError(f"Quantiles must be in (0,1). Got {quantile_levels}")
 
-        logits = params["mixture_logits"]             # [B,T,M] or [B,1,M] or [B,M]
-        if logits.ndim == 2:
-            logits = logits.unsqueeze(1)              # [B,1,M]
-        B, T, M = logits.shape
+        B, T, M = params["mixture_logits"].shape if params["mixture_logits"].ndim == 3 \
+                  else (params["mixture_logits"].shape[0], 1, params["mixture_logits"].shape[-1])
 
-        # mixture probabilities with controls
-        scaled = logits
-        if mixture_sharpness != 1.0:
-            scaled = scaled * float(mixture_sharpness)
-        if temperature != 1.0:
-            scaled = _temperature_scale_logits(scaled, temperature)
-        w = F.softmax(scaled, dim=-1)                 # [B,T,M]
-        if top_p is not None and top_p < 1.0:
-            # apply top-p independently at each (B,T)
-            w = w.view(B * T, M)
-            w = _apply_top_p(w, top_p)
-            w = w.view(B, T, M)
-        if dirichlet_alpha and dirichlet_alpha > 0:
-            alpha = torch.full((B, T, M), float(dirichlet_alpha), device=logits.device, dtype=logits.dtype)
-            noise = torch.distributions.Dirichlet(alpha).sample()
-            w = (w + noise) / (w + noise).sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        w = self._weights(params, temperature=temperature, top_p=top_p)  # [B,T,M]
+        comps = self._get_params_per_component(params, min_std=min_std)
 
-        # set up RNG
-        gen = None
-        if seed is not None:
-            gen = torch.Generator(device=logits.device).manual_seed(int(seed))
-
-        # per-component parameter tensors [B,T,1]
-        comp_params = self._get_params_per_component(params, min_std=min_std)
-
-        # sample component indices: shape [B,T,mc]
-        cat = torch.distributions.Categorical(probs=w.view(B * T, M))
-        choices = cat.sample((mc_samples,))  # [mc, B*T]
-        choices = choices.permute(1, 0).contiguous().view(B, T, mc_samples)  # [B,T,mc]
-
-        # generate samples per component then fill according to choices
-        samples = torch.empty(B, T, mc_samples, device=logits.device, dtype=logits.dtype)
-
-        for m_idx, (cname, cp) in enumerate(zip(params["components"], comp_params)):
-            sel = (choices == m_idx)  # [B,T,mc]
-            if not sel.any():
-                continue
-
+        S = int(num_mc)
+        # Build per-component samples: [B,T,S] for each component, then stack -> [B,T,M,S]
+        samples_per_comp: List[torch.Tensor] = []
+        for cname, cp in zip(self.components, comps):
             if cname in ("normal", "fixed_normal"):
-                mu = cp["mu"]     # [B,T,1]
-                sigma = cp["sigma"]
-                z = torch.randn(B, T, mc_samples, device=logits.device, dtype=logits.dtype, generator=gen)
-                val = mu + sigma * z  # broadcast
-                samples[sel] = val[sel]
-
+                mu, sigma = cp["mu"], cp["sigma"]                # [B,T,1]
+                z = torch.randn(B, T, S, device=device, dtype=dtype)
+                y = mu + sigma * z.unsqueeze(-2)                 # [B,T,1] + [B,T,1,S]
+                samples_per_comp.append(y.squeeze(-2))           # [B,T,S]
             elif cname == "student_t":
-                mu = cp["mu"]; scale = cp["scale"]; df = cp["df"]
-                # chi-square via Gamma(df/2, rate=1/2)
-                gamma = torch.distributions.Gamma(concentration=(df/2).expand(B, T, 1), rate=torch.tensor(0.5, device=logits.device, dtype=logits.dtype))
-                U = gamma.rsample((mc_samples,))  # [mc,B,T,1]
-                U = U.permute(1, 2, 0, 3).squeeze(-1).contiguous()  # [B,T,mc]
-                Z = torch.randn(B, T, mc_samples, device=logits.device, dtype=logits.dtype, generator=gen)
-                t0 = Z * torch.sqrt(df / U)
-                val = mu + scale * t0
-                samples[sel] = val[sel]
-
+                mu, scale, df = cp["mu"], cp["scale"], cp["df"]
+                z = torch.randn(B, T, S, device=device, dtype=dtype)
+                chi = torch.distributions.Chi2(df=df).sample((S,))  # [S,B,T,1]
+                chi = chi.permute(1, 2, 0, 3).squeeze(-1)           # [B,T,S]
+                t = z / torch.sqrt(chi / df)                        # [B,T,S]
+                y = mu + scale * t.unsqueeze(-2)                    # [B,T,1] + [B,T,1,S]
+                samples_per_comp.append(y.squeeze(-2))              # [B,T,S]
             elif cname == "log_normal":
-                mu = cp["mu"]; sigma = cp["sigma"]
-                z = torch.randn(B, T, mc_samples, device=logits.device, dtype=logits.dtype, generator=gen)
-                ln = mu + sigma * z
-                val = torch.exp(ln)
-                samples[sel] = val[sel]
-
+                mu, sigma = cp["mu"], cp["sigma"]
+                z = torch.randn(B, T, S, device=device, dtype=dtype)
+                ln = mu + sigma * z.unsqueeze(-2)                   # [B,T,1,S]
+                y = torch.exp(ln).squeeze(-2)                       # [B,T,S]
+                samples_per_comp.append(y)
             elif cname == "neg_binomial":
-                # torch NB: total_count=r, probs=1-p (prob of success on each trial)
-                total_count = cp["r"].clamp_min(1e-6)
-                probs = (1.0 - cp["p"]).clamp(1e-6, 1 - 1e-6)
-                # sample elementwise
-                # build NB with broadcast params; sample mc i.i.d.
-                nb = torch.distributions.NegativeBinomial(total_count=total_count.expand(B, T, 1),
-                                                          probs=probs.expand(B, T, 1))
-                val = nb.sample((mc_samples,)).permute(1, 2, 0, 3).squeeze(-1).contiguous()  # [B,T,mc]
-                samples[sel] = val[sel]
-
+                r, p = cp["r"], cp["p"]                             # [B,T,1]
+                # torch NB: total_count=r, probs=(1-p) for "failures until r successes"
+                nb = torch.distributions.NegativeBinomial(total_count=r, probs=(1.0 - p))
+                y = nb.sample((S,))                                 # [S,B,T,1]
+                y = y.permute(1, 2, 0, 3).squeeze(-1)               # [B,T,S]
+                samples_per_comp.append(y)
             else:
-                raise NotImplementedError(f"Quantile sampling for '{cname}' not implemented.")
+                raise NotImplementedError
 
-        # quantiles over MC dimension
-        qv = torch.quantile(samples, q.to(samples.dtype), dim=-1)  # [B,T,Q]
-        return qv.unsqueeze(-2)  # [B,T,1,Q]
+        Y_all = torch.stack(samples_per_comp, dim=2)                # [B,T,M,S]
+
+        # Sample component indices per draw: k ~ Categorical(w)  => [B,T,S]
+        cat = torch.distributions.Categorical(probs=w)
+        k = cat.sample((S,)).permute(1, 2, 0)                       # [S,B,T] -> [B,T,S]
+
+        # Gather mixture sample for each draw
+        Y = torch.gather(Y_all, dim=2, index=k.unsqueeze(2)).squeeze(2)  # [B,T,S]
+
+        # Quantiles along S
+        Y_sorted, _ = torch.sort(Y, dim=-1)                          # [B,T,S]
+        idx = (q * (S - 1)).round().long()                           # [Q]
+        idx = idx.view(1, 1, -1).expand(B, T, -1)                    # [B,T,Q]
+        qvals = torch.gather(Y_sorted, -1, idx)                      # [B,T,Q]
+
+        # Ensure **[B,T,1,Q]**
+        return qvals.unsqueeze(-2)                                   # [B,T,1,Q]
+
+    # ---------------- original sample (unchanged) ----------------
+
+    @torch.no_grad()
+    def sample(
+        self,
+        params: Dict[str, Union[torch.Tensor, List[str]]],  # forward() output
+        *,
+        temperature: float = 1.0,
+        top_p: Optional[float] = 0.9,
+        min_std: float = 1e-4,
+        eta_blend_mean: float = 0.3,
+    ) -> torch.Tensor:
+        """
+        One value per step, returns [B,1,1].
+        """
+        logits = params["mixture_logits"]  # [B,T,M] or [B,1,M]
+        if logits.ndim == 3 and logits.shape[1] == 1:
+            logits = logits.squeeze(1)      # [B,M]
+        elif logits.ndim == 2:
+            pass  # [B,M]
+        else:
+            logits = logits[..., -1, :] if logits.ndim == 3 else logits
+
+        B, M = logits.shape
+        device, dtype = logits.device, logits.dtype
+
+        scaled = _temperature_scale_logits(logits, temperature)
+        w = F.softmax(scaled, dim=-1)              # [B,M]
+        w = _apply_top_p(w, top_p)
+        cat = torch.distributions.Categorical(probs=w)
+        k = cat.sample()                            # [B]
+
+        comps = self._get_params_per_component(params, min_std=min_std)  # tensors [B,T,1] or [B,1,1]
+        # use last time step if T>1
+        def _last(t): return t if t.ndim == 2 else (t[:, -1:] if t.ndim == 3 else t)
+
+        out = torch.empty(B, 1, device=device, dtype=dtype)
+        for i in range(B):
+            cname = self.components[k[i].item()]
+            cp = comps[k[i].item()]
+            if cname in ("normal", "fixed_normal"):
+                z = torch.randn_like(out[i:i+1])
+                out[i:i+1] = _last(cp["mu"])[i:i+1] + _last(cp["sigma"])[i:i+1] * z
+            elif cname == "student_t":
+                z = torch.randn_like(out[i:i+1])
+                chi = torch.distributions.Chi2(df=_last(cp["df"])[i:i+1]).sample()
+                t = z / torch.sqrt(chi / _last(cp["df"])[i:i+1])
+                out[i:i+1] = _last(cp["mu"])[i:i+1] + _last(cp["scale"])[i:i+1] * t
+            elif cname == "log_normal":
+                z = torch.randn_like(out[i:i+1])
+                ln = _last(cp["mu"])[i:i+1] + _last(cp["sigma"])[i:i+1] * z
+                out[i:i+1] = torch.exp(ln)
+            elif cname == "neg_binomial":
+                total_count = _last(cp["r"])[i:i+1].clamp_min(1e-6)
+                probs = 1.0 - _last(cp["p"])[i:i+1]
+                nb = torch.distributions.NegativeBinomial(total_count=total_count, probs=probs)
+                out[i:i+1] = nb.sample()
+            else:
+                raise NotImplementedError
+
+        # small mean blend (optional)
+        mix_mean = torch.zeros_like(out)
+        # rebuild weights w to [B,1,M] for mean calc
+        w_full = F.softmax(_temperature_scale_logits(params["mixture_logits"][:, -1, :], temperature), dim=-1)
+        comp_means = []
+        for j, cname in enumerate(self.components):
+            cp = comps[j]
+            if cname in ("normal", "fixed_normal", "student_t"):
+                comp_means.append(_last(cp["mu"]))
+            elif cname == "log_normal":
+                mu, sig = _last(cp["mu"]), _last(cp["sigma"])
+                comp_means.append(torch.exp(mu + 0.5 * sig * sig))
+            elif cname == "neg_binomial":
+                r, p = _last(cp["r"]), _last(cp["p"])
+                comp_means.append(r * (1 - p) / p)
+        for j, m in enumerate(comp_means):
+            mix_mean += w_full[:, j:j+1] * m
+        out = _blend_with_mean(out, mix_mean, eta=eta_blend_mean)
+        return out.unsqueeze(-1)  # [B,1,1]
 
     def get_loss_fn(self) -> Optional[Callable]:
         return None
+
 
 
 
@@ -1124,3 +1179,4 @@ class StudentTHead(BaseOutputHead):
 
     def get_loss_fn(self) -> Optional[Callable]:
         return None
+
