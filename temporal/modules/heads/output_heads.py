@@ -233,7 +233,7 @@ class GaussianHead(BaseOutputHead):
         if temperature != 1.0:
             sigma = sigma * float(temperature)
 
-        eps = torch.randn_like(mu, generator=generator)
+        eps = _randn_like(mu, generator=generator)
         y = mu + eps * sigma
         if eta_blend_mean:
             y = (1.0 - float(eta_blend_mean)) * y + float(eta_blend_mean) * mu
@@ -829,18 +829,18 @@ class MixtureOutputHead(BaseOutputHead):
     def get_loss_fn(self) -> Optional[Callable]:
         return None
 
-import torch
-import torch.nn as nn
-from typing import Optional, List, Callable
 
-from temporal.registry.core import register_module
-from temporal.modules.heads.base_output_head import BaseOutputHead
+
+def _randn_like(x: torch.Tensor, generator: Optional[torch.Generator] = None) -> torch.Tensor:
+    if generator is None:
+        return torch.randn_like(x)
+    return torch.randn(x.shape, device=x.device, dtype=x.dtype, generator=generator)
 
 
 @register_module("output_head", "student_t")
 class StudentTHead(BaseOutputHead):
     """
-    Student's t output head (no dependency on torch.special.betainc or StudentT.icdf).
+    Student's t output head (no torch.special.betainc / StudentT.icdf dependency).
 
     forward(x): concat params [mu, log_scale, log_df] -> [B, T, 3F]
     predict("mean"|"median") -> [B, T, F]
@@ -851,14 +851,14 @@ class StudentTHead(BaseOutputHead):
     def __init__(
         self,
         hidden_size: int,
-        output_size: int = 1,             # F
+        output_size: int = 1,
         *,
         min_log_scale: float = -7.0,
         max_log_scale: float =  5.0,
         min_log_df: float    = -2.0,
         max_log_df: float    =  6.0,
-        sigma_floor: float   = 1e-4,      # min scale
-        df_floor: float      = 1.001,     # ensure mean exists
+        sigma_floor: float   = 1e-4,
+        df_floor: float      = 1.001,
         init_log_scale: Optional[float] = None,
         init_log_df: Optional[float]    = None,
         **kwargs,
@@ -899,20 +899,17 @@ class StudentTHead(BaseOutputHead):
         nu    = torch.exp(log_df) + self.df_floor
         return scale, nu
 
-    # Regularized incomplete beta I_x(a,b) via Lentz's method (vectorized).
-    # Based on Numerical Recipes betacf/betai; safe for a>0, b>0, x in (0,1).
+    # Regularized incomplete beta I_x(a,b) via Lentz’s continued fraction (vectorized).
     def _betainc_reg(self, a: torch.Tensor, b: torch.Tensor, x: torch.Tensor, iters: int = 200, eps: float = 3e-7):
         device, dtype = x.device, x.dtype
         tiny = torch.finfo(dtype).tiny
-        x = x.clamp(torch.tensor(1e-12, device=device, dtype=dtype), torch.tensor(1.0 - 1e-12, device=device, dtype=dtype))
+        x = x.clamp(torch.tensor(1e-12, device=device, dtype=dtype),
+                    torch.tensor(1.0 - 1e-12, device=device, dtype=dtype))
 
-        # Compute bt = exp(lgamma(a+b)-lgamma(a)-lgamma(b) + a*log(x) + b*log(1-x))
         lg_ab = torch.lgamma(a + b)
         lg_a  = torch.lgamma(a)
         lg_b  = torch.lgamma(b)
-        bt = torch.exp(lg_ab - lg_a - lg_b + a * torch.log(x) + b * torch.log1p(-x))
 
-        # Use symmetry to choose representation with better convergence
         use_direct = x <= (a + 1.0) / (a + b + 2.0)
 
         def _betacf(aa: torch.Tensor, bb: torch.Tensor, xx: torch.Tensor):
@@ -928,7 +925,6 @@ class StudentTHead(BaseOutputHead):
 
             for m in range(1, iters + 1):
                 m2 = 2 * m
-
                 # even step
                 num = m * (bb - m) * xx
                 den = (qam + m2) * (aa + m2)
@@ -956,13 +952,16 @@ class StudentTHead(BaseOutputHead):
                     break
             return h
 
-        # compute I_x(a,b)
-        Ix_direct  = bt * _betacf(a, b, x) / a
-        Ix_symm    = 1.0 - (torch.exp(lg_ab - lg_a - lg_b + b * torch.log1p(-x) + a * torch.log(x)) * _betacf(b, a, 1.0 - x) / b)
+        # compute I_x(a,b) with symmetry for stability
+        bt1 = torch.exp(lg_ab - lg_a - lg_b + a * torch.log(x) + b * torch.log1p(-x))
+        Ix_direct = bt1 * _betacf(a, b, x) / a
+
+        bt2 = torch.exp(lg_ab - lg_a - lg_b + b * torch.log1p(-x) + a * torch.log(x))
+        Ix_symm = 1.0 - (bt2 * _betacf(b, a, 1.0 - x) / b)
+
         return torch.where(use_direct, Ix_direct, Ix_symm).clamp(0.0, 1.0)
 
     # CDF for standard t via regularized incomplete beta.
-    # CDF(t;nu) = 1 - 0.5*I_{nu/(nu+t^2)}(nu/2, 1/2) for t>=0; else 0.5*I_{...}
     def _student_t_cdf(self, x: torch.Tensor, nu: torch.Tensor) -> torch.Tensor:
         x_abs = x.abs()
         z = nu / (nu + x_abs * x_abs)
@@ -973,17 +972,13 @@ class StudentTHead(BaseOutputHead):
         return torch.where(x >= 0, cdf_pos, 0.5 * I)
 
     # Inverse CDF via vectorized bisection (no special funcs).
-    # q: [*, Q] in (0,1); nu: broadcastable to q (no Q dim).
     def _student_t_icdf_bisect(self, q: torch.Tensor, nu: torch.Tensor, *, iters: int = 48):
         q = q.clamp(1e-9, 1 - 1e-9)
-        # use symmetry to search only positive side
         q_pos = torch.where(q < 0.5, 1.0 - q, q)
 
-        # Add a quantile dim to nu
         while nu.dim() < q_pos.dim():
             nu = nu.unsqueeze(-1)
 
-        # bracket: start with [0,1], then expand hi until CDF(hi) >= q_pos
         lo = torch.zeros_like(q_pos)
         hi = torch.ones_like(q_pos)
 
@@ -1041,7 +1036,7 @@ class StudentTHead(BaseOutputHead):
         U = gamma.rsample()  # [B,T,F]
 
         # Z ~ N(0,1)
-        Z = torch.randn_like(mu, generator=generator)
+        Z = _randn_like(mu, generator=generator)
 
         T0 = Z * torch.sqrt(nu / U)  # Z / sqrt(U/nu)
         y = mu + scale * T0
@@ -1050,9 +1045,6 @@ class StudentTHead(BaseOutputHead):
         return y
 
     def sample_quantiles(self, params: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
-        """
-        Returns [B, T, F, Q] via vectorized bisection (no StudentT.icdf needed).
-        """
         mu, log_scale, log_df = self._split_params(params)
         scale, nu = self._scale_df(log_scale, log_df)
 
