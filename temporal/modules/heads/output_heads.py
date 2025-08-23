@@ -785,87 +785,82 @@ class MixtureOutputHead(BaseOutputHead):
             mean = mean + w[..., j:j+1] * m_j
         return mean  # [B,T,1]
 
-    @torch.no_grad()
-    def sample_quantiles(
-        self,
-        params: Dict[str, torch.Tensor],
-        quantile_levels: List[float],
-        *,
-        num_mc: int = 256,
-        temperature: float = 1.0,
-        top_p: Optional[float] = None,
-        min_std: float = 1e-4,
-    ) -> torch.Tensor:
-        """
-        Monte Carlo mixture quantiles.
-        Returns [B, T, 1, Q] to match the global [B,T,F,Q] convention.
-        Shape-safe (no torch.gather on M; uses one-hot mixing).
-        """
-        device = params["mixture_logits"].device
-        dtype  = params["mixture_logits"].dtype
+@torch.no_grad()
+def sample_quantiles(
+    self,
+    params: Dict[str, torch.Tensor],
+    quantile_levels: List[float],
+    *,
+    num_mc: int = 256,
+    temperature: float = 1.0,
+    top_p: Optional[float] = None,
+    min_std: float = 1e-4,
+) -> torch.Tensor:
+    """
+    Monte Carlo mixture quantiles.
+    Returns [B, T, 1, Q] (global convention [B,T,F,Q] with F=1).
+    Shape-safe: avoids gather across the component axis.
+    """
+    device = params["mixture_logits"].device
+    dtype  = params["mixture_logits"].dtype
 
-        q = torch.tensor(quantile_levels, device=device, dtype=dtype)
-        if not torch.all((q > 0.0) & (q < 1.0)):
-            raise ValueError(f"Quantiles must be in (0,1). Got {quantile_levels}")
+    q = torch.tensor(quantile_levels, device=device, dtype=dtype)
+    if not torch.all((q > 0.0) & (q < 1.0)):
+        raise ValueError(f"Quantiles must be in (0,1). Got {quantile_levels}")
 
-        # Weights w: [B,T,M] (ensures T dim exists)
-        w = self._weights(params, temperature=temperature, top_p=top_p)  # [B,T,M]
-        B, T, M = w.shape
+    # Weights w: [B,T,M] (force a T dim)
+    w = self._weights(params, temperature=temperature, top_p=top_p)  # [B,T,M]
+    B, T, M = w.shape
 
-        # Per-component params (each [B,T,1])
-        comps = self._get_params_per_component(params, min_std=min_std)
+    comps = self._get_params_per_component(params, min_std=min_std)  # each [B,T,1]
+    S = int(num_mc)
 
-        S = int(num_mc)
+    # Build samples per component -> list of [B,T,S], then stack -> [B,T,M,S]
+    samples_per_comp: List[torch.Tensor] = []
+    for cname, cp in zip(self.components, comps):
+        if cname in ("normal", "fixed_normal"):
+            mu, sigma = cp["mu"], cp["sigma"]                 # [B,T,1]
+            z = torch.randn(B, T, S, device=device, dtype=dtype)
+            y = mu + sigma * z.unsqueeze(-2)                  # [B,T,1,S]
+            samples_per_comp.append(y.squeeze(-2))            # [B,T,S]
+        elif cname == "student_t":
+            mu, scale, df = cp["mu"], cp["scale"], cp["df"]   # [B,T,1]
+            z   = torch.randn(B, T, S, device=device, dtype=dtype)
+            chi = torch.distributions.Chi2(df=df).sample((S,))   # [S,B,T,1]
+            chi = chi.permute(1, 2, 0, 3).squeeze(-1)            # [B,T,S]
+            t   = z / torch.sqrt(chi / df)                       # [B,T,S]
+            y   = mu + scale * t.unsqueeze(-2)                   # [B,T,1,S]
+            samples_per_comp.append(y.squeeze(-2))               # [B,T,S]
+        elif cname == "log_normal":
+            mu, sigma = cp["mu"], cp["sigma"]
+            z  = torch.randn(B, T, S, device=device, dtype=dtype)
+            ln = mu + sigma * z.unsqueeze(-2)                    # [B,T,1,S]
+            samples_per_comp.append(torch.exp(ln).squeeze(-2))   # [B,T,S]
+        elif cname == "neg_binomial":
+            r, p = cp["r"], cp["p"]                              # [B,T,1]
+            nb = torch.distributions.NegativeBinomial(total_count=r, probs=(1.0 - p))
+            y  = nb.sample((S,))                                 # [S,B,T,1]
+            samples_per_comp.append(y.permute(1, 2, 0, 3).squeeze(-1))  # [B,T,S]
+        else:
+            raise NotImplementedError
 
-        # Build samples per component -> list of [B,T,S]
-        samples_per_comp: List[torch.Tensor] = []
-        for cname, cp in zip(self.components, comps):
-            if cname in ("normal", "fixed_normal"):
-                mu, sigma = cp["mu"], cp["sigma"]                 # [B,T,1]
-                z = torch.randn(B, T, S, device=device, dtype=dtype)
-                y = mu + sigma * z.unsqueeze(-2)                  # [B,T,1,S]
-                samples_per_comp.append(y.squeeze(-2))            # [B,T,S]
-            elif cname == "student_t":
-                mu, scale, df = cp["mu"], cp["scale"], cp["df"]   # [B,T,1]
-                z   = torch.randn(B, T, S, device=device, dtype=dtype)
-                chi = torch.distributions.Chi2(df=df).sample((S,))   # [S,B,T,1]
-                chi = chi.permute(1, 2, 0, 3).squeeze(-1)            # [B,T,S]
-                t   = z / torch.sqrt(chi / df)                       # [B,T,S]
-                y   = mu + scale * t.unsqueeze(-2)                   # [B,T,1,S]
-                samples_per_comp.append(y.squeeze(-2))               # [B,T,S]
-            elif cname == "log_normal":
-                mu, sigma = cp["mu"], cp["sigma"]
-                z  = torch.randn(B, T, S, device=device, dtype=dtype)
-                ln = mu + sigma * z.unsqueeze(-2)                    # [B,T,1,S]
-                samples_per_comp.append(torch.exp(ln).squeeze(-2))   # [B,T,S]
-            elif cname == "neg_binomial":
-                r, p = cp["r"], cp["p"]                              # [B,T,1]
-                nb = torch.distributions.NegativeBinomial(total_count=r, probs=(1.0 - p))
-                y  = nb.sample((S,))                                 # [S,B,T,1]
-                samples_per_comp.append(y.permute(1, 2, 0, 3).squeeze(-1))  # [B,T,S]
-            else:
-                raise NotImplementedError
+    Y_all = torch.stack(samples_per_comp, dim=2)  # [B,T,M,S]
 
-        # Stack over M -> [B,T,M,S]
-        Y_all = torch.stack(samples_per_comp, dim=2)
+    # Sample component index per draw, then one-hot mix: [B,T,S] -> [B,T,M,S]
+    cat = torch.distributions.Categorical(probs=w)     # batch shape [B,T]
+    k   = cat.sample((S,)).permute(1, 2, 0)            # [S,B,T] -> [B,T,S]
+    one_hot = torch.nn.functional.one_hot(k, num_classes=M).to(Y_all.dtype)  # [B,T,S,M]
+    one_hot = one_hot.permute(0, 1, 3, 2)                                            # [B,T,M,S]
+    Y = (one_hot * Y_all).sum(dim=2)                                                 # [B,T,S]
 
-        # Sample component indices per draw: k ~ Categorical(w) -> [B,T,S]
-        cat = torch.distributions.Categorical(probs=w)          # batch shape [B,T]
-        k   = cat.sample((S,)).permute(1, 2, 0)                 # [S,B,T] -> [B,T,S]
+    # Quantiles along S
+    Y_sorted, _ = torch.sort(Y, dim=-1)                 # [B,T,S]
+    idx = (q * (S - 1)).round().long()                 # [Q]
+    idx = idx.view(1, 1, -1).expand(B, T, -1)          # [B,T,Q]
+    qvals = torch.gather(Y_sorted, -1, idx)            # [B,T,Q]
 
-        # One-hot select instead of gather: build [B,T,M,S], mix across M
-        one_hot = torch.nn.functional.one_hot(k, num_classes=M).to(Y_all.dtype)  # [B,T,S,M]
-        one_hot = one_hot.permute(0, 1, 3, 2)                                    # [B,T,M,S]
-        Y = (one_hot * Y_all).sum(dim=2)                                         # [B,T,S]
+    return qvals.unsqueeze(-2)                         # [B,T,1,Q]
 
-        # Quantiles along S
-        Y_sorted, _ = torch.sort(Y, dim=-1)                 # [B,T,S]
-        idx = (q * (S - 1)).round().long()                 # [Q]
-        idx = idx.view(1, 1, -1).expand(B, T, -1)          # [B,T,Q]
-        qvals = torch.gather(Y_sorted, -1, idx)            # [B,T,Q]
-
-        return qvals.unsqueeze(-2)                         # [B,T,1,Q]
-                                    # [B,T,1,Q]
 
     # ---------------- original sample (unchanged) ----------------
 
