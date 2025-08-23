@@ -829,16 +829,23 @@ class MixtureOutputHead(BaseOutputHead):
     def get_loss_fn(self) -> Optional[Callable]:
         return None
 
+import torch
+import torch.nn as nn
+from typing import Optional, List, Callable
+
+from temporal.registry.core import register_module
+from temporal.modules.heads.base_output_head import BaseOutputHead
+
 
 @register_module("output_head", "student_t")
 class StudentTHead(BaseOutputHead):
     """
-    Student's t output head.
+    Student's t output head (no dependency on torch.special.betainc or StudentT.icdf).
 
-    forward(x): concat params [mu, log_scale, log_df] with shape [B, T, 3F]
-    predict("mean"|"median"): [B, T, F]
-    sample(...): [B, T, F]
-    sample_quantiles(qs): [B, T, F, Q]  (without using torch.distributions.StudentT.icdf)
+    forward(x): concat params [mu, log_scale, log_df] -> [B, T, 3F]
+    predict("mean"|"median") -> [B, T, F]
+    sample(...)              -> [B, T, F]
+    sample_quantiles(qs)     -> [B, T, F, Q] (via vectorized bisection)
     """
 
     def __init__(
@@ -846,15 +853,12 @@ class StudentTHead(BaseOutputHead):
         hidden_size: int,
         output_size: int = 1,             # F
         *,
-        # stability clamps
         min_log_scale: float = -7.0,
         max_log_scale: float =  5.0,
         min_log_df: float    = -2.0,
         max_log_df: float    =  6.0,
-        # floors
         sigma_floor: float   = 1e-4,      # min scale
         df_floor: float      = 1.001,     # ensure mean exists
-        # optional bias inits
         init_log_scale: Optional[float] = None,
         init_log_df: Optional[float]    = None,
         **kwargs,
@@ -880,7 +884,7 @@ class StudentTHead(BaseOutputHead):
                 if init_log_df is not None:
                     self.proj.bias[2 * self.feature_size : 3 * self.feature_size] = float(init_log_df)
 
-    # ---------- internals ----------
+    # -------------------- internals --------------------
 
     def _split_params(self, y: torch.Tensor):
         """ y: [B,T,3F] -> (mu, log_scale, log_df) each [B,T,F], with clamps. """
@@ -895,60 +899,112 @@ class StudentTHead(BaseOutputHead):
         nu    = torch.exp(log_df) + self.df_floor
         return scale, nu
 
-    # CDF for standard t via regularized incomplete beta (vectorized).
-    # x: arbitrary shape, nu: broadcastable to x.
+    # Regularized incomplete beta I_x(a,b) via Lentz's method (vectorized).
+    # Based on Numerical Recipes betacf/betai; safe for a>0, b>0, x in (0,1).
+    def _betainc_reg(self, a: torch.Tensor, b: torch.Tensor, x: torch.Tensor, iters: int = 200, eps: float = 3e-7):
+        device, dtype = x.device, x.dtype
+        tiny = torch.finfo(dtype).tiny
+        x = x.clamp(torch.tensor(1e-12, device=device, dtype=dtype), torch.tensor(1.0 - 1e-12, device=device, dtype=dtype))
+
+        # Compute bt = exp(lgamma(a+b)-lgamma(a)-lgamma(b) + a*log(x) + b*log(1-x))
+        lg_ab = torch.lgamma(a + b)
+        lg_a  = torch.lgamma(a)
+        lg_b  = torch.lgamma(b)
+        bt = torch.exp(lg_ab - lg_a - lg_b + a * torch.log(x) + b * torch.log1p(-x))
+
+        # Use symmetry to choose representation with better convergence
+        use_direct = x <= (a + 1.0) / (a + b + 2.0)
+
+        def _betacf(aa: torch.Tensor, bb: torch.Tensor, xx: torch.Tensor):
+            qab = aa + bb
+            qap = aa + 1.0
+            qam = aa - 1.0
+
+            c = torch.ones_like(xx)
+            d = 1.0 - (qab * xx) / qap
+            d = torch.where(d.abs() < tiny, torch.full_like(d, tiny), d)
+            d = 1.0 / d
+            h = d.clone()
+
+            for m in range(1, iters + 1):
+                m2 = 2 * m
+
+                # even step
+                num = m * (bb - m) * xx
+                den = (qam + m2) * (aa + m2)
+                aa_term = num / den
+                d = 1.0 + aa_term * d
+                d = torch.where(d.abs() < tiny, torch.full_like(d, tiny), d)
+                c = 1.0 + aa_term / c
+                c = torch.where(c.abs() < tiny, torch.full_like(c, tiny), c)
+                d = 1.0 / d
+                h = h * d * c
+
+                # odd step
+                num = -(aa + m) * (qab + m) * xx
+                den = (aa + m2) * (qap + m2)
+                aa_term = num / den
+                d = 1.0 + aa_term * d
+                d = torch.where(d.abs() < tiny, torch.full_like(d, tiny), d)
+                c = 1.0 + aa_term / c
+                c = torch.where(c.abs() < tiny, torch.full_like(c, tiny), c)
+                d = 1.0 / d
+                delta = d * c
+                h = h * delta
+
+                if torch.all((delta - 1.0).abs() < eps):
+                    break
+            return h
+
+        # compute I_x(a,b)
+        Ix_direct  = bt * _betacf(a, b, x) / a
+        Ix_symm    = 1.0 - (torch.exp(lg_ab - lg_a - lg_b + b * torch.log1p(-x) + a * torch.log(x)) * _betacf(b, a, 1.0 - x) / b)
+        return torch.where(use_direct, Ix_direct, Ix_symm).clamp(0.0, 1.0)
+
+    # CDF for standard t via regularized incomplete beta.
+    # CDF(t;nu) = 1 - 0.5*I_{nu/(nu+t^2)}(nu/2, 1/2) for t>=0; else 0.5*I_{...}
     def _student_t_cdf(self, x: torch.Tensor, nu: torch.Tensor) -> torch.Tensor:
-        # CDF(t; nu) = 1 - 0.5 * I_{nu/(nu + t^2)}(nu/2, 1/2), for t >= 0
-        #           = 0.5 * I_{nu/(nu + t^2)}(nu/2, 1/2),     for t < 0
         x_abs = x.abs()
         z = nu / (nu + x_abs * x_abs)
         a = nu / 2.0
-        b = torch.tensor(0.5, device=nu.device, dtype=nu.dtype)
-
-        # torch.special.betainc is the regularized incomplete beta I_x(a,b)
-        I = torch.special.betainc(a, b, z)
+        b = torch.as_tensor(0.5, device=nu.device, dtype=nu.dtype)
+        I = self._betainc_reg(a, b, z)  # regularized
         cdf_pos = 1.0 - 0.5 * I
         return torch.where(x >= 0, cdf_pos, 0.5 * I)
 
-    # Inverse CDF via vectorized bisection on the *last* dim (quantile dim).
-    # q: [*, Q] in (0,1); nu: broadcastable to q (no quantile dim)
-    def _student_t_icdf_bisect(
-        self, q: torch.Tensor, nu: torch.Tensor, *, iters: int = 40
-    ) -> torch.Tensor:
-        # clamp away from 0/1 for numerical safety
+    # Inverse CDF via vectorized bisection (no special funcs).
+    # q: [*, Q] in (0,1); nu: broadcastable to q (no Q dim).
+    def _student_t_icdf_bisect(self, q: torch.Tensor, nu: torch.Tensor, *, iters: int = 48):
         q = q.clamp(1e-9, 1 - 1e-9)
+        # use symmetry to search only positive side
+        q_pos = torch.where(q < 0.5, 1.0 - q, q)
 
-        # use symmetry: solve for q>=0.5, then reflect
-        q_mirror = torch.where(q < 0.5, 1.0 - q, q)  # >= 0.5
-        # broadcast nu to have a quantile dim
-        while nu.dim() < q_mirror.dim():
+        # Add a quantile dim to nu
+        while nu.dim() < q_pos.dim():
             nu = nu.unsqueeze(-1)
 
-        lo = torch.zeros_like(q_mirror)
-        hi = torch.ones_like(q_mirror)
+        # bracket: start with [0,1], then expand hi until CDF(hi) >= q_pos
+        lo = torch.zeros_like(q_pos)
+        hi = torch.ones_like(q_pos)
 
-        # Exponentially expand hi until CDF(hi) >= target (per element)
-        for _ in range(16):
+        for _ in range(18):
             c = self._student_t_cdf(hi, nu)
-            mask = c < q_mirror
+            mask = c < q_pos
             if not mask.any():
                 break
             hi = torch.where(mask, hi * 2.0, hi)
 
-        # Bisection
         for _ in range(iters):
             mid = (lo + hi) / 2.0
             c = self._student_t_cdf(mid, nu)
-            go_right = c < q_mirror
+            go_right = c < q_pos
             lo = torch.where(go_right, mid, lo)
             hi = torch.where(go_right, hi, mid)
 
         t_pos = (lo + hi) / 2.0
-        # reflect back to q<0.5
-        t = torch.where(q < 0.5, -t_pos, t_pos)
-        return t
+        return torch.where(q < 0.5, -t_pos, t_pos)
 
-    # ---------- API ----------
+    # -------------------- API -------------------------
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.proj(x)  # [B,T,3F]
@@ -979,12 +1035,13 @@ class StudentTHead(BaseOutputHead):
         if temperature != 1.0:
             scale = scale * float(temperature)
 
-        # U ~ Chi2(nu) via Gamma(nu/2, rate=1/2); this returns shape broadcast(nu, rate)
-        gamma = torch.distributions.Gamma(concentration=nu / 2.0, rate=torch.tensor(0.5, device=nu.device, dtype=nu.dtype))
+        # U ~ Chi2(nu) via Gamma(nu/2, rate=1/2); rsample matches broadcast shape
+        gamma = torch.distributions.Gamma(concentration=nu / 2.0,
+                                          rate=torch.tensor(0.5, device=nu.device, dtype=nu.dtype))
         U = gamma.rsample()  # [B,T,F]
 
         # Z ~ N(0,1)
-        Z = torch.randn_like(mu, generator=generator)  # [B,T,F]
+        Z = torch.randn_like(mu, generator=generator)
 
         T0 = Z * torch.sqrt(nu / U)  # Z / sqrt(U/nu)
         y = mu + scale * T0
@@ -994,21 +1051,19 @@ class StudentTHead(BaseOutputHead):
 
     def sample_quantiles(self, params: torch.Tensor, quantile_levels: List[float]) -> torch.Tensor:
         """
-        Returns [B, T, F, Q] without relying on StudentT.icdf().
+        Returns [B, T, F, Q] via vectorized bisection (no StudentT.icdf needed).
         """
         mu, log_scale, log_df = self._split_params(params)
         scale, nu = self._scale_df(log_scale, log_df)
 
-        q = torch.tensor(quantile_levels, dtype=mu.dtype, device=mu.device)  # [Q]
+        q = torch.tensor(quantile_levels, dtype=mu.dtype, device=mu.device)
         if not torch.all((q > 0.0) & (q < 1.0)):
             raise ValueError(f"Quantiles must be in (0,1), got {quantile_levels}")
 
-        # Expand to [B,T,F,Q]
         q4 = q.view(1, 1, 1, -1).expand(*mu.shape, q.numel())
         nu4 = nu.unsqueeze(-1).expand_as(q4)
 
-        # Vectorized inverse-CDF via bisection
-        t = self._student_t_icdf_bisect(q4, nu4, iters=40)  # [B,T,F,Q]
+        t = self._student_t_icdf_bisect(q4, nu4, iters=48)  # [B,T,F,Q]
         return mu.unsqueeze(-1) + scale.unsqueeze(-1) * t
 
     def get_loss_fn(self) -> Optional[Callable]:
