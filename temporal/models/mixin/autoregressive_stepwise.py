@@ -3,29 +3,25 @@ import torch.nn as nn
 import logging
 from typing import Optional, Union, Any, Dict, List, Tuple
 
-from temporal.modules.heads.forecast_types import ForecastBundle, HeadExtras
-
 logger = logging.getLogger(__name__)
 
 class AutoregressiveStepwiseMixin:
     """
-    Autoregressive generation with post-loop quantiles and structured results.
-
-    Expects the host model to define:
-      - self.config: has .feature_size, .hidden_size (or decoder hidden dim),
-                     optionally .prediction_length, .num_attention_heads
-      - self.preprocessor: .process(...), optional .denormalize(...)
+    A mixin class for autoregressive generation capabilities in neural network models.
+    Assumes the host model defines:
+      - self.config with .feature_size, .hidden_size (or decoder hidden dim),
+        optionally .prediction_length, .num_attention_heads
+      - self.preprocessor with .process(...) and optional .denormalize(...)
       - self.decoder (and optional self.encoder)
       - self.output_heads (nn.Module or nn.ModuleList)
       - (optional) self.head_aggregator for multi-head aggregation
-      - (optional) self._values_to_hidden(tensor): converts value embeddings to decoder-hidden space
     """
 
     # --------------------------- KV cache utilities ---------------------------
 
     def _get_cache_length(self, past_key_values) -> int:
         """
-        Infer cached sequence length L from past_key_values.
+        Robustly infer the cached sequence length L from past_key_values.
         Supports common layouts: (B,H,L,D), (B,L,H,D), and (B,L,D).
         """
         if past_key_values is None:
@@ -47,7 +43,6 @@ class AutoregressiveStepwiseMixin:
                     return int(key_tensor.shape[2])
                 if key_tensor.shape[2] == nh:   # (B,L,H,D)
                     return int(key_tensor.shape[1])
-            # Fallback: treat the larger middle dim as length
             return int(max(key_tensor.shape[1], key_tensor.shape[2]))
 
         if key_tensor.ndim == 3:   # (B,L,D)
@@ -118,7 +113,7 @@ class AutoregressiveStepwiseMixin:
             if feature_size > 1:
                 x = x.expand(x.size(0), x.size(1), feature_size)
             return x
-        raise ValueError(f"Expected feedback tensor with 1–4 dims, got {x.shape}")
+        raise ValueError(f"Expected feedback tensor with 1-4 dims, got {x.shape}")
 
     # --------------------------- sampling helpers -----------------------------
 
@@ -135,77 +130,35 @@ class AutoregressiveStepwiseMixin:
     ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
         """
         Call head.sample(...) if available.
-        - If sample returns (y, new_state), propagate/merge new_state into self._gen_state.
+        - If sample returns (y, new_state), we propagate/merge new_state into self._gen_state.
         - Returns (y_b1f, updated_state_or_None).
         """
         sampling_kwargs = dict(sampling_kwargs or {})
-        # Ensure a persistent gen state exists for heads that need it (e.g., DistPred)
         if not hasattr(self, "_gen_state") or self._gen_state is None:
             self._gen_state = {}
 
-        # If the head's sample accepts 'state', pass it through.
-        if hasattr(output_head, "sample"):
-            code = getattr(output_head.sample, "__code__", None)
-            if code and "state" in code.co_varnames:
-                sampling_kwargs.setdefault("state", self._gen_state)
+        if hasattr(output_head, "sample") and callable(getattr(output_head, "sample")):
+            # Best effort: if the head.sample signature includes 'state', pass it.
+            try:
+                if "state" in getattr(output_head.sample, "__code__", None).co_varnames:
+                    sampling_kwargs.setdefault("state", self._gen_state)
+            except Exception:
+                pass
 
-        out = output_head.sample(head_output, **sampling_kwargs)  # could be Tensor or (Tensor, dict)
-        new_state = None
-        if isinstance(out, tuple) and len(out) == 2:
-            y, new_state = out
-        else:
-            y = out
+            out = output_head.sample(head_output, **sampling_kwargs)  # could be Tensor or (Tensor, dict)
+            new_state = None
+            if isinstance(out, tuple) and len(out) == 2:
+                y, new_state = out
+            else:
+                y = out
 
-        # Merge/replace state if provided
-        if isinstance(new_state, dict):
-            # shallow merge is enough; heads use distinct keys
-            if not hasattr(self, "_gen_state") or self._gen_state is None:
-                self._gen_state = {}
-            self._gen_state.update(new_state)
+            if isinstance(new_state, dict):
+                self._gen_state.update(new_state)
 
-        y = self._ensure_b1f(y, getattr(self.config, "feature_size", y.shape[-1]))
-        return y, new_state
+            y = self._ensure_b1f(y, getattr(self.config, "feature_size", y.shape[-1]))
+            return y, new_state
 
-    # --------------------------- storage helpers ------------------------------
-
-    def _params_for_storage(
-        self,
-        raw_head_output: Union[torch.Tensor, Dict[str, Any], List[Any]],
-        output_head: nn.Module,
-        *,
-        defer_quantiles: bool,
-    ) -> Union[torch.Tensor, Dict[str, torch.Tensor], List[Any]]:
-        """
-        Decide what we store per step (for post-hoc quantiles and bundling).
-
-        Rules:
-          - DistPred dict: store its 'paths' tensor [B,1,F,K] (prealloc-friendly).
-          - Gaussian/StudentT: store raw concat tensor [B,1,2F]/[B,1,3F].
-          - QuantileRegression: store its quantile tensor [B,1,F,Q].
-          - MDN (dict): store dict (will stack keys across time).
-          - If quantiles were requested but defer_quantiles=True, we *still* store raw params (no per-step quantiles).
-
-        Returns a tensor if possible (so we can preallocate), otherwise a dict/list.
-        """
-        y = raw_head_output
-
-        # If multi-head, pass list through (outer code can aggregate or keep list mode).
-        if isinstance(y, list):
-            return y
-
-        # Prefer a tensor path for DistPred so we can preallocate easily.
-        if isinstance(y, dict) and "paths" in y:
-            return y["paths"]  # [B,1,F,K] or [B,1,K]
-
-        # Tensor heads (Gaussian/StudentT/QuantileRegression) already return tensors
-        if torch.is_tensor(y):
-            return y
-
-        # MDN or other dict heads: store the dict; stacking handled later.
-        if isinstance(y, dict):
-            return y
-
-        raise TypeError(f"Unhandled head output type for storage: {type(y)}")
+        raise AttributeError("output_head.sample(...) not found.")
 
     # --------------------------- store vs feedback ----------------------------
 
@@ -214,13 +167,17 @@ class AutoregressiveStepwiseMixin:
         raw_head_output: Union[torch.Tensor, List[torch.Tensor], Dict[str, Any]],
         prediction_strategy: Optional[Union[str, float, int]],
         quantile_levels: Optional[List[float]],
-        output_head: nn.Module,
+        output_head: nn.Module,  # primary head if ModuleList
         *,
         defer_quantiles: bool = False,
     ) -> Union[torch.Tensor, Dict[str, Any], List[torch.Tensor]]:
         """
-        (Legacy/optional) Decide what to store if not using _params_for_storage.
-        When defer_quantiles=True, we skip per-step quantile computation.
+        Decide what to store for this AR step (DEFAULT path, not using sample()):
+        - If strategy given and head supports predict(): use it
+        - Else if quantiles requested and head supports sample_quantiles(): sample them
+        - Else store raw output.
+
+        When defer_quantiles=True, the quantile branch is skipped and we store raw outputs.
         """
         levels = self._normalize_levels(quantile_levels)
 
@@ -259,7 +216,7 @@ class AutoregressiveStepwiseMixin:
         self,
         raw_head_output: Union[torch.Tensor, List[torch.Tensor], Dict[str, Any]],
         prediction_strategy: Optional[Union[str, float, int]],
-        output_head: nn.Module,
+        output_head: nn.Module,  # primary head if ModuleList
         *,
         use_sampling: bool,
         sampling_kwargs: Optional[Dict[str, Any]] = None,
@@ -296,7 +253,8 @@ class AutoregressiveStepwiseMixin:
         # Fallback to quantiles if available
         if hasattr(output_head, "sample_quantiles") and callable(getattr(output_head, "sample_quantiles")):
             q = prediction_strategy if isinstance(prediction_strategy, float) else 0.5
-            out = output_head.sample_quantiles(feedback_source, quantile_levels=[q])  # [B,1,F,1] or [B,1,1]
+            src = feedback_source["paths"] if isinstance(feedback_source, dict) and "paths" in feedback_source else feedback_source
+            out = output_head.sample_quantiles(src, quantile_levels=[q])  # [B,1,F,1] or [B,1,1]
             if torch.is_tensor(out) and out.ndim == 4:
                 out = out.squeeze(-1)  # [B,1,F]
             return self._ensure_b1f(out, self.config.feature_size)
@@ -313,55 +271,58 @@ class AutoregressiveStepwiseMixin:
             )
         raise TypeError(f"Unhandled feedback_source type: {type(feedback_source)}")
 
-    # --------------------------- post-hoc helpers -----------------------------
+    # --------------------------- post-quantiles (robust) ----------------------
 
-    def _compute_point_from_params(
+    def _post_quantiles_any(
         self,
-        params_all: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        output_head: nn.Module,
-    ) -> torch.Tensor:
+        predictions: Union[torch.Tensor, Dict[str, Any], List[Any]],
+        head: nn.Module,
+        quantile_levels: List[float],
+    ) -> Union[torch.Tensor, List[Any], Dict[str, Any]]:
         """
-        Compute a single point forecast [B,T,F] from concatenated params (or dict).
-        Prefers output_head.predict(..., method="median").
-        Fallbacks:
-          - if params_all is [B,T,F,Q], take median along Q
-          - if params_all is [B,T,F], use as-is
+        Apply head.sample_quantiles post-loop regardless of predictions container type.
+        - Tensor  -> head.sample_quantiles(tensor, qs)
+        - Dict    -> head.sample_quantiles(dict,   qs)
+        - List    -> per-head call (requires ModuleList), optionally aggregate
+        Returns quantiles with same outer container structure.
         """
-        # Prefer head.predict if available
-        if hasattr(output_head, "predict") and callable(getattr(output_head, "predict")):
-            out = output_head.predict(params_all, method="median")
-            if torch.is_tensor(out) and out.ndim == 2:
-                out = out.unsqueeze(-1)  # [B,T] -> [B,T,1]
-            if not torch.is_tensor(out):
-                raise TypeError("predict() must return a Tensor for point forecast.")
-            return out  # [B,T,F]
+        qs = self._normalize_levels(quantile_levels)
+        if qs is None:
+            return predictions
+        if not hasattr(head, "sample_quantiles") or not callable(getattr(head, "sample_quantiles")):
+            raise TypeError("Primary head does not implement sample_quantiles().")
 
-        # Quantile tensor [B,T,F,Q] -> take middle quantile
-        if torch.is_tensor(params_all) and params_all.ndim == 4:
-            Q = params_all.size(-1)
-            return params_all[..., Q // 2]
+        # Tensor case
+        if torch.is_tensor(predictions):
+            return head.sample_quantiles(predictions, qs)
 
-        # Plain point tensor [B,T,F]
-        if torch.is_tensor(params_all) and params_all.ndim == 3:
-            return params_all
+        # Dict case (e.g., mixture head)
+        if isinstance(predictions, dict):
+            return head.sample_quantiles(predictions, qs)
 
-        raise TypeError("Cannot compute point forecast from given params; add 'predict()' to this head.")
+        # List case (multi-head)
+        if isinstance(predictions, list):
+            if not isinstance(self.output_heads, nn.ModuleList) or len(self.output_heads) != len(predictions):
+                raise TypeError("Got a list of predictions but output_heads is not a matching ModuleList.")
 
-    def _posthoc_quantiles(
-        self,
-        params_all: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        output_head: nn.Module,
-        levels: Optional[List[float]],
-    ) -> Optional[torch.Tensor]:
-        """
-        Compute quantiles once, after the AR loop, using the head's sample_quantiles if available.
-        Returns [B,T,F,Q] or None.
-        """
-        if levels is None:
-            return None
-        if hasattr(output_head, "sample_quantiles") and callable(getattr(output_head, "sample_quantiles")):
-            return output_head.sample_quantiles(params_all, quantile_levels=levels)
-        return None  # (Optional MC fallback could be implemented here)
+            quantile_list: List[Any] = []
+            for h, y in zip(self.output_heads, predictions):
+                if hasattr(h, "sample_quantiles") and callable(getattr(h, "sample_quantiles")):
+                    y_in = y["paths"] if isinstance(y, dict) and "paths" in y else y
+                    quantile_list.append(h.sample_quantiles(y_in, qs))
+                else:
+                    # If a head can't produce quantiles post-hoc, keep raw
+                    quantile_list.append(y)
+
+            if hasattr(self, 'head_aggregator') and self.head_aggregator:
+                try:
+                    return self.head_aggregator(quantile_list)
+                except Exception as e:
+                    logger.warning(f"head_aggregator failed during post-quantiles; returning per-head list. Error: {e}")
+                    return quantile_list
+            return quantile_list
+
+        raise TypeError(f"Unsupported predictions container for post-quantiles: {type(predictions)}")
 
     # --------------------------- generation APIs ------------------------------
 
@@ -386,30 +347,13 @@ class AutoregressiveStepwiseMixin:
         *,
         sampling: bool = True,
         sampling_kwargs: Optional[Dict[str, Any]] = None,
-        store_sampled: bool = False,          # kept for API compat; we store params by default
+        store_sampled: bool = False,
         enable_mc_dropout: bool = False,
         return_raw: bool = False,
         post_quantiles: bool = True,
-        return_bundle: bool = False,          # <<< NEW: if True, return ForecastBundle
         **kwargs,
-    ) -> Union[
-        torch.Tensor,
-        List[Dict[str, Union[torch.Tensor, List[str]]]],
-        ForecastBundle
-    ]:
-        """
-        Autoregressively generate predictions.
+    ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
 
-        Behavior:
-          - Stores head 'params' per step (tensor when possible).
-          - Computes requested quantiles ONCE after the loop (if head supports it).
-          - Computes a point forecast from params (or quantiles) via head.predict("median") if available.
-          - Optionally returns a ForecastBundle with point, quantiles, params, extras.
-
-        Notes:
-          - 'store_sampled' is kept for API compatibility but is ignored when post_quantiles=True,
-            because we must keep params to compute quantiles post-hoc.
-        """
         self.eval()
         if enable_mc_dropout:
             self.enable_dropout()
@@ -424,10 +368,9 @@ class AutoregressiveStepwiseMixin:
         batch_size, device, dtype = ref_tensor.shape[0], ref_tensor.device, ref_tensor.dtype
 
         if prediction_length == 0:
-            empty = torch.empty((batch_size, 0, getattr(self.config, "feature_size", 1)), device=device, dtype=dtype)
-            return ForecastBundle(point=empty, quantiles=None, params=None, extras=HeadExtras()) if return_bundle else empty
+            return torch.empty((batch_size, 0, getattr(self.config, "feature_size", 1)), device=device, dtype=dtype)
 
-        # ----- optional encoder pass -----
+        # ----- encoder (optional) -----
         encoder_outputs = None
         if hasattr(self, 'encoder') and self.encoder is not None and encoder_inputs is not None:
             processed_encoder = self.preprocessor.process(
@@ -450,7 +393,7 @@ class AutoregressiveStepwiseMixin:
         primary_output_head = self._get_primary_head() if hasattr(self, "_get_primary_head") else \
             (self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads)
 
-        # seed decoder inputs
+        # seed decoder
         if decoder_inputs is None:
             if encoder_inputs is not None:
                 decoder_inputs = encoder_inputs[:, -1:, :].clone()
@@ -484,22 +427,24 @@ class AutoregressiveStepwiseMixin:
         warm_last = warm_out.last_hidden_state[:, -1:, :]       # [B,1,D]
         warm_head = self._get_head_output(warm_last)
 
-        # Store PARAMS (not per-step quantiles)
-        warm_params = self._params_for_storage(
-            warm_head, primary_output_head, defer_quantiles=(post_quantiles and quantile_levels is not None)
+        warm_pred = self._compute_prediction_to_store(
+            warm_head,
+            prediction_strategy,
+            quantile_levels,
+            primary_output_head,
+            defer_quantiles=(post_quantiles and quantile_levels is not None),
         )
 
-        # Prealloc path if tensor
-        use_preallocation = torch.is_tensor(warm_params)
+        use_preallocation = torch.is_tensor(warm_pred)
         if use_preallocation:
-            step_out_shape = warm_params.shape[2:]  # [B,1,...] -> ...
-            all_params_tensor = torch.zeros(
+            step_out_shape = warm_pred.shape[2:]  # [B,1,...] -> ...
+            all_predictions = torch.zeros(
                 (batch_size, prediction_length, *step_out_shape),
-                device=warm_params.device,
-                dtype=warm_params.dtype,
+                device=warm_pred.device,
+                dtype=warm_pred.dtype,
             )
         else:
-            params_list: List[Any] = []
+            predictions_list: List[Any] = []
 
         # ---- AR loop ----
         past_key_values = None
@@ -543,25 +488,29 @@ class AutoregressiveStepwiseMixin:
             last_hidden = decoder_outputs.last_hidden_state[:, -1:, :]  # [B,1,D]
 
             # Heads
-            current_head_out = self._get_head_output(last_hidden)
+            current_step_raw_head_output = self._get_head_output(last_hidden)
 
-            # ---- store params (preferred) ----
-            step_params = self._params_for_storage(
-                current_head_out, primary_output_head, defer_quantiles=(post_quantiles and quantile_levels is not None)
+            # Store (defer quantiles if requested)
+            prediction_to_store = self._compute_prediction_to_store(
+                current_step_raw_head_output,
+                prediction_strategy,
+                quantile_levels,
+                primary_output_head,
+                defer_quantiles=(post_quantiles and quantile_levels is not None),
             )
-            if use_preallocation:
-                if not torch.is_tensor(step_params):
-                    # switch to list mode if we ever see a dict (e.g., MDN)
-                    use_preallocation = False
-                    params_list = [step_params]
-                else:
-                    all_params_tensor[:, i] = step_params.squeeze(1)
-            else:
-                params_list.append(step_params)
 
-            # ---- feedback (sample/predict) ----
+            if use_preallocation:
+                if not torch.is_tensor(prediction_to_store):
+                    use_preallocation = False
+                    predictions_list = [prediction_to_store]
+                else:
+                    all_predictions[:, i] = prediction_to_store.squeeze(1)
+            else:
+                predictions_list.append(prediction_to_store)
+
+            # Feedback (sampling or predict/median)
             next_decoder_input_value = self._compute_next_decoder_input_value(
-                current_head_out,
+                current_step_raw_head_output,
                 prediction_strategy,
                 primary_output_head,
                 use_sampling=sampling,
@@ -578,93 +527,52 @@ class AutoregressiveStepwiseMixin:
                 if torch.allclose(next_decoder_input_value, target, rtol=0.0, atol=1e-6):
                     logger.info(f"Early stopping at step {i + 1}.")
                     if use_preallocation:
-                        all_params_tensor = all_params_tensor[:, :i+1]
-                    else:
-                        params_list = params_list[:i+1]
+                        all_predictions = all_predictions[:, :i+1]
                     break
 
-        # ---- assemble params over time ----
+        # ---- assemble final ----
         if use_preallocation:
-            params_all: Union[torch.Tensor, Dict[str, torch.Tensor]] = all_params_tensor  # Tensor
+            final_predictions = all_predictions
         else:
-            if not params_list:
-                empty = torch.empty((batch_size, 0, getattr(self.config, "feature_size", 1)), device=device, dtype=dtype)
-                return ForecastBundle(point=empty, quantiles=None, params=None, extras=HeadExtras()) if return_bundle else empty
-            if isinstance(params_list[0], dict):
-                # Stack dict keys along T if shape [B,1,*]
-                params_all = {}
-                keys = params_list[0].keys()
-                for k in keys:
-                    if k == "components":
-                        params_all[k] = params_list[0][k]  # keep list (static across time)
-                        continue
-                    vals = [d[k] for d in params_list if k in d]
-                    if torch.is_tensor(vals[0]) and vals[0].ndim >= 2 and vals[0].size(1) == 1:
-                        params_all[k] = torch.cat(vals, dim=1)  # [B,T,*]
-                    else:
-                        # If we cannot stack, just keep the last (common for logits etc.)
-                        try:
-                            params_all[k] = torch.cat(vals, dim=1)
-                        except Exception:
-                            params_all[k] = vals[-1]
+            if not predictions_list:
+                return torch.empty((batch_size, 0, getattr(self.config, "feature_size", 1)), device=device, dtype=dtype)
+            if isinstance(predictions_list[0], dict):
+                # If head returns dict per step, we return a list of dicts (one per step)
+                # In that case, post-quantiles below can still handle the dict if you
+                # aggregated externally into a single dict; otherwise we keep list.
+                # For simplicity, concatenate only tensors; for dicts, keep list.
+                logger.info("Returning list of dicts; skipping concatenation.")
+                final_predictions = predictions_list  # may still be handled by post-quantiles if you aggregate externally
             else:
-                params_all = torch.cat(params_list, dim=1)  # Tensor
+                final_predictions = torch.cat(predictions_list, dim=1)
 
-        # ---- post-hoc quantiles (single shot) ----
-        quantiles_out: Optional[torch.Tensor] = None
+        # ---- post-hoc quantiles (universal) ----
+        did_quantiles = False
         if post_quantiles and (quantile_levels is not None):
             try:
-                quantiles_out = self._posthoc_quantiles(params_all, primary_output_head, quantile_levels)
+                if store_sampled:
+                    # Typically not possible post-hoc
+                    logger.info("store_sampled=True -> post-quantiles skipped (need raw params/paths).")
+                else:
+                    # If final_predictions is a list of per-step dicts, we can't pass a list directly.
+                    # (You can aggregate those dicts outside; or change store path to keep a single dict.)
+                    if isinstance(final_predictions, list):
+                        logger.info("Final predictions is a list; post-quantiles expects tensor/dict or per-head list. Skipping.")
+                    else:
+                        final_predictions = self._post_quantiles_any(final_predictions, primary_output_head, quantile_levels)
+                        did_quantiles = True
             except Exception as e:
-                logger.warning(f"Post-hoc quantiles failed; continuing without quantiles. Error: {e}")
-                quantiles_out = None
+                logger.warning(f"Post-quantiles failed; returning stored predictions. Error: {e}")
 
-        # ---- point forecast from params/quantiles ----
-        point: torch.Tensor
-        try:
-            # allow point from quantiles when available (median selection)
-            source_for_point = quantiles_out if quantiles_out is not None else params_all
-            point = self._compute_point_from_params(source_for_point, primary_output_head)
-        except Exception:
-            # fallback: if quantiles exist, take median; else try predict() directly
-            if quantiles_out is not None:
-                Q = quantiles_out.size(-1)
-                point = quantiles_out[..., Q // 2]
-            else:
-                point = primary_output_head.predict(params_all, method="median")
+        # ---- optional denorm (skip if quantiles were produced) ----
+        if isinstance(final_predictions, torch.Tensor) and not did_quantiles:
+            last_dim = final_predictions.size(-1) if final_predictions.dim() >= 2 else None
+            can_denorm = (last_dim == getattr(self.config, "feature_size", last_dim))
+            if hasattr(self.preprocessor, 'denormalize') and can_denorm and not return_raw:
+                logger.info("Denormalizing final predictions.")
+                final_predictions = self.preprocessor.denormalize(final_predictions)
 
-        # ---- optional denorm: only apply to point forecast ----
-        if hasattr(self.preprocessor, 'denormalize') and torch.is_tensor(point) \
-           and point.size(-1) == getattr(self.config, "feature_size", point.size(-1)) \
-           and not return_raw:
-            try:
-                point = self.preprocessor.denormalize(point)
-            except Exception as e:
-                logger.warning(f"Denormalization failed; returning raw point. Error: {e}")
-
-        # ---- extras for bundle ----
-        extras = HeadExtras()
-        # DistPred: if params_all is the paths tensor, attach it
-        if torch.is_tensor(params_all) and params_all.ndim >= 3 and params_all.size(-1) > getattr(self.config, "feature_size", 1):
-            # Heuristic: if last dim != feature_size, this may be [B,T,F,K]; attach as paths
-            extras = HeadExtras(paths=params_all)
-        # MDN: attach components/logits if present
-        if isinstance(params_all, dict) and "components" in params_all:
-            extras = HeadExtras(
-                components=params_all["components"],
-                path_logits=params_all.get("mixture_logits", None),
-            )
-
-        if return_bundle:
-            return ForecastBundle(
-                point=point,                # [B,T,F]
-                quantiles=quantiles_out,    # [B,T,F,Q] or None
-                params=params_all,          # Tensor or Dict[str,Tensor]
-                extras=extras,
-            )
-
-        # Back-compat: if user asked for quantiles, return them; else return point
-        return quantiles_out if quantiles_out is not None else point
+        return final_predictions
 
     @torch.no_grad()
     def forecast(
@@ -673,11 +581,7 @@ class AutoregressiveStepwiseMixin:
         prediction_length: int,
         quantiles: Optional[List[float]] = None,
         **kwargs,
-    ) -> Union[
-        torch.Tensor,
-        List[Dict[str, Union[torch.Tensor, List[str]]]],
-        ForecastBundle
-    ]:
+    ) -> Union[torch.Tensor, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
         User-friendly wrapper for generate():
           - Encoder-Decoder: pass inputs as encoder_inputs.
@@ -686,9 +590,7 @@ class AutoregressiveStepwiseMixin:
         Common sampling usage:
             model.forecast(x, L, sampling=True,
                            sampling_kwargs={'temperature':1.1,'top_p':0.9},
-                           enable_mc_dropout=True,
-                           post_quantiles=True,
-                           return_bundle=True)
+                           store_sampled=True, enable_mc_dropout=True)
         """
         if hasattr(self, 'encoder') and self.encoder is not None:
             return self.generate(
