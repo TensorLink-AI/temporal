@@ -280,6 +280,39 @@ class AutoregressiveStepwiseMixin:
             except Exception:
                 pass
         return params
+    def _normalize_quantile_shape(self, q: torch.Tensor, *, feature_size: int, Q: int) -> torch.Tensor:
+        """
+        Coerce any head's quantile tensor to [B, T, F, Q].
+        Accepts common variants:
+        - [B,T,Q]      -> [B,T,1,Q]
+        - [B,T,F,Q]    -> as-is
+        - [B,T,Q,F]    -> -> [B,T,F,Q]
+        - [B,Q]        -> [B,1,1,Q]
+        """
+        if q.ndim == 4:
+            # [B,T,*,Q]  or  [B,T,Q,*]
+            if q.shape[-1] == Q:
+                return q
+            if q.shape[-2] == Q:
+                return q.permute(0, 1, 3, 2)
+            # ambiguous but already 4D – leave as-is
+            return q
+
+        if q.ndim == 3:
+            # [B,T,Q] -> [B,T,1,Q]
+            if q.shape[-1] == Q:
+                return q.unsqueeze(-2)
+            # ambiguous 3D (rare) – assume last dim is Q
+            return q.unsqueeze(-2)
+
+        if q.ndim == 2 and q.shape[-1] == Q:
+            # [B,Q] -> [B,1,1,Q]
+            return q.unsqueeze(1).unsqueeze(2)
+
+        # Fallback: make it [B,T,feature_size,Q] if possible
+        if q.ndim == 4 and q.shape[-2] == feature_size:
+            return q  # already looks like [B,T,F,*]
+        raise ValueError(f"Cannot normalize quantile tensor of shape {tuple(q.shape)} to [B,T,F,Q].")
 
     def _post_quantiles_any(
         self,
@@ -288,19 +321,26 @@ class AutoregressiveStepwiseMixin:
         quantile_levels: List[float],
     ) -> Union[torch.Tensor, Dict[str, Any], List[Any]]:
         """
-        Compute quantiles once after the AR loop for tensor OR dict OR list-of-heads.
+        Compute quantiles once after the AR loop for tensor OR dict OR list-of-heads,
+        and normalize to [B,T,F,Q] when a tensor is returned.
         """
-        # direct call if primary head supports sample_quantiles
+        F = getattr(self.config, "feature_size", 1)
+        Q = len(quantile_levels)
+
+        # Primary head first
         if hasattr(head, "sample_quantiles") and callable(getattr(head, "sample_quantiles")):
             try:
                 src = params_or_preds
                 if isinstance(src, dict):
                     src = self._ensure_components_present(src, head)
-                return head.sample_quantiles(src, quantile_levels)
+                out = head.sample_quantiles(src, quantile_levels)
+                if torch.is_tensor(out):
+                    return self._normalize_quantile_shape(out, feature_size=F, Q=Q)
+                return out
             except Exception as e:
                 logger.warning(f"Post-quantiles on primary head failed; falling back. Error: {e}")
 
-        # Multi-head: per-head quantiles when available
+        # Multi-head: try per-head and normalize tensors
         if isinstance(params_or_preds, list) and isinstance(self.output_heads, nn.ModuleList):
             out_list = []
             for sub_head, sub_y in zip(self.output_heads, params_or_preds):
@@ -309,7 +349,10 @@ class AutoregressiveStepwiseMixin:
                         src = sub_y
                         if isinstance(src, dict):
                             src = self._ensure_components_present(src, sub_head)
-                        out_list.append(sub_head.sample_quantiles(src, quantile_levels))
+                        sub_out = sub_head.sample_quantiles(src, quantile_levels)
+                        if torch.is_tensor(sub_out):
+                            sub_out = self._normalize_quantile_shape(sub_out, feature_size=F, Q=Q)
+                        out_list.append(sub_out)
                     except Exception as e:
                         logger.warning(f"Post-quantiles on subhead failed; keeping raw. Error: {e}")
                         out_list.append(sub_y)
@@ -318,6 +361,7 @@ class AutoregressiveStepwiseMixin:
             return out_list
 
         return params_or_preds
+
 
     # ------------------ point (from quantiles or predict) ------------------
 
