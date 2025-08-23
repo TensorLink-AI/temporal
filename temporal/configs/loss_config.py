@@ -145,7 +145,7 @@ class NLLLossConfig(LossConfig):
         super().__post_init__()
         if "distribution_type" not in self.kwargs:
             raise ValueError("NLLLossConfig requires 'distribution_type' to be specified in kwargs.")
-        if self.kwargs["distribution_type"] not in ["gaussian", "mixture"]:
+        if self.kwargs["distribution_type"] not in ["gaussian", "mixture","student_t"]:
             raise ValueError(f"Unsupported distribution_type for NLLLoss: {self.kwargs['distribution_type']}. Supported types are 'gaussian', 'mixture'.")
 
 
