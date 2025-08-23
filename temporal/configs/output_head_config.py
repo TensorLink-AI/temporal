@@ -100,6 +100,23 @@ class TimeFlowOutputHeadConfig(OutputHeadConfig):
         if self.model_channels <= 0:
             raise ValueError("model_channels must be a positive integer.")
 
+@register_config_type("t_distribution_output_head")
+@dataclass(frozen=True, kw_only=True)
+class TDistributionOutputHeadConfig(OutputHeadConfig):
+    """
+    Configuration for a T-Distribution output head.
+    """
+    feature_size: int
+    num_outputs: int = field(default=1)
+    type: str = field(default="t_distribution")
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.feature_size <= 0:
+            raise ValueError("feature_size must be a positive integer.")
+        if self.num_outputs <= 0:
+            raise ValueError("num_outputs must be a positive integer.")
+
 # Helper function for polymorphic creation
 def output_head_config_from_dict(data: Dict[str, Any]) -> OutputHeadConfig:
     output_head_type = data.get("type", "linear")
@@ -111,6 +128,7 @@ def output_head_config_from_dict(data: Dict[str, Any]) -> OutputHeadConfig:
         "quantile_regression": "quantile_regression_output_head", # ADDED
         "mixture": "mixture_output_head", # ADDED
         "timeflow": "timeflow_output_head",
+        "t_distribution": "t_distribution_output_head",
     }
     registry_key = type_to_registry_key.get(output_head_type, output_head_type) # Fallback to type if not in map
 
@@ -119,3 +137,6 @@ def output_head_config_from_dict(data: Dict[str, Any]) -> OutputHeadConfig:
         raise ValueError(f"Unknown or invalid output_head_type: {output_head_type} (mapped to registry key: {registry_key})")
     
     return config_class.from_dict(data)
+
+
+
