@@ -878,70 +878,94 @@ class MixtureOutputHead(BaseOutputHead):
         """
         One value per step, returns [B,1,1].
         """
-        logits = params["mixture_logits"]  # [B,T,M] or [B,1,M]
+        logits = params["mixture_logits"]  # [B,T,M] or [B,1,M] or [B,M]
         if logits.ndim == 3 and logits.shape[1] == 1:
-            logits = logits.squeeze(1)      # [B,M]
+            logits_last = logits.squeeze(1)                 # [B,M]
+        elif logits.ndim == 3:
+            logits_last = logits[:, -1, :]                  # [B,M]
         elif logits.ndim == 2:
-            pass  # [B,M]
+            logits_last = logits                            # [B,M]
         else:
-            logits = logits[..., -1, :] if logits.ndim == 3 else logits
+            raise ValueError(f"Unexpected mixture_logits shape {tuple(logits.shape)}")
 
-        B, M = logits.shape
-        device, dtype = logits.device, logits.dtype
+        B, M = logits_last.shape
+        device, dtype = logits_last.device, logits_last.dtype
 
-        scaled = _temperature_scale_logits(logits, temperature)
-        w = F.softmax(scaled, dim=-1)              # [B,M]
-        w = _apply_top_p(w, top_p)
-        cat = torch.distributions.Categorical(probs=w)
-        k = cat.sample()                            # [B]
+        # weights for selection (last step)
+        scaled = _temperature_scale_logits(logits_last, temperature)
+        w_last = F.softmax(scaled, dim=-1)                  # [B,M]
+        w_last = _apply_top_p(w_last, top_p)
 
-        comps = self._get_params_per_component(params, min_std=min_std)  # tensors [B,T,1] or [B,1,1]
-        # use last time step if T>1
-        def _last(t): return t if t.ndim == 2 else (t[:, -1:] if t.ndim == 3 else t)
+        # sample component index per batch
+        cat = torch.distributions.Categorical(probs=w_last)
+        k = cat.sample()                                     # [B]
 
-        out = torch.empty(B, 1, device=device, dtype=dtype)
+        # get per-component params for all timesteps
+        comps = self._get_params_per_component(params, min_std=min_std)  # list of dicts; each value [B,T,1]
+
+        # helper to pick the last timestep (T->1) while keeping [B,1,1]
+        def _last3(t: torch.Tensor) -> torch.Tensor:
+            # t is [B,T,1] or [B,1] (rare); return [B,1,1]
+            if t.ndim == 3:
+                return t[:, -1:, :]        # [B,1,1]
+            elif t.ndim == 2:
+                return t.unsqueeze(-1)     # [B,1,1]
+            else:
+                return t                    # assume already [B,1,1]
+
+        # allocate output as [B,1,1]
+        out = torch.empty(B, 1, 1, device=device, dtype=dtype)
+
+        # sample from chosen component
         for i in range(B):
             cname = self.components[k[i].item()]
             cp = comps[k[i].item()]
             if cname in ("normal", "fixed_normal"):
-                z = torch.randn_like(out[i:i+1])
-                out[i:i+1] = _last(cp["mu"])[i:i+1] + _last(cp["sigma"])[i:i+1] * z
+                mu  = _last3(cp["mu"])     # [B,1,1] but we’ll index [i:i+1]
+                sig = _last3(cp["sigma"])
+                z = torch.randn_like(out[i:i+1])            # [1,1,1]
+                out[i:i+1] = mu[i:i+1] + sig[i:i+1] * z
             elif cname == "student_t":
-                z = torch.randn_like(out[i:i+1])
-                chi = torch.distributions.Chi2(df=_last(cp["df"])[i:i+1]).sample()
-                t = z / torch.sqrt(chi / _last(cp["df"])[i:i+1])
-                out[i:i+1] = _last(cp["mu"])[i:i+1] + _last(cp["scale"])[i:i+1] * t
+                mu   = _last3(cp["mu"])
+                sc   = _last3(cp["scale"])
+                df   = _last3(cp["df"])
+                z    = torch.randn_like(out[i:i+1])         # [1,1,1]
+                chi  = torch.distributions.Chi2(df=df[i:i+1]).sample()  # [1,1,1]
+                t    = z / torch.sqrt(chi / df[i:i+1])
+                out[i:i+1] = mu[i:i+1] + sc[i:i+1] * t
             elif cname == "log_normal":
-                z = torch.randn_like(out[i:i+1])
-                ln = _last(cp["mu"])[i:i+1] + _last(cp["sigma"])[i:i+1] * z
+                mu  = _last3(cp["mu"])
+                sig = _last3(cp["sigma"])
+                z = torch.randn_like(out[i:i+1])            # [1,1,1]
+                ln = mu[i:i+1] + sig[i:i+1] * z
                 out[i:i+1] = torch.exp(ln)
             elif cname == "neg_binomial":
-                total_count = _last(cp["r"])[i:i+1].clamp_min(1e-6)
-                probs = 1.0 - _last(cp["p"])[i:i+1]
-                nb = torch.distributions.NegativeBinomial(total_count=total_count, probs=probs)
-                out[i:i+1] = nb.sample()
+                r = _last3(cp["r"])
+                p = _last3(cp["p"])
+                nb = torch.distributions.NegativeBinomial(total_count=r[i:i+1], probs=(1.0 - p[i:i+1]))
+                out[i:i+1] = nb.sample()                    # [1,1,1]
             else:
                 raise NotImplementedError
 
-        # small mean blend (optional)
-        mix_mean = torch.zeros_like(out)
-        # rebuild weights w to [B,1,M] for mean calc
-        w_full = F.softmax(_temperature_scale_logits(params["mixture_logits"][:, -1, :], temperature), dim=-1)
-        comp_means = []
+        # optional mean blend to tame tails (compute mixture mean at last step)
+        mix_mean = torch.zeros_like(out)                    # [B,1,1]
         for j, cname in enumerate(self.components):
             cp = comps[j]
             if cname in ("normal", "fixed_normal", "student_t"):
-                comp_means.append(_last(cp["mu"]))
+                m = _last3(cp["mu"])                        # [B,1,1]
             elif cname == "log_normal":
-                mu, sig = _last(cp["mu"]), _last(cp["sigma"])
-                comp_means.append(torch.exp(mu + 0.5 * sig * sig))
+                mu = _last3(cp["mu"]); sig = _last3(cp["sigma"])
+                m = torch.exp(mu + 0.5 * sig * sig)
             elif cname == "neg_binomial":
-                r, p = _last(cp["r"]), _last(cp["p"])
-                comp_means.append(r * (1 - p) / p)
-        for j, m in enumerate(comp_means):
-            mix_mean += w_full[:, j:j+1] * m
-        out = _blend_with_mean(out, mix_mean, eta=eta_blend_mean)
-        return out.unsqueeze(-1)  # [B,1,1]
+                r = _last3(cp["r"]); p = _last3(cp["p"])
+                m = r * (1 - p) / p
+            else:
+                raise NotImplementedError
+            wj = w_last[:, j:j+1].unsqueeze(-1)             # [B,1,1]
+            mix_mean = mix_mean + wj * m
+
+        out = _blend_with_mean(out, mix_mean, eta=eta_blend_mean)  # still [B,1,1]
+        return out
 
     def get_loss_fn(self) -> Optional[Callable]:
         return None
