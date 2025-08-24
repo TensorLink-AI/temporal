@@ -792,37 +792,28 @@ class MixtureOutputHead(BaseOutputHead):
         min_std: float = 1e-4,
     ) -> torch.Tensor:
         """
-        Monte Carlo mixture quantiles.
+        Monte Carlo quantiles for the univariate mixture.
 
         Inputs
         -------
-        params: dict with at least:
-            - "mixture_logits": [B,T,M] or [B,1,M]
-            - per-component params as produced by forward(...)
-            - "components": list[str] of length M
+        params:
+        - "mixture_logits": [B,T,M] or [B,1,M]
+        - per-component params from forward(...)
+        - "components": list[str] of length M
         quantile_levels: list of floats in (0,1)
 
         Returns
         -------
-        qvals: torch.Tensor, shape [B, T, 1, Q]
-            Quantiles for the *univariate* mixture at each [B,T].
-
-        Notes
-        -----
-        - We draw S=num_mc samples per [B,T] from the mixture by:
-            1) sampling component indices k ~ Categorical(w[B,T,:])
-            2) sampling from the chosen component
-        Then we take empirical quantiles along the S dimension.
-        - This function guarantees the output has shape [B,T,1,Q].
+        qvals: [B, T, 1, Q]
+        Empirical quantiles of the mixture at each [B,T].
         """
-
-        # ----- read / normalize logits -----
-        logits = params["mixture_logits"]                           # [B,T,M] or [B,1,M]
+        # ----- logits / shapes -----
+        logits = params["mixture_logits"]                         # [B,T,M] or [B,1,M]
         if logits.ndim == 2:
-            logits = logits.unsqueeze(1)                            # -> [B,1,M]
+            logits = logits.unsqueeze(1)                          # -> [B,1,M]
         B, T, M = logits.shape
 
-        # ----- validate quantile levels -----
+        # ----- validate quantiles -----
         q = torch.as_tensor(quantile_levels, device=logits.device, dtype=logits.dtype)
         if not torch.all((q > 0) & (q < 1)):
             raise ValueError(f"quantile_levels must be in (0,1); got {quantile_levels}")
@@ -830,47 +821,45 @@ class MixtureOutputHead(BaseOutputHead):
 
         # ----- mixture weights -----
         w = self._weights(params, temperature=temperature, top_p=top_p)  # [B,T,M]
-        # shape guard
         if w.shape != (B, T, M):
             raise RuntimeError(f"weights shape mismatch: expected {(B,T,M)}, got {tuple(w.shape)}")
 
-        # ----- per-component params (each [B,T,1]) -----
-        comps = self._get_params_per_component(params, min_std=min_std)  # len M
+        # ----- per-component params -> each [B,T,1] -----
+        comps = self._get_params_per_component(params, min_std=min_std)
         if len(comps) != M:
             raise RuntimeError(f"components length {len(comps)} != M {M}")
 
         S = int(num_mc)
 
-        # ----- draw S samples per component -> [B,T,M,S] -----
+        # ----- simulate per component -> [B,T,M,S] -----
         samples_per_comp: List[torch.Tensor] = []
         for cname, cp in zip(params["components"], comps):
             if cname in ("normal", "fixed_normal"):
-                mu, sigma = cp["mu"], cp["sigma"]                    # [B,T,1]
+                mu, sigma = cp["mu"], cp["sigma"]                     # [B,T,1]
                 z = torch.randn(B, T, S, device=logits.device, dtype=logits.dtype)   # [B,T,S]
-                y = mu + sigma * z.unsqueeze(-2)                     # [B,T,1,S]
-                samples_per_comp.append(y.squeeze(-2))               # [B,T,S]
+                y = mu + sigma * z.unsqueeze(-2)                      # [B,T,1,S]
+                samples_per_comp.append(y.squeeze(-2))                # [B,T,S]
 
             elif cname == "student_t":
-                mu, scale, df = cp["mu"], cp["scale"], cp["df"]      # [B,T,1]
+                mu, scale, df = cp["mu"], cp["scale"], cp["df"]       # [B,T,1]
                 z   = torch.randn(B, T, S, device=logits.device, dtype=logits.dtype) # [B,T,S]
-                chi = torch.distributions.Chi2(df=df).sample((S,))                   # [S,B,T,1]
-                chi = chi.permute(1, 2, 0, 3).squeeze(-1)                             # [B,T,S]
-                t   = z / torch.sqrt(chi / df)                                        # [B,T,S]
-                y   = mu + scale * t.unsqueeze(-2)                                     # [B,T,1,S]
-                samples_per_comp.append(y.squeeze(-2))                                 # [B,T,S]
+                chi = torch.distributions.Chi2(df=df).sample((S,))                    # [S,B,T,1]
+                chi = chi.permute(1, 2, 0, 3).squeeze(-1)                              # [B,T,S]
+                t   = z / torch.sqrt(chi / df)                                         # [B,T,S]
+                y   = mu + scale * t.unsqueeze(-2)                                      # [B,T,1,S]
+                samples_per_comp.append(y.squeeze(-2))                                  # [B,T,S]
 
             elif cname == "log_normal":
-                mu, sigma = cp["mu"], cp["sigma"]                   # [B,T,1]
-                z  = torch.randn(B, T, S, device=logits.device, dtype=logits.dtype)   # [B,T,S]
-                ln = mu + sigma * z.unsqueeze(-2)                                   # [B,T,1,S]
-                y  = torch.exp(ln).squeeze(-2)                                      # [B,T,S]
+                mu, sigma = cp["mu"], cp["sigma"]                    # [B,T,1]
+                z  = torch.randn(B, T, S, device=logits.device, dtype=logits.dtype)    # [B,T,S]
+                ln = mu + sigma * z.unsqueeze(-2)                                    # [B,T,1,S]
+                y  = torch.exp(ln).squeeze(-2)                                       # [B,T,S]
                 samples_per_comp.append(y)
 
             elif cname == "neg_binomial":
-                # Keep parameterization consistent with predict(): mean = r*(1-p)/p
-                r, p = cp["r"], cp["p"]                             # [B,T,1], p in (0,1)
+                r, p = cp["r"], cp["p"]                              # [B,T,1], p in (0,1)
                 nb = torch.distributions.NegativeBinomial(total_count=r, probs=p)
-                y  = nb.sample((S,)).permute(1, 2, 0, 3).squeeze(-1)               # [B,T,S]
+                y  = nb.sample((S,)).permute(1, 2, 0, 3).squeeze(-1)                  # [B,T,S]
                 samples_per_comp.append(y)
 
             else:
@@ -878,28 +867,23 @@ class MixtureOutputHead(BaseOutputHead):
 
         Y_all = torch.stack(samples_per_comp, dim=2)                 # [B,T,M,S]
 
-        # ----- sample mixture component indices per [B,T,S] -----
+        # ----- sample mixture component index for every [B,T,S] -----
         cat = torch.distributions.Categorical(probs=w)               # per [B,T]
         k = cat.sample((S,)).permute(1, 2, 0)                        # [B,T,S]
 
-        # Advanced indexing to pick comp k[b,t,s] for y[b,t,:,s]
+        # Advanced indexing: pick y from the chosen component
         b_idx = torch.arange(B, device=logits.device).view(B, 1, 1).expand(B, T, S)
         t_idx = torch.arange(T, device=logits.device).view(1, T, 1).expand(B, T, S)
         s_idx = torch.arange(S, device=logits.device).view(1, 1, S).expand(B, T, S)
         Y = Y_all[b_idx, t_idx, k, s_idx]                            # [B,T,S]
 
-        # ----- empirical quantiles along MC axis (dim=-1) -----
-        Y_sorted, _ = torch.sort(Y, dim=-1)                          # [B,T,S]
-        pos = (q * (S - 1)).round().clamp(0, S - 1).long()           # [Q]
-        qvals = torch.index_select(Y_sorted, dim=-1, index=pos)      # [B,T,Q]
+        # ----- empirical quantiles along the MC axis (dim=-1) -----
+        qvals = torch.quantile(Y, q, dim=-1, keepdim=True)           # [B,T,1,Q]
 
-        # Final shape must be [B,T,1,Q]
-        out = qvals.unsqueeze(-2)                                     # [B,T,1,Q]
-        # safety check
-        if out.ndim != 4 or out.shape[-2] != 1 or out.shape[-1] != Q:
-            raise RuntimeError(f"sample_quantiles produced bad shape {tuple(out.shape)}; expected [B,T,1,{Q}]")
-        return out
-
+        # final sanity
+        if qvals.ndim != 4 or qvals.shape[-2] != 1 or qvals.shape[-1] != Q:
+            raise RuntimeError(f"MDN sample_quantiles bad shape {tuple(qvals.shape)}; expected [B,T,1,{Q}]")
+        return qvals
 
     # ---------- one-step sample for AR feedback ----------
     @torch.no_grad()
