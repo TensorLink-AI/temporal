@@ -198,7 +198,8 @@ class GaussianHead(BaseOutputHead):
 
     def _split_params(self, y: torch.Tensor):
         mu, log_sigma = y.chunk(2, dim=-1)
-        log_sigma = log_sigma.clamp_(self.min_log_sigma, self.max_log_sigma)
+        # Use the out-of-place version
+        log_sigma = log_sigma.clamp(self.min_log_sigma, self.max_log_sigma)
         return mu, log_sigma
 
     # ---- API ---------------------------------------------------------------
@@ -1025,11 +1026,12 @@ class StudentTHead(BaseOutputHead):
 
     # -------------------- internals --------------------
 
-    def _split_params(self, y: torch.Tensor):
+    def _split_params(self, y):
         """ y: [B,T,3F] -> (mu, log_scale, log_df) each [B,T,F], with clamps. """
         mu, log_scale, log_df = torch.split(y, self.feature_size, dim=-1)
-        log_scale = log_scale.clamp_(self.min_log_scale, self.max_log_scale)
-        log_df    = log_df.clamp_(self.min_log_df,    self.max_log_df)
+        # Use out-of-place clamp to create new tensors
+        log_scale = log_scale.clamp(self.min_log_scale, self.max_log_scale)
+        log_df    = log_df.clamp(self.min_log_df,    self.max_log_df)
         return mu, log_scale, log_df
 
     def _scale_df(self, log_scale: torch.Tensor, log_df: torch.Tensor):
