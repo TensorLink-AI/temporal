@@ -190,6 +190,90 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         self._encoder_dtype = getattr(self.encoder, 'dtype', torch.float32) if self.encoder else torch.float32
         self._decoder_dtype = getattr(self.decoder, 'dtype', torch.float32) if self.decoder else torch.float32
 
+    def _primary_head(self) -> nn.Module:
+        """Return the primary output head."""
+        return self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
+
+    def _point_from_head_out(self, head_out: Any) -> torch.Tensor:
+        """
+        Produce a point forecast tensor from a head output (tensor or dict).
+        Uses head.predict('median') when available; falls back to simple reductions.
+        """
+        head = self._primary_head()
+
+        if torch.is_tensor(head_out):
+            # Already a tensor [B,T,F] or [B,T,1]
+            return head_out
+
+        if isinstance(head_out, dict):
+            # Prefer the head’s predict API
+            if hasattr(head, "predict"):
+                point = head.predict(head_out, method="median")  # [B,T,F] or [B,T,1]
+                if point.ndim == 2:
+                    point = point.unsqueeze(-1)
+                return point
+
+            # Fallback: common dicts (e.g., DistPred) have 'paths' we can reduce
+            paths = head_out.get("paths", None)
+            if torch.is_tensor(paths):
+                # [B,T,C,K] or [B,T,K] -> mean over K
+                if paths.ndim == 3:
+                    paths = paths.unsqueeze(-2)      # [B,T,1,K]
+                return paths.mean(dim=-1)            # [B,T,C]
+            raise TypeError("Dict head output has no 'predict' and no 'paths' to reduce.")
+
+        raise TypeError(f"Unsupported head_out type for point extraction: {type(head_out)}")
+
+    def _adapt_preds_for_loss(self, preds: Any) -> torch.Tensor:
+        """
+        Convert head output to what the current loss expects.
+
+        - If `preds` is a dict (e.g., DistPred/MDN) and the loss exposes quantile levels,
+          call head.sample_quantiles(...) to get a quantile tensor.
+        - Else return a point tensor (mean/median) as a safe fallback.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape typically [B,T,F,Q] for CRPS-like losses, or [B,T,F] for point losses.
+        """
+        head = self._primary_head()
+
+        # Tensor heads (Gaussian/StudentT/QR/etc.)
+        if torch.is_tensor(preds):
+            return preds
+
+        # Dict heads (DistPred/MDN/etc.)
+        if isinstance(preds, dict):
+            # Try to read quantile levels from the loss (common CRPS implementations)
+            levels: Optional[Sequence[float]] = (
+                getattr(self.loss_fn, "quantile_levels", None)
+                or getattr(self.loss_fn, "levels", None)
+                or getattr(self.loss_fn, "qs", None)
+            )
+            if levels is not None and hasattr(head, "sample_quantiles"):
+                q = head.sample_quantiles(preds, quantile_levels=[float(q) for q in levels])
+                # Normalize to [B,T,1,Q] if needed; the loss can broadcast against [B,T,F]
+                if q.ndim == 3:  # [B,T,Q]
+                    q = q.unsqueeze(-2)
+                return q  # [B,T,1,Q] or [B,T,F,Q]
+
+            # No quantile levels available: use a point fallback
+            if hasattr(head, "predict"):
+                pt = head.predict(preds, method="mean")
+                if pt.ndim == 2:
+                    pt = pt.unsqueeze(-1)
+                return pt
+
+            # Last resort: reduce 'paths'
+            paths = preds.get("paths", None)
+            if torch.is_tensor(paths):
+                if paths.ndim == 3:
+                    paths = paths.unsqueeze(-2)  # [B,T,1,K]
+                return paths.mean(dim=-1)        # [B,T,F]
+            raise TypeError("Dict preds lacks 'sample_quantiles'/'predict' and has no 'paths' to reduce.")
+
+        raise TypeError(f"Unsupported preds type for loss adaptation: {type(preds)}")
 
     def forward(
         self,
@@ -339,9 +423,9 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             input_to_heads = input_to_heads[:, -num_target_steps:, :]
         
         # Step 5: Project the final hidden states through the output head(s).
-        logits = self.output_heads(input_to_heads)
+        head_out = self.output_heads(input_to_heads)
         if self.head_aggregator is not None:
-            logits = self.head_aggregator(logits)
+            head_out = self.head_aggregator(head_out)
 
         # Step 6: Calculate the loss if targets are provided.
         loss = None
@@ -349,31 +433,29 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         if encoder_outputs and hasattr(encoder_outputs, 'aux_loss') and encoder_outputs.aux_loss is not None:
             total_aux_loss = encoder_outputs.aux_loss
         if decoder_outputs and hasattr(decoder_outputs, 'aux_loss') and decoder_outputs.aux_loss is not None:
-            if total_aux_loss is None:
-                total_aux_loss = decoder_outputs.aux_loss
-            else:
-                total_aux_loss += decoder_outputs.aux_loss
+            total_aux_loss = (total_aux_loss + decoder_outputs.aux_loss) if total_aux_loss is not None else decoder_outputs.aux_loss
 
         if targets is not None:
             if self.loss_fn is None:
                 raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
-            
-            # If instance normalization is used, calculate loss on normalized values for stability.
+
+            # >>> NEW: adapt head output to what the loss expects <<<
+            preds_for_loss = self._adapt_preds_for_loss(head_out)
+
             if self.preprocessor.instance_norm is not None:
                 normalized_targets = self.preprocessor.instance_norm.transform(targets)
-                loss = self.loss_fn(preds=logits, targets=normalized_targets, loss_mask=loss_mask)
+                loss = self.loss_fn(preds=preds_for_loss, targets=normalized_targets, loss_mask=loss_mask)
             else:
-                # Otherwise, calculate loss on the original scale.
-                # In this case, logits are already in the original scale because no normalization was applied.
-                loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
+                loss = self.loss_fn(preds=preds_for_loss, targets=targets, loss_mask=loss_mask)
 
             if total_aux_loss is not None:
                 loss += self.config.aux_loss_weight * total_aux_loss.mean()
 
-        # Always denormalize logits for the final output. If no normalizer was used, this is a no-op.
-        final_logits = self.preprocessor.denormalize(logits)
+        # Step 7: Build a tensor for `logits` to return and denormalize for convenience.
+        #         If the head returns a dict (e.g., DistPred), we convert to a point forecast first.
+        point_logits = self._point_from_head_out(head_out)     # always a Tensor now
+        final_logits = self.preprocessor.denormalize(point_logits)
 
-        # Step 7: Construct and return the final output object.
         return TransformerOutput(
             loss=loss,
             logits=final_logits,
