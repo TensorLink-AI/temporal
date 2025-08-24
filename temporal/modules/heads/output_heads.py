@@ -636,14 +636,14 @@ class MixtureOutputHead(BaseOutputHead):
         "student_t": {"df": 1, "mu": 1, "scale": 1},
         "log_normal": {"mu": 1, "sigma": 1},
         "neg_binomial": {"r": 1, "p": 1},
-        "normal": {"mu": 1, "sigma": 1},
+        "guassian": {"mu": 1, "sigma": 1},
         "fixed_normal": {"mu": 1}
     }
     DIST_OUTPUT_KEYS = {
         "student_t": {"df": "student_df", "mu": "student_mu", "scale": "student_scale"},
         "log_normal": {"mu": "lognorm_mu", "sigma": "lognorm_sigma"},
         "neg_binomial": {"r": "nb_r", "p": "nb_p"},
-        "normal": {"mu": "normal_mu", "sigma": "normal_sigma"},
+        "guassian": {"mu": "normal_mu", "sigma": "normal_sigma"},
         "fixed_normal": {"mu": "normal_mu"}
     }
 
