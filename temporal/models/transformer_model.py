@@ -194,35 +194,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         """Return the primary output head."""
         return self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
 
-    def _point_from_head_out(self, head_out: Any) -> torch.Tensor:
-        """
-        Produce a point forecast tensor from a head output (tensor or dict).
-        Uses head.predict('median') when available; falls back to simple reductions.
-        """
-        head = self._primary_head()
-
-        if torch.is_tensor(head_out):
-            # Already a tensor [B,T,F] or [B,T,1]
-            return head_out
-
-        if isinstance(head_out, dict):
-            # Prefer the head’s predict API
-            if hasattr(head, "predict"):
-                point = head.predict(head_out, method="median")  # [B,T,F] or [B,T,1]
-                if point.ndim == 2:
-                    point = point.unsqueeze(-1)
-                return point
-
-            # Fallback: common dicts (e.g., DistPred) have 'paths' we can reduce
-            paths = head_out.get("paths", None)
-            if torch.is_tensor(paths):
-                # [B,T,C,K] or [B,T,K] -> mean over K
-                if paths.ndim == 3:
-                    paths = paths.unsqueeze(-2)      # [B,T,1,K]
-                return paths.mean(dim=-1)            # [B,T,C]
-            raise TypeError("Dict head output has no 'predict' and no 'paths' to reduce.")
-
-        raise TypeError(f"Unsupported head_out type for point extraction: {type(head_out)}")
 
     def _adapt_preds_for_loss(self, preds: Any) -> torch.Tensor:
         """
@@ -453,8 +424,8 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
 
         # Step 7: Build a tensor for `logits` to return and denormalize for convenience.
         #         If the head returns a dict (e.g., DistPred), we convert to a point forecast first.
-        point_logits = self._point_from_head_out(head_out)     # always a Tensor now
-        final_logits = self.preprocessor.denormalize(point_logits)
+        #point_logits = self._point_from_head_out(head_out)     # always a Tensor now
+        final_logits = self.preprocessor.denormalize(head_out)
 
         return TransformerOutput(
             loss=loss,
