@@ -883,7 +883,11 @@ class MixtureOutputHead(BaseOutputHead):
         ).squeeze(-1)                                            # -> [B,T,S]
 
         # Quantiles across S -> [B,T,Q] -> [B,T,1,Q]
-        qvals = torch.quantile(Y, q, dim=-1)                     # [B,T,Q]
+        qs = [float(v) for v in quantile_levels]                 # ensure scalars
+        q_slices = [torch.quantile(Y, v, dim=-1) for v in qs]    # each [B,T]
+        qvals = torch.stack(q_slices, dim=-1)                    # [B,T,Q]
+
+        # Final shape for bundle consistency
         return qvals.unsqueeze(-2)                               # [B,T,1,Q]
 
     # ---------- one-step sample for AR feedback ----------
