@@ -794,12 +794,12 @@ class MixtureOutputHead(BaseOutputHead):
         """
         Monte Carlo mixture quantiles. Returns [B, T, 1, Q].
 
-        Robust to PyTorch's gather quirks by using advanced indexing to select
-        a component for each [B,T,S] draw.
+        Uses advanced indexing for the mixture draw and torch.index_select for
+        quantile extraction (avoids gather shape pitfalls).
         """
-        logits = params["mixture_logits"]                      # [B,T,M] or [B,1,M]
+        logits = params["mixture_logits"]                          # [B,T,M] or [B,1,M]
         if logits.ndim == 2:
-            logits = logits.unsqueeze(1)                       # -> [B,1,M]
+            logits = logits.unsqueeze(1)                           # -> [B,1,M]
         B, T, M = logits.shape
 
         q = torch.tensor(quantile_levels, device=logits.device, dtype=logits.dtype)
@@ -808,9 +808,9 @@ class MixtureOutputHead(BaseOutputHead):
         Q = q.numel()
 
         # Mixture weights [B,T,M]
-        w = self._weights(params, temperature=temperature, top_p=top_p)
+        w = self._weights(params, temperature=temperature, top_p=top_p)  # [B,T,M]
 
-        # Per-component parameters (each param [B,T,1])
+        # Per-component params (each [B,T,1])
         comps = self._get_params_per_component(params, min_std=min_std)
         S = int(num_mc)
 
@@ -818,13 +818,13 @@ class MixtureOutputHead(BaseOutputHead):
         samples_per_comp: List[torch.Tensor] = []
         for cname, cp in zip(params["components"], comps):
             if cname in ("normal", "fixed_normal"):
-                mu, sigma = cp["mu"], cp["sigma"]               # [B,T,1]
+                mu, sigma = cp["mu"], cp["sigma"]                   # [B,T,1]
                 z = torch.randn(B, T, S, device=logits.device, dtype=logits.dtype)  # [B,T,S]
-                y = mu + sigma * z.unsqueeze(-2)                # [B,T,1,S]
-                samples_per_comp.append(y.squeeze(-2))          # [B,T,S]
+                y = mu + sigma * z.unsqueeze(-2)                    # [B,T,1,S]
+                samples_per_comp.append(y.squeeze(-2))              # [B,T,S]
 
             elif cname == "student_t":
-                mu, scale, df = cp["mu"], cp["scale"], cp["df"] # [B,T,1] each
+                mu, scale, df = cp["mu"], cp["scale"], cp["df"]     # [B,T,1] each
                 z = torch.randn(B, T, S, device=logits.device, dtype=logits.dtype)  # [B,T,S]
                 chi = torch.distributions.Chi2(df=df).sample((S,))                  # [S,B,T,1]
                 chi = chi.permute(1, 2, 0, 3).squeeze(-1)                           # [B,T,S]
@@ -841,7 +841,7 @@ class MixtureOutputHead(BaseOutputHead):
 
             elif cname == "neg_binomial":
                 r, p = cp["r"], cp["p"]                                             # [B,T,1]
-                # Use probs=p (not 1-p) to match mean r*(1-p)/p elsewhere.
+                # NB with probs=p (mean r*(1-p)/p, consistent with predict()).
                 nb = torch.distributions.NegativeBinomial(total_count=r, probs=p)
                 y = nb.sample((S,)).permute(1, 2, 0, 3).squeeze(-1)                 # [B,T,S]
                 samples_per_comp.append(y)
@@ -862,14 +862,11 @@ class MixtureOutputHead(BaseOutputHead):
         s_idx = torch.arange(S, device=logits.device).view(1, 1, S).expand(B, T, S)
         Y = Y_all[b_idx, t_idx, k, s_idx]                                           # [B,T,S]
 
-        # Quantiles along S
+        # Sort along MC dimension and select global quantile positions
         Y_sorted, _ = torch.sort(Y, dim=-1)                                         # [B,T,S]
-        idx = (q * (S - 1)).round().long().view(1, 1, Q).expand(B, T, Q)           # [B,T,Q]
-        qvals = torch.gather(Y_sorted, -1, idx)                                     # [B,T,Q]
+        pos = (q * (S - 1)).round().clamp(0, S - 1).long().to(Y_sorted.device)     # [Q]
+        qvals = torch.index_select(Y_sorted, dim=-1, index=pos)                     # [B,T,Q]
         return qvals.unsqueeze(-2)                                                  # [B,T,1,Q]
-                                    
-
-
 
     # ---------- one-step sample for AR feedback ----------
     @torch.no_grad()
