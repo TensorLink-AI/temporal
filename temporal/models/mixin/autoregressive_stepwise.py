@@ -247,8 +247,7 @@ class AutoregressiveStepwiseMixin:
                     vv = vv[:, -1:, ...]  # keep last step if needed
                 acc_tensors.setdefault(k, []).append(vv)
             else:
-                # store first occurrence; keep stable across time
-                acc_meta.setdefault(k, v)
+                acc_meta.setdefault(k, v)  # store first occurrence
         return acc_tensors, acc_meta
 
     def _stack_params_dict(
@@ -273,13 +272,13 @@ class AutoregressiveStepwiseMixin:
         Make sure dict has a 'components' key if the head exposes it.
         """
         if "components" not in params and hasattr(head, "components"):
-            # head.components is typically a List[str]
             try:
                 params = dict(params)  # shallow copy
                 params["components"] = list(getattr(head, "components"))
             except Exception:
                 pass
         return params
+
     def _normalize_quantile_shape(self, q: torch.Tensor, *, feature_size: int, Q: int) -> torch.Tensor:
         """
         Coerce any head's quantile tensor to [B, T, F, Q].
@@ -290,28 +289,19 @@ class AutoregressiveStepwiseMixin:
         - [B,Q]        -> [B,1,1,Q]
         """
         if q.ndim == 4:
-            # [B,T,*,Q]  or  [B,T,Q,*]
             if q.shape[-1] == Q:
                 return q
             if q.shape[-2] == Q:
                 return q.permute(0, 1, 3, 2)
-            # ambiguous but already 4D – leave as-is
             return q
-
         if q.ndim == 3:
-            # [B,T,Q] -> [B,T,1,Q]
             if q.shape[-1] == Q:
                 return q.unsqueeze(-2)
-            # ambiguous 3D (rare) – assume last dim is Q
             return q.unsqueeze(-2)
-
         if q.ndim == 2 and q.shape[-1] == Q:
-            # [B,Q] -> [B,1,1,Q]
             return q.unsqueeze(1).unsqueeze(2)
-
-        # Fallback: make it [B,T,feature_size,Q] if possible
         if q.ndim == 4 and q.shape[-2] == feature_size:
-            return q  # already looks like [B,T,F,*]
+            return q
         raise ValueError(f"Cannot normalize quantile tensor of shape {tuple(q.shape)} to [B,T,F,Q].")
 
     def _post_quantiles_any(
@@ -327,7 +317,6 @@ class AutoregressiveStepwiseMixin:
         F = getattr(self.config, "feature_size", 1)
         Q = len(quantile_levels)
 
-        # Primary head first
         if hasattr(head, "sample_quantiles") and callable(getattr(head, "sample_quantiles")):
             try:
                 src = params_or_preds
@@ -362,9 +351,7 @@ class AutoregressiveStepwiseMixin:
 
         return params_or_preds
 
-
     # ------------------ point (from quantiles or predict) ------------------
-
     def _compute_point_from_params(
         self,
         source: Union[torch.Tensor, Dict[str, Any], List[Any], None],
@@ -394,7 +381,6 @@ class AutoregressiveStepwiseMixin:
         raise TypeError("Cannot compute point forecast from given params; add 'predict()' to this head.")
 
     # ------------------ generation API ------------------
-
     @torch.no_grad()
     def generate(
         self,
