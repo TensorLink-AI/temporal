@@ -793,25 +793,15 @@ class MixtureOutputHead(BaseOutputHead):
     ) -> torch.Tensor:
         """
         Monte Carlo mixture quantiles (univariate MDN).
-
-        Inputs
-        ------
-        params:
-        - "mixture_logits": [B,T,M] or [B,1,M]
-        - per-component params broadcastable to [B,T,1]
-        - "components": list[str] of length M
-        quantile_levels: list of floats in (0,1)
-
-        Returns
-        -------
-        qvals: [B, T, 1, Q]
+        Returns: [B, T, 1, Q]
         """
         logits = params["mixture_logits"]
         if logits.ndim == 2:
             logits = logits.unsqueeze(1)  # -> [B,1,M]
         B, T, M = logits.shape
+        device, dtype = logits.device, logits.dtype
 
-        q = torch.as_tensor(quantile_levels, device=logits.device, dtype=logits.dtype)
+        q = torch.as_tensor(quantile_levels, device=device, dtype=dtype)
         if not torch.all((q > 0) & (q < 1)):
             raise ValueError(f"quantile_levels must be in (0,1); got {quantile_levels}")
         Q = int(q.numel())
@@ -821,51 +811,55 @@ class MixtureOutputHead(BaseOutputHead):
         if w.shape != (B, T, M):
             raise RuntimeError(f"weights shape mismatch: expected {(B,T,M)}, got {tuple(w.shape)}")
 
-        comps = self._get_params_per_component(params, min_std=min_std)  # each param [B,T,1]
+        comps = self._get_params_per_component(params, min_std=min_std)  # each param ~ [B,T,1]
         if len(comps) != M:
             raise RuntimeError(f"components length {len(comps)} != M {M}")
 
         S = int(num_mc)
-        device = logits.device
-        dtype  = logits.dtype
-
         samples_per_comp: List[torch.Tensor] = []
+
+        # Helper: ensure param tensors broadcast with [B,T,S] without creating extra dims
+        def _bt_1_to_bts(t: torch.Tensor) -> torch.Tensor:
+            # Accept [B,T], [B,T,1], or [B,T,S]; return one that broadcasts with [B,T,S]
+            if t.ndim == 2:
+                return t.unsqueeze(-1)                        # [B,T,1]
+            if t.ndim == 3:
+                return t                                      # [B,T,1] or [B,T,S]
+            raise RuntimeError(f"Unexpected param shape {tuple(t.shape)}")
 
         for cname, cp in zip(params["components"], comps):
             if cname in ("normal", "fixed_normal"):
-                mu, sigma = cp["mu"], cp["sigma"]                         # [B,T,1]
-                z = torch.randn(B, T, S, device=device, dtype=dtype)      # [B,T,S]
-                # broadcast via a single inserted axis; then drop it -> [B,T,S]
-                y = (mu + sigma * z.unsqueeze(-2)).squeeze(-2)
+                mu    = _bt_1_to_bts(cp["mu"])               # [B,T,1] or [B,T,S]
+                sigma = _bt_1_to_bts(cp["sigma"])            # [B,T,1] or [B,T,S]
+                z = torch.randn(B, T, S, device=device, dtype=dtype)             # [B,T,S]
+                y = mu + sigma * z                                             # -> [B,T,S]
 
             elif cname == "student_t":
-                mu, scale, df = cp["mu"], cp["scale"], cp["df"]           # [B,T,1]
-                z = torch.randn(B, T, S, device=device, dtype=dtype)      # [B,T,S]
+                mu    = _bt_1_to_bts(cp["mu"])
+                scale = _bt_1_to_bts(cp["scale"])
+                df    = _bt_1_to_bts(cp["df"])                                  # [B,T,1] or [B,T,S]
+                z = torch.randn(B, T, S, device=device, dtype=dtype)             # [B,T,S]
                 gamma = torch.distributions.Gamma(
-                    concentration=df / 2.0,   # [B,T,1]
-                    rate=torch.tensor(0.5, device=device, dtype=dtype)
+                    concentration=df / 2.0,
+                    rate=torch.tensor(0.5, device=device, dtype=dtype),
                 )
-                # U: [S,B,T,1] -> [B,T,S]
-                U = gamma.rsample(sample_shape=(S,)).permute(1, 2, 0, 3).squeeze(-1)
-                t0 = z * torch.sqrt(df.expand_as(U) / U)                  # [B,T,S]
-                y  = (mu + scale * t0.unsqueeze(-2)).squeeze(-2)          # [B,T,S]
+                # Gamma.rsample((S,)) -> [S,B,T,1] (broadcasted), permute -> [B,T,S]
+                U = gamma.rsample(sample_shape=(S,)).permute(1, 2, 0, 3).squeeze(-1)  # [B,T,S]
+                t0 = z * torch.sqrt(df.expand_as(U) / U)                               # [B,T,S]
+                y  = mu + scale * t0                                                   # [B,T,S]
 
             elif cname == "log_normal":
-                mu, sigma = cp["mu"], cp["sigma"]                         # [B,T,1]
-                z  = torch.randn(B, T, S, device=device, dtype=dtype)     # [B,T,S]
-                # **FIXED**: force broadcast with a single extra axis, then squeeze
-                ln = (mu + sigma * z.unsqueeze(-2)).squeeze(-2)           # [B,T,S]
-                y  = torch.exp(ln)                                        # [B,T,S]
+                mu    = _bt_1_to_bts(cp["mu"])
+                sigma = _bt_1_to_bts(cp["sigma"])
+                z = torch.randn(B, T, S, device=device, dtype=dtype)             # [B,T,S]
+                ln = mu + sigma * z                                              # **no unsqueeze on z**
+                y  = torch.exp(ln)                                               # [B,T,S]
 
             elif cname == "neg_binomial":
-                r, p = cp["r"], cp["p"]                                   # [B,T,1]
-                # torch NB uses success prob = p; mean = r*(1-p)/p (matches your predict mean)
-                nb = torch.distributions.NegativeBinomial(
-                    total_count=r,
-                    probs=p
-                )
-                # [S,B,T,1] -> [B,T,S]
-                y = nb.sample((S,)).permute(1, 2, 0, 3).squeeze(-1)
+                r = _bt_1_to_bts(cp["r"])                                        # [B,T,1] or [B,T,S]
+                p = _bt_1_to_bts(cp["p"])                                        # [B,T,1] or [B,T,S]
+                nb = torch.distributions.NegativeBinomial(total_count=r, probs=p)
+                y = nb.sample((S,)).permute(1, 2, 0, 3).squeeze(-1)              # [B,T,S]
 
             else:
                 raise NotImplementedError(f"component '{cname}' not implemented")
@@ -874,31 +868,23 @@ class MixtureOutputHead(BaseOutputHead):
                 raise RuntimeError(f"component '{cname}' produced {tuple(y.shape)}; expected {(B,T,S)}")
             samples_per_comp.append(y)
 
-        # Stack per-component samples -> [B,T,M,S]
+        # Stack per-component -> [B,T,M,S]
         Y_all = torch.stack(samples_per_comp, dim=2)
 
-        # Sample component index k for each [B,T,S]
-        cat = torch.distributions.Categorical(probs=w)          # probs [B,T,M]
-        k = cat.sample((S,)).permute(1, 2, 0)                   # [B,T,S]
+        # Draw component indices for each of the S MC samples -> [B,T,S]
+        cat = torch.distributions.Categorical(probs=w)           # probs [B,T,M]
+        k = cat.sample((S,)).permute(1, 2, 0)                    # [B,T,S]
 
-        # Gather along component dim (dim=2). Use [B,T,S,1] index on [B,T,S,M].
+        # Gather: work in [B,T,S,M] then pick last dim with k
         Y = torch.gather(
-            Y_all.permute(0, 1, 3, 2),                           # [B,T,S,M]
+            Y_all.permute(0, 1, 3, 2),                            # [B,T,S,M]
             dim=-1,
-            index=k.unsqueeze(-1)                                # [B,T,S,1]
-        ).squeeze(-1)                                           # -> [B,T,S]
+            index=k.unsqueeze(-1)                                 # [B,T,S,1]
+        ).squeeze(-1)                                            # -> [B,T,S]
 
         # Quantiles across S -> [B,T,Q] -> [B,T,1,Q]
-        qvals = torch.quantile(Y, q, dim=-1)                    # [B,T,Q]
-        out = qvals.unsqueeze(-2)                               # [B,T,1,Q]
-
-        if out.ndim != 4 or out.shape[-2] != 1 or out.shape[-1] != Q:
-            raise RuntimeError(f"sample_quantiles produced bad shape {tuple(out.shape)}; expected [B,T,1,{Q}]")
-
-        return out
-
-
-
+        qvals = torch.quantile(Y, q, dim=-1)                     # [B,T,Q]
+        return qvals.unsqueeze(-2)                               # [B,T,1,Q]
 
     # ---------- one-step sample for AR feedback ----------
     @torch.no_grad()
