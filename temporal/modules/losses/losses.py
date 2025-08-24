@@ -367,14 +367,23 @@ class NegativeLogLikelihoodLoss(BaseLoss):
     """
     Negative Log Likelihood (NLL) for probabilistic heads.
 
-    Supports:
-      - "gaussian"   : params concat [mu, log_sigma]   -> preds: [B,T,2F] or [B,2F]
-      - "student_t"  : params concat [mu, log_scale, log_df] -> preds: [B,T,3F] or [B,3F]
-      - "mixture"    : delegates to MixtureLoss (elementwise), then applies our reduction
+    Supports
+    --------
+    - distribution_type="gaussian":
+        preds: concatenated [mu, log_sigma] with shape [B,T,2F] or [B,2F]
+        targets: [B,T,F] or [B,T] (univariate) or [B,F] with T==1
+    - distribution_type="student_t":
+        preds: concatenated [mu, log_scale, log_df] with shape [B,T,3F] or [B,3F]
+        targets: as above
+    - distribution_type="mixture":
+        preds: Dict returned by MixtureOutputHead (univariate MDN)
+               This class delegates elementwise NLL to MixtureLoss(reduction="none"),
+               then applies the usual mask+reduction here.
 
-    Shapes:
-      targets: [B,T,F] (multivariate) or [B,T] (univariate)
-      loss_mask: [B,T] or [B,T,F] (we expand/broadcast as needed in _apply_reduction)
+    Masking & Reduction
+    -------------------
+    - loss_mask may be [B,T] or [B,T,F]; broadcasting is handled by BaseLoss._apply_reduction.
+    - final reduction is controlled by `reduction` ("mean" | "sum" | "none").
     """
 
     def __init__(
@@ -382,19 +391,19 @@ class NegativeLogLikelihoodLoss(BaseLoss):
         distribution_type: str,
         reduction: str = "mean",
 
-        # --- Gaussian clamps ---
+        # Gaussian clamps
         min_log_sigma: float = -20.0,
         max_log_sigma: float =  20.0,
 
-        # --- Student-t clamps/floors ---
+        # Student-t clamps/floors
         min_log_scale: float = -7.0,
         max_log_scale: float =  5.0,
         min_log_df: float    = -2.0,
         max_log_df: float    =  6.0,
-        sigma_floor: float   = 1e-4,   # min scale after exp()
-        df_floor: float      = 1.001,  # ensure mean exists; set >2.0 if you need finite variance
+        sigma_floor: float   = 1e-4,   # minimum positive scale after exp()
+        df_floor: float      = 1.001,  # ensure mean exists; use >2.0 if you require finite variance
 
-        # --- Mixture passthrough params (kept from your original) ---
+        # Mixture passthrough knobs (kept for compatibility)
         min_df: float = 2.0,
         fixed_sigma: float = 1e-3,
 
@@ -402,79 +411,120 @@ class NegativeLogLikelihoodLoss(BaseLoss):
     ):
         super().__init__(reduction=reduction)
         self.distribution_type = distribution_type.lower().strip()
+
+        # Gaussian settings
+        self.min_log_sigma = float(min_log_sigma)
+        self.max_log_sigma = float(max_log_sigma)
+
+        # Student-t settings
+        self.min_log_scale = float(min_log_scale)
+        self.max_log_scale = float(max_log_scale)
+        self.min_log_df    = float(min_log_df)
+        self.max_log_df    = float(max_log_df)
+        self.sigma_floor   = float(sigma_floor)
+        self.df_floor      = float(df_floor)
+
+        # Mixture loss delegate (elementwise); we apply reduction here
         self.mixture_loss_fn = None
-
-        if self.distribution_type == "gaussian":
-            self.min_log_sigma = float(min_log_sigma)
-            self.max_log_sigma = float(max_log_sigma)
-
-        elif self.distribution_type == "student_t":
-            self.min_log_scale = float(min_log_scale)
-            self.max_log_scale = float(max_log_scale)
-            self.min_log_df    = float(min_log_df)
-            self.max_log_df    = float(max_log_df)
-            self.sigma_floor   = float(sigma_floor)
-            self.df_floor      = float(df_floor)
-
-        elif self.distribution_type == "mixture":
-            # Ensure MixtureLoss returns elementwise NLL; we apply final reduction here.
+        if self.distribution_type == "mixture":
+            if MixtureLoss is None:
+                raise ImportError(
+                    "MixtureLoss could not be imported; ensure it is available under "
+                    "`temporal.modules.losses.losses.MixtureLoss`."
+                )
             self.mixture_loss_fn = MixtureLoss(
                 reduction="none",
                 min_df=min_df,
                 fixed_sigma=fixed_sigma,
             )
-        else:
+
+        if self.distribution_type not in {"gaussian", "student_t", "mixture"}:
             raise ValueError(
-                f"Unsupported distribution_type: {distribution_type!r}. "
-                "Supported: 'gaussian', 'student_t', 'mixture'."
+                f"Unsupported distribution_type={distribution_type!r}. "
+                "Choose from: 'gaussian', 'student_t', 'mixture'."
             )
 
-    # ------------------------- utils -------------------------
+    # ------------------------- shape helpers -------------------------
 
     @staticmethod
     def _ensure_btfx2(preds: torch.Tensor) -> torch.Tensor:
-        # Accept [B,2F] or [B,T,2F] -> return [B,T,F,2]
+        """
+        Gaussian params to [B,T,F,2] from [B,2F] or [B,T,2F].
+        """
         if preds.ndim == 2:
             B, twoF = preds.shape
+            if twoF % 2 != 0:
+                raise ValueError(f"Gaussian preds last dim must be 2F, got {twoF}.")
             F = twoF // 2
             return preds.unsqueeze(1).view(B, 1, F, 2)
-        elif preds.ndim == 3:
+        if preds.ndim == 3:
             B, T, twoF = preds.shape
+            if twoF % 2 != 0:
+                raise ValueError(f"Gaussian preds last dim must be 2F, got {twoF}.")
             F = twoF // 2
             return preds.view(B, T, F, 2)
-        else:
-            raise ValueError(f"Gaussian preds must be 2D or 3D, got {preds.ndim}D")
+        raise ValueError(f"Gaussian preds must be 2D or 3D, got shape {tuple(preds.shape)}")
 
     @staticmethod
     def _ensure_btfx3(preds: torch.Tensor) -> torch.Tensor:
-        # Accept [B,3F] or [B,T,3F] -> return [B,T,F,3]
+        """
+        Student-t params to [B,T,F,3] from [B,3F] or [B,T,3F].
+        """
         if preds.ndim == 2:
             B, threeF = preds.shape
+            if threeF % 3 != 0:
+                raise ValueError(f"Student-t preds last dim must be 3F, got {threeF}.")
             F = threeF // 3
             return preds.unsqueeze(1).view(B, 1, F, 3)
-        elif preds.ndim == 3:
+        if preds.ndim == 3:
             B, T, threeF = preds.shape
+            if threeF % 3 != 0:
+                raise ValueError(f"Student-t preds last dim must be 3F, got {threeF}.")
             F = threeF // 3
             return preds.view(B, T, F, 3)
-        else:
-            raise ValueError(f"Student-t preds must be 2D or 3D, got {preds.ndim}D")
+        raise ValueError(f"Student-t preds must be 2D or 3D, got shape {tuple(preds.shape)}")
 
     @staticmethod
-    def _match_target_shape(targets: torch.Tensor, feature_dim: int, time_dim: int) -> torch.Tensor:
+    def _match_target_shape(targets: torch.Tensor, *, F: int, T: int) -> torch.Tensor:
         """
-        Ensure targets shape aligns with [B,T,F] for elementwise NLL.
-        Accepts [B,T] (univariate) / [B,T,F] / [B,F] with T==1.
+        Normalize targets to [B,T,F].
+
+        Accepts:
+          - [B,T] (univariate)  -> [B,T,1] if F==1
+          - [B,T,F]             -> as-is
+          - [B,F] with T==1     -> [B,1,F]
         """
-        if targets.ndim == 2 and feature_dim == 1:     # [B,T], univariate
-            return targets.unsqueeze(-1)               # -> [B,T,1]
-        if targets.ndim == 3:                          # [B,T,F]
+        if targets.ndim == 3:
+            if targets.size(-1) != F:
+                raise ValueError(f"Targets feature dim {targets.size(-1)} != F={F}.")
+            if targets.size(1) != T and T != 1:
+                # We allow mismatch only when T==1 (broadcasting single step)
+                raise ValueError(f"Targets time dim {targets.size(1)} != T={T}.")
             return targets
-        if targets.ndim == 2 and time_dim == 1:        # [B,F] with T==1
-            return targets.unsqueeze(1)                # -> [B,1,F]
-        raise ValueError(
-            f"Incompatible targets shape {targets.shape}; expected [B,T,F] or [B,T] "
-            f"(univariate) or [B,F] with T==1."
-        )
+
+        if targets.ndim == 2:
+            B, dim = targets.shape
+            if F == 1:              # univariate => [B,T] or [B,1]
+                if dim == T:        # [B,T] → [B,T,1]
+                    return targets.unsqueeze(-1)
+                if dim == 1:        # [B,1] → [B,1,1]
+                    return targets.unsqueeze(-1)
+                raise ValueError(f"Univariate target expected [B,T] or [B,1], got [B,{dim}]")
+            # Multivariate: allow [B,F] with T==1
+            if dim == F and T == 1:
+                return targets.unsqueeze(1)  # [B,1,F]
+            raise ValueError(f"Incompatible targets shape {tuple(targets.shape)} for F={F}, T={T}.")
+
+        raise ValueError(f"Incompatible targets shape {tuple(targets.shape)}; expected [B,T,F] or [B,T] or [B,F] with T==1.")
+
+    @staticmethod
+    def _squeeze_univariate_bt1(targets: torch.Tensor) -> torch.Tensor:
+        """
+        For univariate mixture loss: convert [B,T,1] -> [B,T]. If already [B,T], pass through.
+        """
+        if targets.ndim == 3 and targets.size(-1) == 1:
+            return targets.squeeze(-1)
+        return targets
 
     # ------------------------- forward -------------------------
 
@@ -484,18 +534,29 @@ class NegativeLogLikelihoodLoss(BaseLoss):
         targets: torch.Tensor,
         loss_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """
+        Compute NLL with mask+reduction.
 
+        Parameters
+        ----------
+        preds   : Tensor or Dict
+            - Gaussian/Student-t: concatenated parameter tensor.
+            - Mixture: dict from MixtureOutputHead (univariate).
+        targets : Tensor
+            Ground-truth values. See helpers for accepted shapes.
+        loss_mask : Optional[Tensor]
+            Optional [B,T] or [B,T,F] mask; broadcast handled in BaseLoss._apply_reduction.
+        """
         if self.distribution_type == "gaussian":
-            # preds_reshaped: [B,T,F,2]  -> [...,0]=mu, [...,1]=log_sigma
-            preds_reshaped = self._ensure_btfx2(preds)
-            mu = preds_reshaped[..., 0]
-            log_sigma = preds_reshaped[..., 1].clamp(min=self.min_log_sigma, max=self.max_log_sigma)
+            p = self._ensure_btfx2(preds)  # [B,T,F,2]
+            mu        = p[..., 0]
+            log_sigma = p[..., 1].clamp(min=self.min_log_sigma, max=self.max_log_sigma)
             B, T, F = mu.shape
 
-            targets_exp = self._match_target_shape(targets, feature_dim=F, time_dim=T)
+            y = self._match_target_shape(targets, F=F, T=T)  # [B,T,F]
 
             inv_sigma_sq = torch.exp(-2.0 * log_sigma)
-            sq_err = (targets_exp - mu) ** 2
+            sq_err = (y - mu) ** 2
 
             elementwise_nll = (
                 0.5 * sq_err * inv_sigma_sq
@@ -505,51 +566,47 @@ class NegativeLogLikelihoodLoss(BaseLoss):
 
             return self._apply_reduction(elementwise_nll, loss_mask)
 
-        elif self.distribution_type == "student_t":
-            # preds_reshaped: [B,T,F,3] -> mu, log_scale, log_df
-            preds_reshaped = self._ensure_btfx3(preds)
-            mu         = preds_reshaped[..., 0]
-            log_scale  = preds_reshaped[..., 1].clamp(min=self.min_log_scale, max=self.max_log_scale)
-            log_df     = preds_reshaped[..., 2].clamp(min=self.min_log_df,    max=self.max_log_df)
+        if self.distribution_type == "student_t":
+            p = self._ensure_btfx3(preds)  # [B,T,F,3]
+            mu        = p[..., 0]
+            log_scale = p[..., 1].clamp(min=self.min_log_scale, max=self.max_log_scale)
+            log_df    = p[..., 2].clamp(min=self.min_log_df,    max=self.max_log_df)
             B, T, F = mu.shape
 
-            targets_exp = self._match_target_shape(targets, feature_dim=F, time_dim=T)
+            y = self._match_target_shape(targets, F=F, T=T)   # [B,T,F]
 
-            # Convert to positive scale & df with floors
-            scale = torch.exp(log_scale).clamp_min(self.sigma_floor)     # [B,T,F]
-            nu    = torch.exp(log_df) + self.df_floor                    # [B,T,F]
+            scale = torch.exp(log_scale).clamp_min(self.sigma_floor)  # [B,T,F]
+            nu    = torch.exp(log_df) + self.df_floor                 # [B,T,F]
 
-            # log pdf of Student's t:
-            # log Γ((ν+1)/2) − log Γ(ν/2) − 0.5*log(νπ) − log s − ((ν+1)/2)*log(1 + ((y-μ)^2)/(ν s^2))
-            z2 = ((targets_exp - mu) / scale) ** 2                        # (y-μ)^2 / s^2
+            # log pdf of Student's t (elementwise)
+            z2 = ((y - mu) / scale) ** 2
             log_base = (
                 torch.lgamma((nu + 1.0) / 2.0)
                 - torch.lgamma(nu / 2.0)
                 - 0.5 * (torch.log(nu) + math.log(math.pi))
                 - torch.log(scale)
             )
-            log_arg = torch.log1p(z2 / nu)                                # log(1 + z2/nu)
-            log_prob = log_base - ((nu + 1.0) / 2.0) * log_arg            # [B,T,F]
-            elementwise_nll = -log_prob                                   # [B,T,F]
+            log_prob = log_base - 0.5 * (nu + 1.0) * torch.log1p(z2 / nu)
+            elementwise_nll = -log_prob  # [B,T,F]
 
             return self._apply_reduction(elementwise_nll, loss_mask)
 
-        elif self.distribution_type == "mixture":
-            if not isinstance(preds, dict):
-                raise TypeError("For 'mixture' distribution_type, preds must be a Dict from MixtureOutputHead.")
-            if self.mixture_loss_fn is None:
-                raise RuntimeError("MixtureLoss not initialized for 'mixture' distribution_type.")
+        # mixture
+        if not isinstance(preds, dict):
+            raise TypeError("For 'mixture' distribution_type, preds must be a Dict from MixtureOutputHead.")
+        if self.mixture_loss_fn is None:
+            raise RuntimeError("MixtureLoss not initialized for 'mixture' distribution_type.")
 
-            elementwise_nll = self.mixture_loss_fn(
-                preds=preds,
-                targets=targets,
-                loss_mask=None,  # masking & reduction are handled by _apply_reduction
-            )
-            return self._apply_reduction(elementwise_nll, loss_mask)
+        # MixtureOutputHead is univariate; ensure targets are [B,T], not [B,T,1].
+        t = self._squeeze_univariate_bt1(targets)
+        # Delegate to MixtureLoss to get elementwise [B,T] (or [B,T,1]) NLL
+        elementwise = self.mixture_loss_fn(preds=preds, targets=t, loss_mask=None)
 
-        else:
-            raise ValueError(f"Internal error: unhandled distribution_type {self.distribution_type!r}")
+        # If mixture loss returns [B,T,1], make it [B,T,1] consistently for reduction.
+        if elementwise.ndim == 2:
+            elementwise = elementwise.unsqueeze(-1)  # [B,T] -> [B,T,1]
 
+        return self._apply_reduction(elementwise, loss_mask)
 
 import math
 from typing import Optional
