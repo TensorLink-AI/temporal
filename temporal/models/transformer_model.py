@@ -374,11 +374,11 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         # Step 7: Build a tensor for `logits` to return and denormalize for convenience.
         #         If the head returns a dict (e.g., DistPred), we convert to a point forecast first.
         #point_logits = self._point_from_head_out(head_out)     # always a Tensor now
-        final_logits = self.preprocessor.denormalize( logits)
+        #final_logits = self.preprocessor.denormalize( logits)
 
         return TransformerOutput(
             loss=loss,
-            logits=final_logits,
+            logits=logits,
             aux_loss=total_aux_loss,
             past_key_values=decoder_outputs.past_key_values if decoder_outputs else None,
             decoder_hidden_states=decoder_outputs.hidden_states if decoder_outputs else None,
