@@ -339,13 +339,7 @@ class QuantileRegressionOutputHead(BaseOutputHead):
 # =========================
 # DistPred (Path-based)
 # =========================
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Union, List, Dict, Tuple
 
-from temporal.registry.core import register_module
-from temporal.modules.heads.base_output_head import BaseOutputHead
 
 
 @register_module("output_head", "distpred")
