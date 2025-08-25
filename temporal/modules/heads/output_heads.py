@@ -612,46 +612,67 @@ class DistPredHead(BaseOutputHead):
 # Mixture (MDN)
 # =========================
 
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Dict, List, Tuple, Optional, Union, Any, Callable
-
-# from temporal.modules.registry import register_module   # keep your existing import
-# from temporal.modules.heads.base import BaseOutputHead  # keep your existing import
-
-
 @register_module("output_head", "mixture")
 class MixtureOutputHead(BaseOutputHead):
     """
     Univariate Mixture Density head (heterogeneous components supported).
-    forward(...) -> dict of params (same keys as your original)
-    predict(...) -> mixture mean [B,T,1]
-    sample(...)  -> one-step sample   [B,1,1]
-    sample_quantiles(...) -> MC quantiles [B,T,1,Q] (post-loop friendly)
+
+    forward(...) -> dict with keys:
+        {
+          'components': List[str]             # canonical names, e.g. ['normal','student_t']
+          'mixture_logits': [B,T,M]           # M = number of components
+          '<param_keys>': tensors per component param (see DIST_OUTPUT_KEYS)
+        }
+
+    predict(...)          -> mixture mean [B,T,1]
+    sample(...)           -> one-step sample [B,1,1]
+    sample_quantiles(...) -> MC quantiles   [B,T,1,Q]
     """
 
+    # Canonical registry of component param counts and output key names
     DIST_PARAM_COUNTS = {
-        "student_t": {"df": 1, "mu": 1, "scale": 1},
-        "log_normal": {"mu": 1, "sigma": 1},
+        "normal":       {"mu": 1, "sigma": 1},
+        "fixed_normal": {"mu": 1},
+        "student_t":    {"df": 1, "mu": 1, "scale": 1},
+        "log_normal":   {"mu": 1, "sigma": 1},
         "neg_binomial": {"r": 1, "p": 1},
-        "guassian": {"mu": 1, "sigma": 1},
-        "fixed_normal": {"mu": 1}
     }
     DIST_OUTPUT_KEYS = {
-        "student_t": {"df": "student_df", "mu": "student_mu", "scale": "student_scale"},
-        "log_normal": {"mu": "lognorm_mu", "sigma": "lognorm_sigma"},
-        "neg_binomial": {"r": "nb_r", "p": "nb_p"},
-        "guassian": {"mu": "normal_mu", "sigma": "normal_sigma"},
-        "fixed_normal": {"mu": "normal_mu"}
+        "normal":       {"mu": "normal_mu",   "sigma": "normal_sigma"},
+        "fixed_normal": {"mu": "normal_mu"},
+        "student_t":    {"df": "student_df",  "mu": "student_mu",  "scale": "student_scale"},
+        "log_normal":   {"mu": "lognorm_mu",  "sigma": "lognorm_sigma"},
+        "neg_binomial": {"r": "nb_r",         "p": "nb_p"},
     }
+
+    # Friendly aliases accepted in configs
+    _ALIASES = {
+        # Gaussian
+        "gaussian": "normal", "gauss": "normal", "normal": "normal",
+        # Log-normal
+        "lognormal": "log_normal", "log_norm": "log_normal", "log-normal": "log_normal",
+        # Student-t
+        "studentt": "student_t", "student_t": "student_t", "student-t": "student_t", "t": "student_t",
+        # NegBin
+        "negativebinomial": "neg_binomial", "negative_binomial": "neg_binomial", "neg-binomial": "neg_binomial",
+        "nb": "neg_binomial",
+        # Fixed Normal
+        "fixednormal": "fixed_normal", "fixed_normal": "fixed_normal", "fixed-normal": "fixed_normal",
+    }
+
+    @staticmethod
+    def _canon(name: str) -> str:
+        key = name.strip().lower().replace(" ", "").replace("-", "_")
+        return MixtureOutputHead._ALIASES.get(key, key)
 
     def __init__(self, hidden_size: int, components: List[str], **kwargs):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.components = components
-        self.num_components = len(components)
+        self.hidden_size = int(hidden_size)
+
+        # Canonicalize component names up front
+        self.components_raw = list(components)
+        self.components = [self._canon(c) for c in components]
+        self.num_components = len(self.components)
         if self.num_components <= 0:
             raise ValueError("MixtureOutputHead requires at least one component.")
 
@@ -659,29 +680,36 @@ class MixtureOutputHead(BaseOutputHead):
         if self.feature_size != 1:
             raise NotImplementedError("This MDN is univariate (feature_size=1).")
 
-        # Build flat projection size
+        # Validate & compute flat projection layout
         total_params_dim = 0
         self.param_indices: Dict[str, Tuple[int, int]] = {}
         cur = 0
         for dist_name in self.components:
             if dist_name not in self.DIST_PARAM_COUNTS:
-                raise ValueError(f"Unknown component '{dist_name}'.")
+                known = ", ".join(sorted(self.DIST_PARAM_COUNTS.keys()))
+                raise ValueError(
+                    f"Unknown component '{dist_name}'. Known: [{known}]. "
+                    f"Accepted aliases include {sorted(set(self._ALIASES.keys()))}"
+                )
             for pkey, cnt in self.DIST_PARAM_COUNTS[dist_name].items():
                 out_key = self.DIST_OUTPUT_KEYS[dist_name][pkey]
                 self.param_indices[out_key] = (cur, cur + cnt)
                 cur += cnt
                 total_params_dim += cnt
+
+        # Reserve space for mixture logits
         self.mixture_logits_indices = (cur, cur + self.num_components)
         total_params_dim += self.num_components
 
-        self.output_projection = nn.Linear(hidden_size, total_params_dim)
+        # Projection layer
+        self.output_projection = nn.Linear(self.hidden_size, total_params_dim)
         if "output_size" in kwargs and kwargs["output_size"] != total_params_dim:
             raise ValueError(
-                f"MixtureOutputHead: provided output_size={kwargs['output_size']} "
-                f"!= derived={total_params_dim}"
+                f"MixtureOutputHead: provided output_size={kwargs['output_size']} != derived={total_params_dim}"
             )
 
-    # ---------- helpers ----------
+    # -------- helpers --------
+
     def _weights(self, params: Dict[str, torch.Tensor], *, temperature: float = 1.0, top_p: Optional[float] = None) -> torch.Tensor:
         """Return mixture weights w: [B,T,M]."""
         logits = params["mixture_logits"]  # [B,T,M] (preferred) or [B,1,M] or [B,M]
@@ -694,9 +722,9 @@ class MixtureOutputHead(BaseOutputHead):
     def _as_bt1(self, t: torch.Tensor) -> torch.Tensor:
         """Ensure [B,T,1]. Accept [B,T], [B,1], [B] -> broadcast to [B,T,1] as needed."""
         if t.ndim == 3:
-            return t  # [B,T,1]
+            return t
         if t.ndim == 2:
-            return t.unsqueeze(-1)  # [B,T] -> [B,T,1]
+            return t.unsqueeze(-1)
         if t.ndim == 1:
             return t.view(t.size(0), 1, 1)
         raise ValueError(f"Unexpected tensor shape {tuple(t.shape)}")
@@ -737,12 +765,18 @@ class MixtureOutputHead(BaseOutputHead):
             out.append(cp)
         return out
 
-    # ---------- forward / predict ----------
+    # -------- API --------
+
     def forward(self, x: torch.Tensor) -> Dict[str, Union[torch.Tensor, List[str]]]:
+        """
+        x: [B, T, H] -> dict with canonical component names and flat params mapped to keys.
+        """
         flat = self.output_projection(x)  # [B,T,Dp]
         out: Dict[str, Union[torch.Tensor, List[str]]] = {"components": self.components}
+
         s, e = self.mixture_logits_indices
         out["mixture_logits"] = flat[..., s:e]  # [B,T,M]
+
         seen = set()
         for dist_name in self.components:
             for pkey in self.DIST_PARAM_COUNTS[dist_name]:
@@ -753,6 +787,7 @@ class MixtureOutputHead(BaseOutputHead):
                 t = flat[..., a:b]                     # [B,T,1] (or [B,T] if cnt==1 then squeeze below)
                 out[out_key] = t.squeeze(-1) if t.shape[-1] == 1 else t
                 seen.add(out_key)
+
         return out
 
     def predict(self, params: Dict[str, torch.Tensor], method: str = "mean") -> torch.Tensor:
@@ -761,15 +796,17 @@ class MixtureOutputHead(BaseOutputHead):
             raise ValueError("MixtureOutputHead.predict supports 'mean' or 'median'.")
         w = self._weights(params)                                    # [B,T,M]
         comps = self._get_params_per_component(params)               # list of {param:[B,T,1]}
+
         means = []
         for cname, cp in zip(params["components"], comps):
             if cname in ("normal", "fixed_normal", "student_t"):
-                means.append(cp["mu"])                               # [B,T,1]
+                means.append(cp["mu"])
             elif cname == "log_normal":
                 means.append(torch.exp(cp["mu"] + 0.5 * cp["sigma"]**2))
             elif cname == "neg_binomial":
                 r, p = cp["r"], cp["p"]
                 means.append(r * (1 - p) / p)
+
         mean = torch.zeros_like(means[0])
         for j, m in enumerate(means):
             mean = mean + w[..., j:j+1] * m                          # [B,T,1]
@@ -802,9 +839,7 @@ class MixtureOutputHead(BaseOutputHead):
         Q = int(q.numel())
 
         # Mixture weights [B,T,M]
-        w = self._weights(params, temperature=temperature, top_p=top_p)
-        if w.shape != (B, T, M):
-            raise RuntimeError(f"weights shape mismatch: expected {(B,T,M)}, got {tuple(w.shape)}")
+        w = self._weights(params, temperature=temperature, top_p=top_p)  # [B,T,M]
 
         comps = self._get_params_per_component(params, min_std=min_std)  # each param ~ [B,T,1]
         if len(comps) != M:
@@ -813,9 +848,8 @@ class MixtureOutputHead(BaseOutputHead):
         S = int(num_mc)
         samples_per_comp: List[torch.Tensor] = []
 
-        # Helper: ensure param tensors broadcast with [B,T,S] without creating extra dims
-        def _bt_1_to_bts(t: torch.Tensor) -> torch.Tensor:
-            # Accept [B,T], [B,T,1], or [B,T,S]; return one that broadcasts with [B,T,S]
+        def _bt1_to_bts(t: torch.Tensor) -> torch.Tensor:
+            # Accept [B,T], [B,T,1], or [B,T,S]; return that broadcasts with [B,T,S]
             if t.ndim == 2:
                 return t.unsqueeze(-1)                        # [B,T,1]
             if t.ndim == 3:
@@ -824,37 +858,34 @@ class MixtureOutputHead(BaseOutputHead):
 
         for cname, cp in zip(params["components"], comps):
             if cname in ("normal", "fixed_normal"):
-                mu    = _bt_1_to_bts(cp["mu"])               # [B,T,1] or [B,T,S]
-                sigma = _bt_1_to_bts(cp["sigma"])            # [B,T,1] or [B,T,S]
-                z = torch.randn(B, T, S, device=device, dtype=dtype)             # [B,T,S]
-                y = mu + sigma * z                                             # -> [B,T,S]
+                mu    = _bt1_to_bts(cp["mu"])
+                sigma = _bt1_to_bts(cp["sigma"])
+                z = torch.randn(B, T, S, device=device, dtype=dtype)          # [B,T,S]
+                y = mu + sigma * z                                            # [B,T,S]
 
             elif cname == "student_t":
-                mu    = _bt_1_to_bts(cp["mu"])
-                scale = _bt_1_to_bts(cp["scale"])
-                df    = _bt_1_to_bts(cp["df"])                                  # [B,T,1] or [B,T,S]
-                z = torch.randn(B, T, S, device=device, dtype=dtype)             # [B,T,S]
-                gamma = torch.distributions.Gamma(
-                    concentration=df / 2.0,
-                    rate=torch.tensor(0.5, device=device, dtype=dtype),
-                )
-                # Gamma.rsample((S,)) -> [S,B,T,1] (broadcasted), permute -> [B,T,S]
+                mu    = _bt1_to_bts(cp["mu"])
+                scale = _bt1_to_bts(cp["scale"])
+                df    = _bt1_to_bts(cp["df"])
+                z = torch.randn(B, T, S, device=device, dtype=dtype)          # [B,T,S]
+                gamma = torch.distributions.Gamma(concentration=df / 2.0,
+                                                  rate=torch.tensor(0.5, device=device, dtype=dtype))
                 U = gamma.rsample(sample_shape=(S,)).permute(1, 2, 0, 3).squeeze(-1)  # [B,T,S]
-                t0 = z * torch.sqrt(df.expand_as(U) / U)                               # [B,T,S]
-                y  = mu + scale * t0                                                   # [B,T,S]
+                t0 = z * torch.sqrt(df.expand_as(U) / U)                              # [B,T,S]
+                y  = mu + scale * t0                                                  # [B,T,S]
 
             elif cname == "log_normal":
-                mu    = _bt_1_to_bts(cp["mu"])
-                sigma = _bt_1_to_bts(cp["sigma"])
-                z = torch.randn(B, T, S, device=device, dtype=dtype)             # [B,T,S]
-                ln = mu + sigma * z                                              # **no unsqueeze on z**
-                y  = torch.exp(ln)                                               # [B,T,S]
+                mu    = _bt1_to_bts(cp["mu"])
+                sigma = _bt1_to_bts(cp["sigma"])
+                z = torch.randn(B, T, S, device=device, dtype=dtype)          # [B,T,S]
+                ln = mu + sigma * z                                           # [B,T,S]
+                y  = torch.exp(ln)                                            # [B,T,S]
 
             elif cname == "neg_binomial":
-                r = _bt_1_to_bts(cp["r"])                                        # [B,T,1] or [B,T,S]
-                p = _bt_1_to_bts(cp["p"])                                        # [B,T,1] or [B,T,S]
+                r = _bt1_to_bts(cp["r"])                                      # [B,T,1]
+                p = _bt1_to_bts(cp["p"])                                      # [B,T,1]
                 nb = torch.distributions.NegativeBinomial(total_count=r, probs=p)
-                y = nb.sample((S,)).permute(1, 2, 0, 3).squeeze(-1)              # [B,T,S]
+                y = nb.sample((S,)).permute(1, 2, 0, 3).squeeze(-1)           # [B,T,S]
 
             else:
                 raise NotImplementedError(f"component '{cname}' not implemented")
@@ -866,11 +897,11 @@ class MixtureOutputHead(BaseOutputHead):
         # Stack per-component -> [B,T,M,S]
         Y_all = torch.stack(samples_per_comp, dim=2)
 
-        # Draw component indices for each of the S MC samples -> [B,T,S]
-        cat = torch.distributions.Categorical(probs=w)           # probs [B,T,M]
+        # Draw component index for each of the S MC samples -> [B,T,S]
+        cat = torch.distributions.Categorical(probs=w)           # [B,T,M]
         k = cat.sample((S,)).permute(1, 2, 0)                    # [B,T,S]
 
-        # Gather: work in [B,T,S,M] then pick last dim with k
+        # Gather: pick per-sample component
         Y = torch.gather(
             Y_all.permute(0, 1, 3, 2),                            # [B,T,S,M]
             dim=-1,
@@ -878,14 +909,9 @@ class MixtureOutputHead(BaseOutputHead):
         ).squeeze(-1)                                            # -> [B,T,S]
 
         # Quantiles across S -> [B,T,Q] -> [B,T,1,Q]
-        qs = [float(v) for v in quantile_levels]                 # ensure scalars
-        q_slices = [torch.quantile(Y, v, dim=-1) for v in qs]    # each [B,T]
-        qvals = torch.stack(q_slices, dim=-1)                    # [B,T,Q]
+        qvals = torch.quantile(Y, q.view(1, 1, -1), dim=-1)      # [B,T,Q]
+        return qvals.unsqueeze(-2)                                # [B,T,1,Q]
 
-        # Final shape for bundle consistency
-        return qvals.unsqueeze(-2)                               # [B,T,1,Q]
-
-    # ---------- one-step sample for AR feedback ----------
     @torch.no_grad()
     def sample(
         self,
@@ -919,7 +945,7 @@ class MixtureOutputHead(BaseOutputHead):
         def _last(t):  # [B,*,1] -> [B,1,1]
             return t[:, -1:, :] if t.size(1) > 1 else t
 
-        out = torch.empty(B, 1, 1, device=device, dtype=dtype)  # [B,1,1]
+        out = torch.empty(B, 1, 1, device=device, dtype=dtype)
         for i in range(B):
             cname = params["components"][k[i].item()]
             cp = comps[k[i].item()]
@@ -938,7 +964,7 @@ class MixtureOutputHead(BaseOutputHead):
                 out[i:i+1] = torch.exp(ln)
             elif cname == "neg_binomial":
                 total_count = _last(cp["r"])[i:i+1].clamp_min(1e-6)
-                probs = 1.0 - _last(cp["p"])[i:i+1]
+                probs = _last(cp["p"])[i:i+1]                               # <-- FIX: use p, not 1-p
                 nb = torch.distributions.NegativeBinomial(total_count=total_count, probs=probs)
                 out[i:i+1] = nb.sample()
             else:

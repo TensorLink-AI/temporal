@@ -75,20 +75,86 @@ class QuantileRegressionOutputHeadConfig(OutputHeadConfig):
             raise ValueError("feature_size must be a positive integer.")
 
 
+from dataclasses import dataclass, field
+from typing import List, Dict, Tuple
+from temporal.registry.core import register_config_type
+from temporal.configs.output_head_config import OutputHeadConfig  # whatever your base is
+
 @register_config_type("mixture_output_head")
 @dataclass(frozen=True, kw_only=True)
 class MixtureOutputHeadConfig(OutputHeadConfig):
     """
-    Configuration for a Mixture Density Network (MDN) output head.
+    Config for MixtureOutputHead (univariate MDN).
+    - `components`: list of component names; aliases are accepted and canonicalized.
+    - `feature_size`: kept for API parity; MixtureOutputHead is univariate and will
+      assert feature_size == 1.
     """
-    components: List[str] = field(default_factory=list) # ADDED: For MixtureOutputHead
+    components: List[str] = field(default_factory=list)
+    feature_size: int = 1
     type: str = field(default="mixture")
+
+    # ---- alias / validation tables (kept in sync with the head) ----
+    _ALIASES: Dict[str, str] = field(default_factory=lambda: {
+        # Gaussian
+        "gaussian": "normal", "gauss": "normal", "normal": "normal",
+        # Log-normal
+        "lognormal": "log_normal", "log_norm": "log_normal", "log-normal": "log_normal",
+        # Student-t
+        "studentt": "student_t", "student_t": "student_t", "student-t": "student_t", "t": "student_t",
+        # Negative Binomial
+        "negativebinomial": "neg_binomial", "negative_binomial": "neg_binomial",
+        "neg-binomial": "neg_binomial", "nb": "neg_binomial",
+        # Fixed Normal
+        "fixednormal": "fixed_normal", "fixed_normal": "fixed_normal", "fixed-normal": "fixed_normal",
+    }, init=False, repr=False)
+
+    _DIST_PARAM_COUNTS: Dict[str, Dict[str, int]] = field(default_factory=lambda: {
+        "normal":       {"mu": 1, "sigma": 1},
+        "fixed_normal": {"mu": 1},
+        "student_t":    {"df": 1, "mu": 1, "scale": 1},
+        "log_normal":   {"mu": 1, "sigma": 1},
+        "neg_binomial": {"r": 1, "p": 1},
+    }, init=False, repr=False)
 
     def __post_init__(self):
         super().__post_init__()
         if not self.components:
             raise ValueError("MixtureOutputHead requires at least one component.")
-        # Add validation for component names if necessary
+
+        # Canonicalize & validate
+        canon = []
+        for c in self.components:
+            key = c.strip().lower().replace(" ", "").replace("-", "_")
+            c2 = self._ALIASES.get(key, key)
+            if c2 not in self._DIST_PARAM_COUNTS:
+                known = ", ".join(sorted(self._DIST_PARAM_COUNTS.keys()))
+                raise ValueError(
+                    f"Unknown mixture component '{c}'. After normalization -> '{c2}'. "
+                    f"Known components: [{known}]."
+                )
+            canon.append(c2)
+
+        # write back canonical list (dataclass is frozen)
+        object.__setattr__(self, "components", canon)
+
+        if self.feature_size != 1:
+            raise NotImplementedError("MixtureOutputHead is currently univariate (feature_size must be 1).")
+
+    @property
+    def derived_output_size(self) -> int:
+        """
+        Total projection width the head needs:
+          sum(params_per_component) + num_components (for mixture logits).
+        """
+        total = self.num_components  # mixture logits
+        for c in self.components:
+            total += sum(self._DIST_PARAM_COUNTS[c].values())
+        return total
+
+    @property
+    def num_components(self) -> int:
+        return len(self.components)
+
 
 
 @register_config_type("timeflow_output_head")
