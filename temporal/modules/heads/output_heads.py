@@ -909,8 +909,11 @@ class MixtureOutputHead(BaseOutputHead):
         ).squeeze(-1)                                            # -> [B,T,S]
 
         # Quantiles across S -> [B,T,Q] -> [B,T,1,Q]
-        qvals = torch.quantile(Y, q.view(1, 1, -1), dim=-1)      # [B,T,Q]
-        return qvals.unsqueeze(-2)                                # [B,T,1,Q]
+        qs = [float(v) for v in quantile_levels]
+        q_slices = [torch.quantile(Y, v, dim=-1) for v in qs]  # each [B,T]
+        qvals = torch.stack(q_slices, dim=-1)                  # [B,T,Q]
+        return qvals.unsqueeze(-2)                             # [B,T,1,Q]
+
 
     @torch.no_grad()
     def sample(
