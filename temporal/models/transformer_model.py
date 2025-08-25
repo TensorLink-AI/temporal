@@ -328,7 +328,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             patch_size = self.preprocessor.patch_size 
             output_patch_size = getattr(self.preprocessor.value_embedding, 'output_patch_size', patch_size)
             d_model = self.config.d_model
-            input_to_heads = reconstructed_output.view(B, T_tok * output_patch_size, d_model)
+            input_to_heads = reconstructed_output.contiguous().view(B, T_tok * output_patch_size, d_model)
 
         # Step 4: Align head input with targets for loss calculation if needed.
         if (
@@ -347,7 +347,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         # Step 5: Project the final hidden states through the output head(s).
         logits = self.output_heads(input_to_heads)
         if self.head_aggregator is not None:
-            logits = self.head_aggregator(head_out)
+            logits = self.head_aggregator(logits)
 
         # Step 6: Calculate the loss if targets are provided.
         loss = None

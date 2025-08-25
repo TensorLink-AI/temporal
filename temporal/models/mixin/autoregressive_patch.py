@@ -443,29 +443,45 @@ class AutoregressivePatchMixin:
 
         # --------- Reconstruct native-time embeddings ---------
         all_patches = torch.cat(generated_patches, dim=1)  # [B, T_patch_out, D_latent]
-        recon = self.output_patch_reconstructor(all_patches)  # expected [B, T_patch_out, d_model]
+        recon = self.output_patch_reconstructor(all_patches)  # [B, T_patch_out, d_model] OR [B, T_patch_out, output_patch_size*d_model]
 
         if recon.ndim != 3:
-            raise RuntimeError(f"output_patch_reconstructor must return [B,T_patch,d_model], got {tuple(recon.shape)}")
+            raise RuntimeError(f"output_patch_reconstructor must return [B,T_patch,d_model] "
+                            f"or [B,T_patch,output_patch_size*d_model], got {tuple(recon.shape)}")
 
-        B2, T_patch_out, Dm = recon.shape
+        B2, T_patch_out, proj = recon.shape
         if B2 != B:
             raise RuntimeError(f"Reconstructor batch mismatch: expected {B}, got {B2}")
 
-        # Turn patches into per-time-step hidden states [B, T_native, d_model]
-        T_native = T_patch_out * patch_size
-        try:
-            # View assumes each patch expands to `patch_size` time-steps with the same Dm
-            head_inputs = recon.view(B, T_native, Dm)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to reshape reconstructed patches to [B,{T_native},{Dm}] "
-                f"using patch_size={patch_size}. Ensure your reconstructor outputs contiguous "
-                f"[B, T_patch, d_model] and that T_native=T_patch*patch_size. Error: {e}"
+        patch_size = int(getattr(self.preprocessor, "patch_size", 1))
+        output_patch_size = getattr(getattr(self.preprocessor, "value_embedding", object), "output_patch_size", patch_size)
+        d_model_cfg = getattr(self.config, "d_model", None)
+
+        # Case A: recon is already flattened (most common in your build)
+        if d_model_cfg is not None and proj == output_patch_size * d_model_cfg:
+            d_model = d_model_cfg
+            head_inputs = recon.contiguous().view(B, T_patch_out * output_patch_size, d_model)
+
+        # Case B: recon returns one vector per patch (rare / fallback)
+        elif d_model_cfg is not None and proj == d_model_cfg:
+            d_model = d_model_cfg
+            # Safest fallback: tile each patch vector across output_patch_size native steps
+            head_inputs = recon.unsqueeze(2).expand(B, T_patch_out, output_patch_size, d_model).reshape(
+                B, T_patch_out * output_patch_size, d_model
             )
+
+        # Case C: infer d_model when not in config
+        else:
+            if proj % output_patch_size != 0:
+                raise RuntimeError(
+                    f"Cannot infer d_model: recon.shape[-1]={proj} not divisible by output_patch_size={output_patch_size}."
+                )
+            d_model = proj // output_patch_size
+            head_inputs = recon.contiguous().view(B, T_patch_out * output_patch_size, d_model)
 
         # Trim to requested horizon
         head_inputs = head_inputs[:, :prediction_length, :]  # [B, T, d_model]
+
 
         # --------- Apply primary head on full horizon (get params) ---------
         primary_head = self._get_primary_head()
