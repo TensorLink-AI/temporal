@@ -611,15 +611,6 @@ class DistPredHead(BaseOutputHead):
 # =========================
 # Mixture (MDN)
 # =========================
-import math
-from typing import Dict, List, Optional, Union, Any, Tuple
-
-import torch
-import torch.nn.functional as F
-from torch import Tensor
-
-from temporal.registry.core import register_module
-from temporal.modules.losses.base_loss import BaseLoss
 
 
 @register_module("loss", "mixture")
