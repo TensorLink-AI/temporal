@@ -74,10 +74,6 @@ class QuantileRegressionOutputHeadConfig(OutputHeadConfig):
         if self.feature_size <= 0:
             raise ValueError("feature_size must be a positive integer.")
 
-
-from dataclasses import dataclass, field
-from typing import List, Dict, Tuple
-from temporal.registry.core import register_config_type
 from temporal.configs.output_head_config import OutputHeadConfig  # whatever your base is
 
 @register_config_type("mixture_output_head")
