@@ -472,44 +472,42 @@ class CRPSLoss(BaseLoss):
 @register_module("loss", "nll")
 class NegativeLogLikelihoodLoss(BaseLoss):
     """
-    Negative Log Likelihood (NLL) for probabilistic heads.
+    NLL for probabilistic heads.
 
     Supports:
-      - "gaussian"   : preds concat [mu, log_sigma]   -> [B,T,2F] or [B,2F]
-      - "student_t"  : preds concat [mu, log_scale, log_df] -> [B,T,3F] or [B,3F]
-      - "mixture"    : dict from MixtureOutputHead; elementwise mixture NLL computed inline
+      - "gaussian"   : preds concat [mu, log_sigma]   -> [B,T,2C] or [B,2C]
+      - "student_t"  : preds concat [mu, log_scale, log_df] -> [B,T,3C] or [B,3C]
+      - "mixture"    : dict from MixtureOutputHead (univariate); mixture NLL computed inline
 
-    targets: [B,T,F] or [B,T] (univariate) or [B,F] with T==1
-    loss_mask: [B,T] or [B,T,F] (broadcasted in _apply_reduction)
+    targets: [B,T,C] or [B,T] (univariate) or [B,C] with T==1
+    loss_mask: [B,T] or [B,T,C] (broadcasted in BaseLoss._apply_reduction)
     """
-
-    # -------------------- construction --------------------
 
     def __init__(
         self,
         distribution_type: str,
         reduction: str = "mean",
 
-        # --- Gaussian clamps ---
+        # Gaussian clamps
         min_log_sigma: float = -20.0,
         max_log_sigma: float =  20.0,
 
-        # --- Student-t clamps/floors ---
+        # Student-t clamps/floors
         min_log_scale: float = -7.0,
         max_log_scale: float =  5.0,
         min_log_df: float    = -2.0,
         max_log_df: float    =  6.0,
-        sigma_floor: float   = 1e-4,   # min positive scale after exp()
-        df_floor: float      = 1.001,  # ensure mean exists; use >2 if you need finite variance
+        sigma_floor: float   = 1e-4,
+        df_floor: float      = 1.001,
 
-        # --- Mixture numeric floors & fixed-sigma option ---
-        mix_min_sigma: float = 1e-6,      # gaussian/lognormal sigma floor
-        mix_min_scale: float = 1e-6,      # student_t scale floor
-        mix_min_df: float    = 1.001,     # student_t df floor
-        mix_lognorm_min_y: float = 1e-9,  # clamp target for log-normal
-        mix_nb_min_r: float = 1e-6,       # neg-binomial r floor
-        mix_nb_eps_p: float = 1e-6,       # clamp p to (eps, 1-eps)
-        mix_fixed_sigma: float = 1e-3,    # for fixed_gaussian
+        # Mixture numeric floors & fixed-sigma option
+        mix_min_sigma: float = 1e-6,
+        mix_min_scale: float = 1e-6,
+        mix_min_df: float    = 1.001,
+        mix_lognorm_min_y: float = 1e-9,
+        mix_nb_min_r: float = 1e-6,
+        mix_nb_eps_p: float = 1e-6,
+        mix_fixed_sigma: float = 1e-3,
 
         **kwargs,
     ):
@@ -546,61 +544,61 @@ class NegativeLogLikelihoodLoss(BaseLoss):
     # -------------------- shape helpers (Gaussian/Student-t) --------------------
 
     @staticmethod
-    def _ensure_btfx2(preds: torch.Tensor) -> torch.Tensor:
-        # [B,2F] or [B,T,2F] -> [B,T,F,2]
+    def _ensure_btCx2(preds: torch.Tensor) -> torch.Tensor:
+        # [B,2C] or [B,T,2C] -> [B,T,C,2]
         if preds.ndim == 2:
-            B, twoF = preds.shape
-            if twoF % 2 != 0:
-                raise ValueError(f"Gaussian preds last dim must be 2F, got {twoF}.")
-            F = twoF // 2
-            return preds.unsqueeze(1).view(B, 1, F, 2)
+            B, twoC = preds.shape
+            if twoC % 2 != 0:
+                raise ValueError(f"Gaussian preds last dim must be 2C, got {twoC}.")
+            C = twoC // 2
+            return preds.unsqueeze(1).view(B, 1, C, 2)
         if preds.ndim == 3:
-            B, T, twoF = preds.shape
-            if twoF % 2 != 0:
-                raise ValueError(f"Gaussian preds last dim must be 2F, got {twoF}.")
-            F = twoF // 2
-            return preds.view(B, T, F, 2)
+            B, T, twoC = preds.shape
+            if twoC % 2 != 0:
+                raise ValueError(f"Gaussian preds last dim must be 2C, got {twoC}.")
+            C = twoC // 2
+            return preds.view(B, T, C, 2)
         raise ValueError(f"Gaussian preds must be 2D or 3D, got shape {tuple(preds.shape)}")
 
     @staticmethod
-    def _ensure_btfx3(preds: torch.Tensor) -> torch.Tensor:
-        # [B,3F] or [B,T,3F] -> [B,T,F,3]
+    def _ensure_btCx3(preds: torch.Tensor) -> torch.Tensor:
+        # [B,3C] or [B,T,3C] -> [B,T, C, 3]
         if preds.ndim == 2:
-            B, threeF = preds.shape
-            if threeF % 3 != 0:
-                raise ValueError(f"Student-t preds last dim must be 3F, got {threeF}.")
-            F = threeF // 3
-            return preds.unsqueeze(1).view(B, 1, F, 3)
+            B, threeC = preds.shape
+            if threeC % 3 != 0:
+                raise ValueError(f"Student-t preds last dim must be 3C, got {threeC}.")
+            C = threeC // 3
+            return preds.unsqueeze(1).view(B, 1, C, 3)
         if preds.ndim == 3:
-            B, T, threeF = preds.shape
-            if threeF % 3 != 0:
-                raise ValueError(f"Student-t preds last dim must be 3F, got {threeF}.")
-            F = threeF // 3
-            return preds.view(B, T, F, 3)
+            B, T, threeC = preds.shape
+            if threeC % 3 != 0:
+                raise ValueError(f"Student-t preds last dim must be 3C, got {threeC}.")
+            C = threeC // 3
+            return preds.view(B, T, C, 3)
         raise ValueError(f"Student-t preds must be 2D or 3D, got shape {tuple(preds.shape)}")
 
     @staticmethod
-    def _match_target_shape(targets: torch.Tensor, *, F: int, T: int) -> torch.Tensor:
-        # Normalize to [B,T,F]
+    def _match_target_shape(targets: torch.Tensor, *, C: int, T: int) -> torch.Tensor:
+        # Normalize to [B,T,C]
         if targets.ndim == 3:
-            if targets.size(-1) != F:
-                raise ValueError(f"Targets feature dim {targets.size(-1)} != F={F}.")
+            if targets.size(-1) != C:
+                raise ValueError(f"Targets feature dim {targets.size(-1)} != C={C}.")
             if targets.size(1) != T and T != 1:
                 raise ValueError(f"Targets time dim {targets.size(1)} != T={T}.")
             return targets
         if targets.ndim == 2:
             B, dim = targets.shape
-            if F == 1:
+            if C == 1:
                 if dim == T:  # [B,T] -> [B,T,1]
                     return targets.unsqueeze(-1)
                 if dim == 1:  # [B,1] -> [B,1,1]
                     return targets.unsqueeze(-1)
                 raise ValueError(f"Univariate target expected [B,T] or [B,1], got [B,{dim}]")
-            if dim == F and T == 1:  # [B,F] with T==1
+            if dim == C and T == 1:  # [B,C] with T==1
                 return targets.unsqueeze(1)
-            raise ValueError(f"Incompatible targets shape {tuple(targets.shape)} for F={F}, T={T}.")
+            raise ValueError(f"Incompatible targets shape {tuple(targets.shape)} for C={C}, T={T}.")
         raise ValueError(f"Incompatible targets shape {tuple(targets.shape)}; "
-                         f"expected [B,T,F] or [B,T] or [B,F] with T==1.")
+                         f"expected [B,T,C] or [B,T] or [B,C] with T==1.")
 
     # -------------------- mixture helpers --------------------
 
@@ -684,7 +682,6 @@ class NegativeLogLikelihoodLoss(BaseLoss):
     def _log_prob_negbin(self, y: torch.Tensor, r: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         r = r.clamp_min(self.mix_nb_min_r)
         p = p.clamp(self.mix_nb_eps_p, 1.0 - self.mix_nb_eps_p)
-        # lgamma(y+r) - lgamma(r) - lgamma(y+1) + r*log(p) + y*log(1-p)
         return (
             torch.lgamma(y + r)
             - torch.lgamma(r)
@@ -704,12 +701,12 @@ class NegativeLogLikelihoodLoss(BaseLoss):
 
         # ---- Gaussian ----
         if self.distribution_type == "gaussian":
-            p = self._ensure_btfx2(preds)  # [B,T,F,2]
+            p = self._ensure_btCx2(preds)  # [B,T,C,2]
             mu        = p[..., 0]
             log_sigma = p[..., 1].clamp(min=self.min_log_sigma, max=self.max_log_sigma)
-            B, T, F = mu.shape
+            B, T, C = mu.shape
 
-            y = self._match_target_shape(targets, F=F, T=T)  # [B,T,F]
+            y = self._match_target_shape(targets, C=C, T=T)  # [B,T,C]
             inv_sigma_sq = torch.exp(-2.0 * log_sigma)
             sq_err = (y - mu) ** 2
 
@@ -717,18 +714,18 @@ class NegativeLogLikelihoodLoss(BaseLoss):
                 0.5 * sq_err * inv_sigma_sq
                 + log_sigma
                 + 0.5 * math.log(2.0 * math.pi)
-            )  # [B,T,F]
+            )  # [B,T,C]
             return self._apply_reduction(elementwise_nll, loss_mask)
 
         # ---- Student-t ----
         if self.distribution_type == "student_t":
-            p = self._ensure_btfx3(preds)  # [B,T,F,3]
+            p = self._ensure_btCx3(preds)  # [B,T,C,3]
             mu        = p[..., 0]
             log_scale = p[..., 1].clamp(min=self.min_log_scale, max=self.max_log_scale)
             log_df    = p[..., 2].clamp(min=self.min_log_df,    max=self.max_log_df)
-            B, T, F = mu.shape
+            B, T, C = mu.shape
 
-            y = self._match_target_shape(targets, F=F, T=T)   # [B,T,F]
+            y = self._match_target_shape(targets, C=C, T=T)   # [B,T,C]
             scale = torch.exp(log_scale).clamp_min(self.sigma_floor)
             nu    = torch.exp(log_df) + self.df_floor
 
@@ -740,7 +737,7 @@ class NegativeLogLikelihoodLoss(BaseLoss):
                 - torch.log(scale)
             )
             log_prob = log_base - 0.5 * (nu + 1.0) * torch.log1p(z2 / nu)
-            elementwise_nll = -log_prob  # [B,T,F]
+            elementwise_nll = -log_prob  # [B,T,C]
             return self._apply_reduction(elementwise_nll, loss_mask)
 
         # ---- Mixture (MDN, univariate) ----
@@ -768,8 +765,8 @@ class NegativeLogLikelihoodLoss(BaseLoss):
             raise ValueError(f"mixture_logits must be [B,M] or [B,T,M], got {tuple(logits.shape)}")
 
         # normalize shapes
-        log_w = F.log_softmax(self._btm(logits, T=T, M=M), dim=-1)  # [B,T,M]
-        y = self._targets_bt(targets, T=T)                          # [B,T]
+        log_w = Fnn.log_softmax(self._btm(logits, T=T, M=M), dim=-1)  # [B,T,M]
+        y = self._targets_bt(targets, T=T)                             # [B,T]
 
         # helper to fetch either 'gaussian_*' or legacy 'normal_*'
         def need(key: str, alt: Optional[str] = None) -> torch.Tensor:
@@ -814,14 +811,13 @@ class NegativeLogLikelihoodLoss(BaseLoss):
             log_probs.append(lp + log_w[..., j])  # [B,T]
 
         # mixture log-likelihood via log-sum-exp
-        stacked = torch.stack(log_probs, dim=-1)    # [B,T,M]
-        log_mix = torch.logsumexp(stacked, dim=-1)  # [B,T]
-        nll = -log_mix                               # [B,T]
+        stacked = torch.stack(log_probs, dim=-1)     # [B,T,M]
+        log_mix = torch.logsumexp(stacked, dim=-1)   # [B,T]
+        nll = -log_mix                                # [B,T]
 
-        # make it [B,T,1] so _apply_reduction can broadcast masks like [B,T,F]
-        elementwise = nll.unsqueeze(-1)              # [B,T,1]
+        # make it [B,T,1] so _apply_reduction can broadcast masks like [B,T,C]
+        elementwise = nll.unsqueeze(-1)               # [B,T,1]
         return self._apply_reduction(elementwise, loss_mask)
-
 
 import math
 from typing import Optional
