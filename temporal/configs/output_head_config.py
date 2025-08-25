@@ -76,31 +76,20 @@ class QuantileRegressionOutputHeadConfig(OutputHeadConfig):
 
 from temporal.configs.output_head_config import OutputHeadConfig  # whatever your base is
 
+
 @register_config_type("mixture_output_head")
 @dataclass(frozen=True, kw_only=True)
 class MixtureOutputHeadConfig(OutputHeadConfig):
-    """
-    Config for MixtureOutputHead (univariate MDN).
-    - `components`: list of component names; aliases are accepted and canonicalized.
-    - `feature_size`: kept for API parity; MixtureOutputHead is univariate and will
-      assert feature_size == 1.
-    """
     components: List[str] = field(default_factory=list)
     feature_size: int = 1
     type: str = field(default="mixture")
 
-    # ---- alias / validation tables (kept in sync with the head) ----
     _ALIASES: Dict[str, str] = field(default_factory=lambda: {
-        # Gaussian
         "gaussian": "normal", "gauss": "normal", "normal": "normal",
-        # Log-normal
         "lognormal": "log_normal", "log_norm": "log_normal", "log-normal": "log_normal",
-        # Student-t
         "studentt": "student_t", "student_t": "student_t", "student-t": "student_t", "t": "student_t",
-        # Negative Binomial
         "negativebinomial": "neg_binomial", "negative_binomial": "neg_binomial",
         "neg-binomial": "neg_binomial", "nb": "neg_binomial",
-        # Fixed Normal
         "fixednormal": "fixed_normal", "fixed_normal": "fixed_normal", "fixed-normal": "fixed_normal",
     }, init=False, repr=False)
 
@@ -117,7 +106,6 @@ class MixtureOutputHeadConfig(OutputHeadConfig):
         if not self.components:
             raise ValueError("MixtureOutputHead requires at least one component.")
 
-        # Canonicalize & validate
         canon = []
         for c in self.components:
             key = c.strip().lower().replace(" ", "").replace("-", "_")
@@ -130,18 +118,16 @@ class MixtureOutputHeadConfig(OutputHeadConfig):
                 )
             canon.append(c2)
 
-        # write back canonical list (dataclass is frozen)
         object.__setattr__(self, "components", canon)
 
         if self.feature_size != 1:
             raise NotImplementedError("MixtureOutputHead is currently univariate (feature_size must be 1).")
 
+        # *** critical: keep builders & head happy ***
+        object.__setattr__(self, "output_size", self.derived_output_size)
+
     @property
     def derived_output_size(self) -> int:
-        """
-        Total projection width the head needs:
-          sum(params_per_component) + num_components (for mixture logits).
-        """
         total = self.num_components  # mixture logits
         for c in self.components:
             total += sum(self._DIST_PARAM_COUNTS[c].values())
@@ -150,7 +136,6 @@ class MixtureOutputHeadConfig(OutputHeadConfig):
     @property
     def num_components(self) -> int:
         return len(self.components)
-
 
 
 @register_config_type("timeflow_output_head")
