@@ -75,59 +75,72 @@ class AutoregressivePatchMixin:
         """Return the first (primary) head."""
         return self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
 
-    @staticmethod
-    def _get_cache_length(past_key_values) -> int:
+    def _get_cache_length(self, past_key_values) -> int:
         """
-        Infer current KV cache length L from a HuggingFace-style past_key_values
-        structure by looking at the first layer's key tensor.
+        Infer cached sequence length L from past_key_values.
 
-        Returns
-        -------
-        int
+        Supports shapes like:
+          • (B,H,L,D)  (typical HF layout)
+          • (B,L,H,D)
+          • (B,L,D)
+
+        Uses self.config.num_attention_heads / self.config.d_model to disambiguate.
         """
         if past_key_values is None:
             return 0
 
         first_layer = past_key_values[0]
-        # Common shapes: tuple(list) of (k, v, ...) or dict with "k"
+        # Extract key tensor from common layouts: (k, v, ...) or {"k": ...}
         if isinstance(first_layer, (tuple, list)):
             key_tensor = first_layer[0]
         elif isinstance(first_layer, dict):
-            key_tensor = first_layer.get("k", None)
+            key_tensor = first_layer.get("k") or first_layer.get("key")
+            if key_tensor is None:
+                # fall back to "first value" if dict order is friendly
+                try:
+                    key_tensor = next(iter(first_layer.values()))
+                except Exception:
+                    key_tensor = None
         else:
-            key_tensor = None
+            # Some kernels might store the key tensor directly
+            key_tensor = first_layer
 
         if key_tensor is None:
-            raise ValueError(f"Cannot locate key tensor in past_key_values[0]: {type(first_layer)}")
+            return 0
 
-        # (B, H, L, D) or (B, L, H, D) or (B, L, D)
-        if key_tensor.ndim == 4:
-            # Try to detect H dimension from config, else pick the larger of dims 1/2
-            nh = getattr(getattr(self, "config", object), "num_attention_heads", None)
+        ndim = key_tensor.ndim
+        nh = getattr(getattr(self, "config", object), "num_attention_heads", None)
+
+        if ndim == 4:
+            # candidates: (B,H,L,D) or (B,L,H,D)
+            _, a1, a2, _ = key_tensor.shape
             if nh is not None:
-                if key_tensor.shape[1] == nh:
-                    return int(key_tensor.shape[2])
-                if key_tensor.shape[2] == nh:
-                    return int(key_tensor.shape[1])
-            return int(max(key_tensor.shape[1], key_tensor.shape[2]))
-        if key_tensor.ndim == 3:
-            return int(key_tensor.shape[1])
+                if a1 == nh and a2 != nh:
+                    return int(a2)  # (B,H,L,D)
+                if a2 == nh and a1 != nh:
+                    return int(a1)  # (B,L,H,D)
+            # Heuristic: L is the larger of a1/a2 (usually L >> H)
+            return int(max(a1, a2))
 
-        raise ValueError(f"Unexpected KV shape: {tuple(key_tensor.shape)}")
+        if ndim == 3:
+            # candidates: (B,L,D) or (B,D,L)
+            _, a1, a2 = key_tensor.shape
+            d_model = getattr(getattr(self, "config", object), "d_model", None)
+            if d_model is not None:
+                if a2 == d_model:
+                    return int(a1)  # (B,L,D)
+                if a1 == d_model:
+                    return int(a2)  # (B,D,L)
+            # fallback: the larger tail dim is likely L
+            return int(max(a1, a2))
+
+        # Unknown layout; safest fallback
+        return 0
 
     @staticmethod
     def _get_scalar_value(value: Union[torch.Tensor, float, int, Any], name: str) -> Optional[float]:
         """
         Convert a value to float if possible; reduce 0-d/1-d tensors to a scalar.
-
-        Parameters
-        ----------
-        value : Tensor | float | int | Any
-        name  : str
-
-        Returns
-        -------
-        Optional[float]
         """
         if value is None:
             return None
