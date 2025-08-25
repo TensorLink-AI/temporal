@@ -469,6 +469,8 @@ class CRPSLoss(BaseLoss):
 
 
 
+import torch.nn.functional as Fnn
+
 @register_module("loss", "nll")
 class NegativeLogLikelihoodLoss(BaseLoss):
     """
