@@ -63,8 +63,16 @@ autoapi_dirs = [str(ROOT / "temporal")]
 autoapi_root = "api"
 autoapi_keep_files = True
 autoapi_options = [
-    "show-inheritance-diagram",
+    "members",
+    "undoc-members",
+    "show-inheritance",
     "show-module-summary",
+    "special-members",
+]
+
+# hide AutoAPI's import-resolution chatter
+suppress_warnings = [
+    "autoapi.python_import_resolution",
 ]
 
 

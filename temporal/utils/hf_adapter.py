@@ -1,7 +1,7 @@
 from typing import Any, Optional
 import torch
 from transformers import PreTrainedModel
-from temporal.configs.transformer_config import TransformerTimeSeriesConfig
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.models.builder import build_time_series_transformer
 
 class TimeSeriesTransformerModel(PreTrainedModel):
