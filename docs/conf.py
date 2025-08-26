@@ -49,7 +49,6 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 # MyST configuration
 myst_enable_extensions = [
-    "colon_fences",
     "deflist",
     "fieldlist",
     "attrs_block",
@@ -61,10 +60,10 @@ autoapi_type = "python"
 autoapi_dirs = ["../temporal"]
 autoapi_root = "api"
 autoapi_keep_files = True
-autoapi_options = {
-    "show-inheritance-diagram": False,
-    "show-module-summary": True,
-}
+autoapi_options = [
+    "show-inheritance-diagram",
+    "show-module-summary",
+]
 
 
 # Intersphinx mapping
