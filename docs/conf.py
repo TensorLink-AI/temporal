@@ -5,6 +5,7 @@
 
 import os
 import sys
+from pathlib import Path
 
 # -- Path setup --------------------------------------------------------------
 # If extensions (or modules to document with autodoc) are in another directory,
@@ -56,8 +57,9 @@ myst_enable_extensions = [
 ]
 
 # AutoAPI configuration
+ROOT = Path(__file__).resolve().parents[1]
 autoapi_type = "python"
-autoapi_dirs = ["../temporal"]
+autoapi_dirs = [str(ROOT / "temporal")]
 autoapi_root = "api"
 autoapi_keep_files = True
 autoapi_options = [
