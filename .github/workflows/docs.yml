@@ -3,7 +3,7 @@ name: Deploy Documentation
 on:
   push:
     branches:
-      - main  # Or whichever branch you want to deploy from
+      - main
 
 permissions:
   contents: read
@@ -11,33 +11,32 @@ permissions:
   id-token: write
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' 
-
+          python-version: '3.11'
       - name: Install dependencies
         run: |
           pip install -r docs/requirements.txt
-
       - name: Build Sphinx documentation
-        run: |
-          make -C docs html
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-      
+        run: make -C docs html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs/_build/html/
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
