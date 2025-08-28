@@ -6,6 +6,7 @@ def crps_ensemble(
     axis: int = -1,
     sorted_ensemble: bool = False,
     estimator: str = "pwm",
+    reduce: bool = True,
 ) -> torch.Tensor:
     r"""
     Estimate the Continuous Ranked Probability Score (CRPS) for a finite ensemble
@@ -14,11 +15,10 @@ def crps_ensemble(
     Parameters
     ----------
     observations : torch.Tensor
-        The observed values. Shape can be [...], matching all but the ensemble dimension.
+        The observed values. Shape must be broadcastable to forecasts shape excluding
+        the ensemble dimension `axis`.
     forecasts : torch.Tensor
-        The ensemble predictions. Must have the same shape as `observations` except
-        for an additional ensemble dimension. By default, the ensemble dimension is
-        assumed to be the last axis (axis = -1).
+        The ensemble predictions. Must have an ensemble dimension specified by `axis`.
     axis : int
         The index of the ensemble dimension in `forecasts`. Defaults to -1 (last axis).
     sorted_ensemble : bool
@@ -31,58 +31,108 @@ def crps_ensemble(
           - "pwm": probability weighted moments form
           - "fair": the 'fair CRPS' variant
         Default is "pwm".
+    reduce : bool, optional
+        If True (default), returns the mean CRPS across the entire batch. If False,
+        returns the CRPS for each element/timestep in the batch (shape [...]).
 
     Returns
     -------
     torch.Tensor
-        A scalar CRPS value averaged across the entire batch. 
-        (If you need a per-sample value, you may modify `ensemble(...)` below 
-        to return the CRPS without taking a global `.mean()`.)
+        Either a scalar CRPS value (reduce=True) or per-element CRPS values (reduce=False).
+
+    Raises
+    ------
+    ValueError
+        If estimator is invalid or shapes are incompatible.
 
     Example
     -------
-    >>> # Suppose you have forecasts => shape [batch, time, ensemble_size]
-    >>> # and observations => shape [batch, time].
-    >>> # by default, axis=-1 => ensemble dimension is the last axis
-    >>> crps_val = crps_ensemble(observations, forecasts, axis=-1, estimator="pwm")
-    >>> print(crps_val)
+    >>> # forecasts [B, T, K], observations [B, T]
+    >>> crps_ensemble(observations, forecasts, axis=-1)
+    >>> # forecasts [B, K, T], observations [B, T]
+    >>> crps_ensemble(observations, forecasts, axis=1)
     """
 
     if estimator not in ["nrg", "pwm", "fair"]:
         raise ValueError(f"{estimator} is not a valid estimator. Must be one of ['nrg','pwm','fair'].")
 
+    # --- Revised Shape Handling --- 
+    # Get the actual axis index (handles negative index)
+    actual_axis = axis if axis >= 0 else forecasts.ndim + axis
+    if not (0 <= actual_axis < forecasts.ndim):
+        raise ValueError(f"Invalid axis {axis} for forecasts dimension {forecasts.ndim}")
+
+    # Check if observations needs unsqueezing
+    if observations.ndim == forecasts.ndim - 1:
+        # Check if shape matches forecasts excluding the ensemble dim
+        expected_obs_shape = list(forecasts.shape)
+        del expected_obs_shape[actual_axis]
+        if list(observations.shape) == expected_obs_shape:
+            observations = observations.unsqueeze(actual_axis) # Add singleton dim
+        else:
+            raise ValueError(
+                f"Observations shape {observations.shape} does not match forecast shape "
+                f"{forecasts.shape} excluding axis {axis}. Expected {tuple(expected_obs_shape)}."
+            )
+    elif observations.ndim == forecasts.ndim:
+        # Check if the ensemble dimension in observations has size 1
+        if observations.shape[actual_axis] != 1:
+            raise ValueError(
+                f"Observations shape {observations.shape} has same ndim as forecasts {forecasts.shape}, "
+                f"but dimension at axis {axis} is not 1."
+            )
+        # Shapes are compatible for broadcasting, no unsqueeze needed
+    else:
+        raise ValueError(
+            f"Observations ndim ({observations.ndim}) must be equal to or one less than "
+            f"forecasts ndim ({forecasts.ndim})."
+        )
+    # At this point, obs shape should be broadcastable with fct shape
+    # --- End Revised Shape Handling ---
+
     # Move the ensemble axis to the last dimension if not already
-    if axis != -1:
-        forecasts = torch.moveaxis(forecasts, axis, -1)
+    # This simplifies the internal _crps_* functions
+    if actual_axis != forecasts.ndim - 1:
+        forecasts = torch.moveaxis(forecasts, actual_axis, -1)
+        # Move observations dim only if it exists (was unsqueezed or already there)
+        if observations.ndim == forecasts.ndim: 
+             observations = torch.moveaxis(observations, actual_axis, -1)
 
     # If not sorted and needed, sort the ensemble dimension for PWM or NRG
     if (estimator in ["pwm", "nrg"]) and not sorted_ensemble:
         forecasts, _ = torch.sort(forecasts, dim=-1)
 
     # Call the aggregator function that handles the final CRPS calculation
-    return ensemble(observations, forecasts, estimator=estimator)
+    # Pass obs and fct with ensemble dim last
+    return ensemble(observations, forecasts, estimator=estimator, reduce=reduce)
 
 
-def ensemble(obs: torch.Tensor, fct: torch.Tensor, estimator: str = "pwm") -> torch.Tensor:
+def ensemble(obs: torch.Tensor, fct: torch.Tensor, estimator: str = "pwm", reduce: bool = True) -> torch.Tensor:
     """
     Compute the CRPS for a finite ensemble using the chosen estimator.
+    Assumes ensemble dimension is the *last* dimension for both obs and fct.
 
     Args:
         obs (torch.Tensor):
-            Observations of shape [...], matching fct except the last dimension
-            which is the ensemble.
+            Observations, shape [..., 1] (ensemble dim last).
         fct (torch.Tensor):
-            Forecast ensemble, shape [..., ensemble], sorted if needed for some estimators.
+            Forecast ensemble, shape [..., ensemble], sorted if needed.
         estimator (str):
             "nrg", "pwm", or "fair".
+        reduce (bool):
+            If True, return scalar mean. If False, return tensor with shape [...].
 
     Returns:
         torch.Tensor:
-            A scalar representing the mean CRPS across all items in `obs`.
-
-    Raises:
-        ValueError: if no valid estimator is specified.
+            Either a scalar (mean) or tensor of CRPS values ([...]).
     """
+    if obs.ndim < fct.ndim:
+        obs = obs.unsqueeze(-1)
+    # Ensure shapes are compatible for broadcasting along last dimension
+    if not torch.broadcast_shapes(obs.shape, fct.shape):
+         # This check might be redundant given the checks in crps_ensemble
+         raise ValueError(f"Cannot broadcast observation shape {obs.shape} with forecast shape {fct.shape}")
+         
     if estimator == "nrg":
         out = _crps_ensemble_nrg(obs, fct)
     elif estimator == "pwm":
@@ -92,104 +142,71 @@ def ensemble(obs: torch.Tensor, fct: torch.Tensor, estimator: str = "pwm") -> to
     else:
         raise ValueError(f"Unknown estimator {estimator}")
 
-    # Return the mean across all sample dimensions, i.e. a single scalar.
-    return out.mean()
+    # Return the mean across all sample dimensions only if reduce is True.
+    if reduce:
+        return out.mean()
+    else:
+        return out # Return per-element CRPS
 
+
+# Internal functions (_crps_ensemble_fair, _crps_ensemble_nrg, _crps_ensemble_pwm)
+# assume ensemble dimension is LAST
 
 def _crps_ensemble_fair(obs: torch.Tensor, fct: torch.Tensor) -> torch.Tensor:
     """
-    The 'fair' version of CRPS for an ensemble:
-      CRPS = mean_i |X_i - obs| - 0.5 * mean_{i != j} |X_i - X_j|
-
-    Implementation detail:
-      - M = fct.shape[-1]
-      - The difference from 'nrg' is the normalization factor on the second term: M*(M-1)
-
     Args:
-        obs: shape [...], no ensemble dimension
+        obs: shape [..., 1], ensemble dimension last
         fct: shape [..., M], ensemble dimension last
     Returns:
-        Tensor of shape [...], one CRPS value per sample, not yet averaged over batch.
+        Tensor of shape [...], one CRPS value per sample.
     """
     M = fct.shape[-1]
-    # e_1 => average over ensemble dimension of |obs - fct|
-    e_1 = torch.mean(torch.abs(obs.unsqueeze(-1) - fct), dim=-1)  # => shape [...]
-    # e_2 => average pairwise difference among ensemble members
-    #        shape [..., M, M], diagonal = 0
-    diff = torch.abs(fct.unsqueeze(-2) - fct.unsqueeze(-1))  # => [..., M, M]
-    e_2 = torch.mean(diff, dim=(-2, -1))  # => shape [...]
-    # normalize by M*(M-1). We do e_2*(M^2 / (M*(M-1))) if we want consistent w/ 'fair', 
-    # but in this original code: e_2 is 1/(M^2) times sum_{i,j} => "nrg" approach.
-    # DistPred's 'fair' approach does: e_2 / (M*(M-1)) => let's replicate the code snippet exactly:
-    # Actually the snippet: e_2 is sum(|xi-xj|)/(M*(M-1)) => let's do it:
-    # We'll replicate the snippet from your code exactly:
-    # => final is e_1 - 0.5 * e_2, but e_2 is scaled differently.
-    # We'll keep it consistent with the snippet:
-    # in snippet, e_1 = sum( |obs - x_i|)/M, e_2 = sum(|x_i-x_j|)/(M*(M-1)).
-    # but we did e_2 = average over i,j => => 1/(M*M). So let's fix that for fair:
-    e_1 = torch.sum(torch.abs(obs.unsqueeze(-1) - fct), dim=-1) / M
-    # For fair approach, we re-do e_2
-    e_2 = torch.sum(diff, dim=(-2, -1)) / (M * (M - 1))
-    return e_1 - 0.5 * e_2
+    # Broadcasting handles obs [..., 1] vs fct [..., M]
+    e_1 = torch.mean(torch.abs(obs - fct), dim=-1) # => shape [...]
 
+    diff = torch.abs(fct.unsqueeze(-2) - fct.unsqueeze(-1))  # => [..., M, M]
+    if M > 1:
+        # Sum over M*(M-1) pairs
+        e_2 = torch.sum(diff, dim=(-2, -1)) / (M * (M - 1.0))
+    else:
+        e_2 = torch.zeros_like(e_1)
+    return e_1 - 0.5 * e_2
 
 def _crps_ensemble_nrg(obs: torch.Tensor, fct: torch.Tensor) -> torch.Tensor:
     """
-    CRPS estimator based on the 'energy' form:
-       1/M sum_i |obs - x_i| - 1/(2M^2) sum_{i,j} |x_i - x_j|.
-
     Args:
-        obs: shape [...], no ensemble dimension
+        obs: shape [..., 1], ensemble dimension last
         fct: shape [..., M], ensemble dimension last
     Returns:
-        Tensor of shape [...], CRPS per sample, not yet averaged over batch.
+        Tensor of shape [...], CRPS per sample.
     """
     M = fct.shape[-1]
-    # e_1 => 1/M sum |obs - x_i|
-    e_1 = torch.sum(torch.abs(obs.unsqueeze(-1) - fct), dim=-1) / M
+    # Broadcasting handles obs [..., 1] vs fct [..., M]
+    e_1 = torch.mean(torch.abs(obs - fct), dim=-1) # => shape [...]
 
-    # e_2 => 1/(M^2) sum_{i,j} |x_i - x_j|
     diff = torch.abs(fct.unsqueeze(-2) - fct.unsqueeze(-1))  # => shape [..., M, M]
+    # Sum over M*M pairs (including i==j where diff is 0)
     e_2 = torch.sum(diff, dim=(-2, -1)) / (M**2)
-
     return e_1 - 0.5 * e_2
-
 
 def _crps_ensemble_pwm(obs: torch.Tensor, fct: torch.Tensor) -> torch.Tensor:
     """
-    CRPS estimator using Probability Weighted Moments (PWM).
-
-    This code expects 'fct' is sorted along the ensemble dimension.
-    If not sorted, pass sorted_ensemble=True or pre-sort it.
-
-    The formula is:
-      CRPS = E(|obs - x_i|) + β_0 - 2 * β_1,
-      where:
-       - E(...) is average over x_i
-       - β_0 = mean(x_i)
-       - β_1 = sum(i/M*(M-1)) ?
-
-    For reference, see the DistPred-Forecast snippet or scikit-garden approach.
-
     Args:
-        obs: shape [...], no ensemble dimension
+        obs: shape [..., 1], ensemble dimension last
         fct: shape [..., M], sorted ensemble dimension last
     Returns:
-        Tensor of shape [...], CRPS per sample, not yet averaged over batch.
+        Tensor of shape [...], CRPS per sample.
     """
     M = fct.shape[-1]
-    # expected_diff => average of |obs - x_i|
-    expected_diff = torch.mean(torch.abs(obs.unsqueeze(-1) - fct), dim=-1)  # => shape [...]
-
-    # β_0 => mean of x_i
+    # Broadcasting handles obs [..., 1] vs fct [..., M]
+    expected_diff = torch.mean(torch.abs(obs - fct), dim=-1)  # => shape [...]
     beta_0 = torch.mean(fct, dim=-1)
-
-    # index-based weighting => e.g. sum_{k=0}^{M-1} x_k * k / [M*(M-1)]
-    # we need an index array => [0,1,..., M-1]
     idx = torch.arange(M, device=fct.device, dtype=fct.dtype)
-    # (fct * idx).sum(...) => sum_{k=0}^{M-1} x_k * k
-    # Then / [M*(M-1)] => average
-    beta_1 = torch.sum(fct * idx, dim=-1) / (M * (M - 1.0))
 
-    # CRPS = expected_diff + beta_0 - 2 * beta_1
-    return expected_diff + beta_0 - 2.0 * beta_1
+    if M > 1:
+        term3 = (2.0 / (M * (M - 1.0))) * torch.sum(fct * idx, dim=-1)
+    else:
+        term3 = torch.zeros_like(beta_0)
+
+    # Eq 13 from DistPred paper: C = E[|Y^ - y|] + E[Y^] - (2/(K(K-1))) * sum(y_k * (k-1))
+    return expected_diff + beta_0 - term3
