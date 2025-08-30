@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import unittest
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 from temporal.models.mixin.multistep import MultiStepMixin
 
 class MockModel(nn.Module, MultiStepMixin):
@@ -10,7 +11,11 @@ class MockModel(nn.Module, MultiStepMixin):
         self.config = config
         self.preprocessor = MagicMock()
         self.decoder = MagicMock()
-        self.output_heads = MagicMock()
+        self.output_heads = {"point": MagicMock()}
+
+    def _get_primary_head(self):
+        return self.output_heads["point"]
+
 
 class TestMultiStepMixin(unittest.TestCase):
 
@@ -27,10 +32,14 @@ class TestMultiStepMixin(unittest.TestCase):
             "hidden_states": torch.randn(2, 10, 1),
             "attention_mask": torch.ones(2, 10),
         }
-        self.model.decoder.return_value = {
-            "last_hidden_state": torch.randn(2, 10, 1),
-        }
-        self.model.output_heads.return_value = torch.randn(2, 5, 1)
+        # FIX: Return an object with attributes, not a dict
+        self.model.decoder.return_value = SimpleNamespace(
+            last_hidden_state=torch.randn(2, 10, 1)
+        )
+        primary_head = self.model._get_primary_head()
+        primary_head.return_value = {"params": torch.randn(2, 5, 1)}
+        primary_head.predict.return_value = torch.randn(2, 5, 1)
+
 
         predictions = self.model.forecast_single_pass_chunked(
             inputs,
@@ -46,11 +55,14 @@ class TestMultiStepMixin(unittest.TestCase):
             "hidden_states": torch.randn(2, 10, 1),
             "attention_mask": torch.ones(2, 10),
         }
-        self.model.decoder.return_value = {
-            "last_hidden_state": torch.randn(2, 10, 1),
-        }
-        self.model.output_heads.return_value = torch.randn(2, 5, 1)
-        self.model.output_heads.sample_quantiles.return_value = torch.randn(2, 5, 1, 3)
+        # FIX: Return an object with attributes, not a dict
+        self.model.decoder.return_value = SimpleNamespace(
+            last_hidden_state=torch.randn(2, 10, 1)
+        )
+        primary_head = self.model._get_primary_head()
+        primary_head.return_value = {"params": torch.randn(2, 5, 1)}
+        primary_head.sample_quantiles.return_value = torch.randn(2, 5, 1, 3)
+
 
         predictions = self.model.forecast_single_pass_chunked(
             inputs,

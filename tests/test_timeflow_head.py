@@ -46,6 +46,7 @@ class TestTimeFlowHead(unittest.TestCase):
 
     def test_timeflow_head(self):
         head = TimeFlowHead(
+            hidden_size=32,
             target_channels=64,
             cond_channels=32,
             num_blocks=2,
@@ -58,6 +59,7 @@ class TestTimeFlowHead(unittest.TestCase):
 
     def test_timeflow_head_sample(self):
         head = TimeFlowHead(
+            hidden_size=32,
             target_channels=64,
             cond_channels=32,
             num_blocks=2,
@@ -69,6 +71,7 @@ class TestTimeFlowHead(unittest.TestCase):
 
     def test_timeflow_head_sample_quantiles(self):
         head = TimeFlowHead(
+            hidden_size=32,
             target_channels=64,
             cond_channels=32,
             num_blocks=2,

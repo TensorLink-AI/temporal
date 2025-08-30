@@ -10,7 +10,7 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
     def setUp(self):
         self.config = TransformerTimeSeriesConfig(
             prediction_length=10,
-            architecture=TransformerArchitectureConfig(layout="encoder-decoder")
+            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
         )
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()
