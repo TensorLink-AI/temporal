@@ -4,7 +4,6 @@ from temporal.models.builder import build_time_series_transformer
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.models.transformer_model import TransformerOutput
 from temporal.configs.output_head_config import OutputHeadConfig
-# FIX: Add missing imports for config objects
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
@@ -26,11 +25,9 @@ def model_config():
         feature_size=3,
         prediction_length=5,
         context_length=10,
-        # FIX: Instantiate the ArchitectureConfig object directly with a 'type'
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        # FIX: Instantiate the LossConfig object with a valid registered type
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
         encoder_blocks=[
@@ -82,7 +79,6 @@ def test_model_device_placement(model):
     device = torch.device("cuda")
     model.to(device)
 
-    # Check that all parameters have been moved to the target device
     for param in model.parameters():
         assert param.device == device
 
@@ -91,19 +87,16 @@ def test_enable_dropout_method(model):
     """
     Tests the `enable_dropout` method to ensure it sets dropout layers to train mode.
     """
-    # First, set model to eval mode, which deactivates dropout
     model.eval()
     for module in model.modules():
         if isinstance(module, torch.nn.Dropout):
             assert not module.training
 
-    # Enable dropout using the mixin method
     model.enable_dropout()
     for module in model.modules():
         if isinstance(module, torch.nn.Dropout):
             assert module.training
 
-    # Set back to eval mode for other tests
     model.eval()
 
 
@@ -113,14 +106,10 @@ def test_model_output_dataclass():
     """
     output = TransformerOutput(logits=torch.randn(2, 5, 3), loss=torch.tensor(0.5))
 
-    # Test attribute access
     assert output.loss == 0.5
-
-    # Test item access
     assert output["loss"] == 0.5
     assert torch.equal(output["logits"], output.logits)
 
-    # Test keys method
     assert "logits" in output.keys()
     assert "loss" in output.keys()
     assert "past_key_values" in output.keys()

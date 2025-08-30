@@ -100,7 +100,6 @@ def test_mixture_loss():
     loss_fn = MixtureLoss()
     batch_size, seq_len = 2, 10
     
-    # FIX: Changed component name from "normal" to "gaussian" and updated keys.
     preds_dict = {
         "components": ["gaussian", "student_t"],
         "mixture_logits": torch.randn(batch_size, seq_len, 2),

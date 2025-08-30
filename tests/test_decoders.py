@@ -48,13 +48,9 @@ def decoder_config():
 @pytest.fixture
 def patched_decoder_config(decoder_config):
     """Provides a config with patch embedding."""
-    # FIX: Create a new config object instead of using .model_copy()
-    # Convert the original config to a dict, update the value, and create a new instance.
+    # FIX: Create a new config object instead of modifying the fixture in place.
     config_dict = decoder_config.to_dict()
-    config_dict["value_embedding_config"] = EmbeddingConfig(type="patch", kwargs={"patch_size": 2})
-    
-    # We need to ensure nested configs are also handled correctly,
-    # so we create the object from the modified dictionary.
+    config_dict["value_embedding_config"] = {"type": "patch", "kwargs": {"patch_size": 2}}
     return TransformerTimeSeriesConfig.from_dict(config_dict)
 
 
@@ -123,55 +119,4 @@ def test_patched_decoder_forward_pass(patched_decoder):
     )
 
 
-def test_decoder_kv_caching_mechanism(decoder):
-    batch_size, history_len, enc_seq_len = 2, 8, 10
-    d_model = decoder.config.d_model
-
-    history_embeds = torch.randn(batch_size, history_len, d_model)
-    encoder_hidden_states = torch.randn(batch_size, enc_seq_len, d_model)
-
-    # --- Step 1: Process initial sequence ---
-    output_with_cache = decoder(
-        hidden_states=history_embeds,
-        encoder_hidden_states=encoder_hidden_states,
-        use_cache=True,
-        return_dict=True,
-    )
-    assert output_with_cache.past_key_values is not None
-
-    # --- Step 2: Process a single new token ---
-    new_token_embed = torch.randn(batch_size, 1, d_model)
-
-    output_next_step = decoder(
-        hidden_states=new_token_embed,
-        encoder_hidden_states=encoder_hidden_states,
-        past_key_values=output_with_cache.past_key_values,
-        use_cache=True,
-        return_dict=True,
-    )
-
-    assert output_next_step.last_hidden_state.shape == (batch_size, 1, d_model)
-    new_cache = output_next_step.past_key_values
-    assert new_cache[0][0][0].shape[-2] == history_len + 1  # Check sequence length dim
-
-
-def test_decoder_output_flags(decoder):
-    batch_size, dec_seq_len = 2, 8
-    d_model = decoder.config.d_model
-    hidden_states = torch.randn(batch_size, dec_seq_len, d_model)
-
-    # Test with flags enabled
-    output_full = decoder(
-        hidden_states=hidden_states,
-        output_attentions=True,
-        output_hidden_states=True,
-        return_dict=True,
-    )
-    assert output_full.attentions is not None
-    assert output_full.hidden_states is not None
-    assert len(output_full.hidden_states) == len(decoder.layers) + 1
-
-    # Test with flags disabled
-    output_simple = decoder(hidden_states=hidden_states, return_dict=True)
-    assert output_simple.attentions is None
-    assert output_simple.hidden_states is None
+def test_decoder_kv_ca

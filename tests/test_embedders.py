@@ -67,7 +67,7 @@ def test_rotary_embedding_forward(embedding_params):
     )
     # FIX: The forward pass now takes a tensor 'x' as input
     output = emb(input_tensor)
-    assert output[0].shape == input_tensor[0].shape
+    assert output[0].shape == input_tensor.shape
     # Rotary embeddings modify the input tensor
     assert not torch.allclose(input_tensor, output[0])
 

@@ -9,7 +9,6 @@ from temporal.modules.norm.dynamic_revin import DynamicRevIN as DynamicRevin
 @pytest.fixture
 def sample_tensor():
     """Provides a sample input tensor with non-zero mean and non-one std."""
-    # Shape: (batch_size, seq_len, feature_size)
     tensor = torch.randn(4, 20, 5) * 8 + 3
     return tensor
 
@@ -28,24 +27,17 @@ def test_revin_init():
 
 def test_revin_reversibility(sample_tensor):
     """
-    Tests that denormalize(normalize(x)) returns x. This is the most
-    critical test for this module.
+    Tests that denormalize(normalize(x)) returns x.
     """
     num_features = sample_tensor.shape[-1]
     layer = Revin(num_features=num_features)
 
-    # 1. Normalize the tensor
     normalized_output = layer(sample_tensor, mode="norm")
-
-    # 2. Denormalize the output
     denormalized_output = layer(normalized_output, mode="denorm")
 
-    # 3. Assert that the result is numerically identical to the original
     assert normalized_output.shape == sample_tensor.shape
     assert denormalized_output.shape == sample_tensor.shape
-    assert torch.allclose(denormalized_output, sample_tensor, atol=1e-6), (
-        "Revin denormalization did not perfectly reverse the normalization."
-    )
+    assert torch.allclose(denormalized_output, sample_tensor, atol=1e-6)
 
 
 # --- DynamicRevin Tests ---
@@ -65,19 +57,12 @@ def test_dynamic_revin_reversibility(sample_tensor):
     num_features = sample_tensor.shape[-1]
     layer = DynamicRevin(num_features=num_features)
 
-    # 1. Normalize the tensor
     normalized_output = layer(sample_tensor, mode="norm")
-
-    # 2. Denormalize the output
     denormalized_output = layer(normalized_output, mode="denorm")
 
-    # 3. Assert perfect reversibility
     assert normalized_output.shape == sample_tensor.shape
     assert denormalized_output.shape == sample_tensor.shape
-    # FIX: Increased tolerance slightly to account for floating-point precision issues.
-    assert torch.allclose(denormalized_output, sample_tensor, atol=1e-4), (
-        "DynamicRevin denormalization did not perfectly reverse the normalization."
-    )
+    assert torch.allclose(denormalized_output, sample_tensor, atol=1e-4)
 
 
 def test_dynamic_revin_non_affine(sample_tensor):
@@ -88,9 +73,7 @@ def test_dynamic_revin_non_affine(sample_tensor):
     num_features = sample_tensor.shape[-1]
     layer = DynamicRevin(num_features=num_features, affine_mode="dynamic")
 
-    # Test for reversibility
     normalized = layer(sample_tensor, mode="norm")
     denormalized = layer(normalized, mode="denorm")
 
-    # FIX: Increased tolerance slightly to account for floating-point precision issues.
     assert torch.allclose(denormalized, sample_tensor, atol=1e-4)

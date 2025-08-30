@@ -29,7 +29,6 @@ def valid_encoder_decoder_config():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        # FIX: Explicitly add ffn_config with required 'intermediate_size'
         encoder_blocks=[
             EncoderBlockConfig(
                 type="default_encoder",
@@ -46,7 +45,6 @@ def valid_encoder_decoder_config():
                 ),
             )
         ],
-        # FIX: Use a valid, registered loss type
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
@@ -61,7 +59,6 @@ def valid_decoder_only_config():
         prediction_length=5,
         context_length=10,
         architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
-        # FIX: Explicitly add ffn_config with required 'intermediate_size'
         decoder_blocks=[
             DecoderBlockConfig(
                 type="default_decoder",
@@ -70,7 +67,6 @@ def valid_decoder_only_config():
                 ),
             )
         ],
-        # FIX: Use a valid, registered loss type
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
@@ -110,7 +106,6 @@ def test_build_raises_for_missing_encoder_blocks():
     Tests that the builder raises a ValueError if the layout requires an encoder
     but no encoder_blocks are provided.
     """
-    # FIX: Add required ffn_config to the decoder block
     bad_config = TransformerTimeSeriesConfig(
         d_model=16,
         feature_size=3,
@@ -119,7 +114,6 @@ def test_build_raises_for_missing_encoder_blocks():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        # Missing encoder_blocks
         decoder_blocks=[
             DecoderBlockConfig(
                 type="default_decoder",
@@ -149,7 +143,6 @@ def test_build_raises_for_missing_decoder_blocks():
         prediction_length=5,
         context_length=10,
         architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
-        # Missing decoder_blocks
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
@@ -160,46 +153,14 @@ def test_build_raises_for_missing_decoder_blocks():
         build_time_series_transformer(bad_config)
 
 
-def test_build_raises_for_missing_loss_config():
+def test_build_raises_for_missing_loss_config(valid_encoder_decoder_config):
     """
     Tests that the builder raises a ValueError if the loss_config is missing.
     """
-    # FIX: Create a dict from a valid config, remove the key, then create a new config
-    base_config_dict = TransformerTimeSeriesConfig(
-        d_model=16,
-        feature_size=3,
-        prediction_length=5,
-        context_length=10,
-        architecture=ArchitectureConfig(
-            type="transformer_architecture", layout="encoder-decoder"
-        ),
-        output_head_config=OutputHeadConfig(type="linear", output_size=1),
-        encoder_blocks=[
-            EncoderBlockConfig(
-                type="default_encoder",
-                ffn_config=StandardFeedForwardConfig(
-                    type="standard", intermediate_size=32
-                ),
-            )
-        ],
-        decoder_blocks=[
-            DecoderBlockConfig(
-                type="default_decoder",
-                ffn_config=StandardFeedForwardConfig(
-                    type="standard", intermediate_size=32
-                ),
-            )
-        ],
-    ).to_dict()
-
-    # Manually remove the default loss_config
-    base_config_dict.pop("loss_config", None)
-    bad_config = TransformerTimeSeriesConfig.from_dict(base_config_dict)
-
-    with pytest.raises(
-        KeyError,
-    ):
-        build_time_series_transformer(bad_config)
+    bad_config_dict = valid_encoder_decoder_config.to_dict()
+    del bad_config_dict["loss_config"]
+    with pytest.raises(ValueError):
+        build_time_series_transformer(TransformerTimeSeriesConfig.from_dict(bad_config_dict))
 
 
 def test_build_with_custom_registered_components(valid_decoder_only_config):
@@ -208,7 +169,6 @@ def test_build_with_custom_registered_components(valid_decoder_only_config):
     """
     from temporal.registry.core import register_module
 
-    # Define and register a custom block
     @register_module("block", "custom_test_block")
     class CustomBlock(nn.Module):
         def __init__(self, config, builder):
@@ -216,17 +176,13 @@ def test_build_with_custom_registered_components(valid_decoder_only_config):
             self.layer = nn.Linear(config.d_model, config.d_model)
 
         def forward(self, hidden_states, **kwargs):
-            return hidden_states, None
+            return {"hidden_states": self.layer(hidden_states)}
 
-    # FIX: Create a new config from a dict instead of using .copy()
     custom_config_dict = valid_decoder_only_config.to_dict()
-    custom_config_dict["decoder_blocks"] = [
-        DecoderBlockConfig(
-            type="custom_test_block",
-            ffn_config=StandardFeedForwardConfig(
-                type="standard", intermediate_size=32
-            ),
-        ).to_dict()
-    ]
-    with pytest.raises(ValueError):
-        TransformerTimeSeriesConfig.from_dict(custom_config_dict)
+    custom_config_dict["decoder_blocks"][0]["type"] = "custom_test_block"
+    
+    custom_config = TransformerTimeSeriesConfig.from_dict(custom_config_dict)
+    
+    model = build_time_series_transformer(custom_config)
+    
+    assert isinstance(model.decoder.layers[0], CustomBlock)

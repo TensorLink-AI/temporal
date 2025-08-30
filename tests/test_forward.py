@@ -43,7 +43,6 @@ def encoder_decoder_config():
                 ),
             )
         ],
-        # FIX: Changed "mse" to a valid, registered loss type.
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
@@ -66,7 +65,6 @@ def decoder_only_config():
                 ),
             )
         ],
-        # FIX: Changed "mse" to a valid, registered loss type.
         loss_config=LossConfig(type="timeseries_generic"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )

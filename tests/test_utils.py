@@ -145,7 +145,7 @@ def test_patch_transform_block_invalid_order(mock_builder):
     default_attention_config = AttentionConfig(type="full", num_heads=4)
     default_ffn_config = StandardFeedForwardConfig(intermediate_size=64)
 
-    with pytest..raises(
+    with pytest.raises(
         ValueError, match="order must be one of 'split_first' or 'merge_first'"
     ):
         AdaptivePatchTransformerBlockConfig(

@@ -31,7 +31,6 @@ def sample_hidden_state(head_params):
 def test_linear_head_forward(head_params, sample_hidden_state):
     """Tests the forward pass of the LinearOutputHead."""
     feature_size = 3
-    # FIX: Changed LinearHead to the correct class name LinearOutputHead
     head = LinearOutputHead(hidden_size=head_params["hidden_size"], output_size=feature_size)
     output = head(sample_hidden_state)
     assert output.shape == (

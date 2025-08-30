@@ -2,7 +2,6 @@ import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
-# FIX: Add all necessary config imports
 from temporal.configs.transformer_block_config import (
     EncoderBlockConfig,
     DecoderBlockConfig,
@@ -20,8 +19,6 @@ from temporal.configs.loss_config import LossConfig
 @pytest.fixture
 def basic_config():
     """Provides a valid, detailed base configuration for component tests."""
-    # FIX: Rewrote the fixture to have a valid, detailed structure.
-    # 'num_heads' is now nested within the attention config of each block.
     return TransformerTimeSeriesConfig(
         feature_size=1,
         d_model=16,
@@ -53,8 +50,6 @@ def basic_config():
     )
 
 # --- Test Cases ---
-# Note: All tests are refactored to create new configs instead of modifying the fixture.
-# Argument names like 'past_values' are updated to 'encoder_inputs' etc.
 
 def test_encoder_only_forward_pass(basic_config):
     """Tests forward pass with an encoder-only architecture."""
@@ -112,8 +107,7 @@ def test_multi_feature_forward_pass(basic_config):
     config_dict["feature_size"] = 3
     config_dict["output_head_config"]["output_size"] = 3
     
-    # FIX: Explicitly set the input_dim for the value embedding to match the feature_size.
-    config_dict["value_embedding_config"]["input_dim"] = 3
+    config_dict["value_embedding_config"]["kwargs"]["input_dim"] = 3
     
     multi_feature_config = TransformerTimeSeriesConfig.from_dict(config_dict)
     model = build_time_series_transformer(multi_feature_config)
@@ -191,11 +185,9 @@ def test_batch_invariance(basic_config):
     """Tests that the model handles different batch sizes."""
     model = build_time_series_transformer(basic_config)
     
-    # Batch size 1
     encoder_b1 = torch.randn(1, basic_config.context_length, basic_config.feature_size)
     decoder_b1 = torch.randn(1, basic_config.prediction_length, basic_config.feature_size)
     
-    # Batch size 4
     encoder_b4 = torch.randn(4, basic_config.context_length, basic_config.feature_size)
     decoder_b4 = torch.randn(4, basic_config.prediction_length, basic_config.feature_size)
 

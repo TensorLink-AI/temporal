@@ -101,17 +101,6 @@ def test_timeseries_loss_with_mask(sample_tensors, loss_mask):
 
 
 # --- SpreadPenalty Tests ---
-def test_spread_penalty_calculation():
-    loss_fn = SpreadPenalty(penalty_type="log", epsilon=0.0, reduction="mean")
-    preds = torch.tensor(
-        [[[1, 2, 3], [4, 5, 6]], [[10, 11, 12], [13, 14, 15]]], dtype=torch.float32
-    )  # spreads are all 2
-
-    penalty = loss_fn(preds)
-    expected_penalty = -torch.log(torch.tensor(2.0))
-    assert torch.isclose(penalty, expected_penalty, atol=1e-6)
-
-
 
 
 def test_spread_penalty_calculation():
@@ -123,7 +112,6 @@ def test_spread_penalty_calculation():
     penalty = loss_fn(preds)
     expected_penalty = -torch.log(torch.tensor(2.0))
     assert torch.isclose(penalty, expected_penalty, atol=1e-6)
-
 
 
 def test_crps_with_spread_penalty(quantile_tensors):
@@ -149,7 +137,6 @@ def test_mixture_nll_loss():
     loss_fn = NegativeLogLikelihoodLoss(distribution_type="mixture")
     batch_size = 4
     seq_len = 10
-    # FIX: Changed component name from "normal" to "gaussian" and updated keys.
     preds_dict = {
         "components": ["gaussian"],
         "mixture_logits": torch.ones(batch_size, seq_len, 1),

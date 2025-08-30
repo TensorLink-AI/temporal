@@ -56,20 +56,17 @@ def test_preprocessor_basic_pass(preprocessor):
 def test_shape_validation_success(preprocessor):
     """Tests that shape validation passes when shapes are correct."""
     input_values = torch.randn(2, 10, 4)
-    # This should run without error
     preprocessor.process(input_values, validate_shapes=True)
 
 
 def test_shape_validation_failure(preprocessor, monkeypatch):
     """
     Tests that shape validation raises an AssertionError on a mismatch.
-    We use monkeypatch to simulate a misconfigured positional embedding.
     """
     input_values = torch.randn(2, 10, 4)
 
-    # Simulate a positional embedding that returns an incorrect shape
     def mock_pos_embedding(*args, **kwargs):
-        return torch.randn(1, 5, preprocessor.config.d_model)  # Mismatched seq_len
+        return torch.randn(1, 5, preprocessor.config.d_model)
 
     monkeypatch.setattr(preprocessor.positional_embedding, "forward", mock_pos_embedding)
 
@@ -92,7 +89,6 @@ def test_verbose_output(preprocessor, capsys):
 
 def test_patched_preprocessor_padding(base_config):
     """Tests that the preprocessor correctly pads for patch embedding."""
-    # FIX: Instantiate TimeSeriesPatchEmbeddingConfig directly with kw-only args.
     patched_config_dict = base_config.to_dict()
     patched_config_dict["value_embedding_config"] = TimeSeriesPatchEmbeddingConfig(
         patch_size=4, feature_size=4
@@ -102,10 +98,8 @@ def test_patched_preprocessor_padding(base_config):
     builder = ModuleBuilder(patched_config)
     preprocessor = InputPreprocessor(patched_config, builder)
 
-    # Sequence length is not a multiple of patch_size
     input_values = torch.randn(2, 11, 4)
 
     output = preprocessor.process(input_values, verbose=True)
 
-    # The output hidden states should have a sequence length of ceil(11/4) = 3
     assert output["hidden_states"].shape[1] == 3
