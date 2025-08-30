@@ -16,14 +16,14 @@ def base_config():
     return TransformerTimeSeriesConfig(
         d_model=16,
         feature_size=4,
-        value_embedding_config=EmbeddingConfig(type="value"),
+        value_embedding_config=EmbeddingConfig(type="value", input_dim=4, d_model=16),
         positional_embedding_config=EmbeddingConfig(
-            type="sinusoidal", kwargs={"max_seq_len": 100}
+            type="sinusoidal", d_model=16, kwargs={"max_seq_len": 100}
         ),
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        output_head_config=OutputHeadConfig(type="linear", output_size=1),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1, hidden_size=16),
     )
 
 
@@ -91,7 +91,7 @@ def test_patched_preprocessor_padding(base_config):
     """Tests that the preprocessor correctly pads for patch embedding."""
     patched_config_dict = base_config.to_dict()
     patched_config_dict["value_embedding_config"] = TimeSeriesPatchEmbeddingConfig(
-        patch_size=4, feature_size=4
+        patch_size=4, d_model=16
     ).to_dict()
     patched_config = TransformerTimeSeriesConfig.from_dict(patched_config_dict)
 

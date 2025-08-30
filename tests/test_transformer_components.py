@@ -12,7 +12,8 @@ from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
-from temporal.configs.loss_config import LossConfig
+from temporal.configs.loss_config import TimeSeriesLossConfig
+from temporal.configs.embedding_config import EmbeddingConfig
 
 # --- Fixtures ---
 
@@ -27,8 +28,10 @@ def basic_config():
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        loss_config=LossConfig(type="timeseries_generic"),
-        output_head_config=OutputHeadConfig(type="linear", output_size=1),
+        loss_config=TimeSeriesLossConfig(loss_type="mse"),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1, hidden_size=16),
+        value_embedding_config=EmbeddingConfig(type="value", input_dim=1, d_model=16),
+        positional_embedding_config=EmbeddingConfig(type="sinusoidal", d_model=16),
         encoder_blocks=[
             EncoderBlockConfig(
                 type="default_encoder",
@@ -107,7 +110,8 @@ def test_multi_feature_forward_pass(basic_config):
     config_dict["feature_size"] = 3
     config_dict["output_head_config"]["output_size"] = 3
     
-    config_dict["value_embedding_config"]["kwargs"]["input_dim"] = 3
+    # FIX: Explicitly set the input_dim for the value embedding to match the feature_size.
+    config_dict["value_embedding_config"]["input_dim"] = 3
     
     multi_feature_config = TransformerTimeSeriesConfig.from_dict(config_dict)
     model = build_time_series_transformer(multi_feature_config)

@@ -179,6 +179,10 @@ class BaseMultiHeadAttention(nn.Module):
                 scores = scores + bias
                 
             if attention_mask is not None:
+                if attention_mask.dim() == 2:
+                    attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+                elif attention_mask.dim() == 3:
+                    attention_mask = attention_mask.unsqueeze(1)
                 scores = scores + attention_mask
 
             probs = self._compute_attn_probs(scores)

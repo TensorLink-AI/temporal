@@ -3,11 +3,15 @@ import unittest
 from unittest.mock import MagicMock
 from temporal.utils.hf_adapter import TimeSeriesTransformerModel
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+from temporal.configs.architecture_config import TransformerArchitectureConfig
 
 class TestTimeSeriesTransformerModel(unittest.TestCase):
 
     def setUp(self):
-        self.config = TransformerTimeSeriesConfig(prediction_length=10)
+        self.config = TransformerTimeSeriesConfig(
+            prediction_length=10,
+            architecture=TransformerArchitectureConfig(layout="encoder-decoder")
+        )
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()
 
@@ -16,7 +20,7 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
         attention_mask = torch.ones(2, 4)
         self.model.forward(input_values=input_values, attention_mask=attention_mask)
         self.model.temporal.forward.assert_called_once_with(
-            input_values=input_values,
+            encoder_inputs=input_values,
             attention_mask=attention_mask
         )
 
@@ -24,7 +28,7 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
         input_values = torch.randn(2, 4, 8)
         self.model.generate(input_values=input_values, prediction_length=5)
         self.model.temporal.generate.assert_called_once_with(
-            input_values=input_values,
+            encoder_inputs=input_values,
             prediction_length=5
         )
 
@@ -32,7 +36,7 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
         input_values = torch.randn(2, 4, 8)
         self.model.generate(input_values=input_values)
         self.model.temporal.generate.assert_called_once_with(
-            input_values=input_values,
+            encoder_inputs=input_values,
             prediction_length=self.config.prediction_length
         )
 
