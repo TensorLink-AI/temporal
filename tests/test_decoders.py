@@ -48,7 +48,6 @@ def decoder_config():
 @pytest.fixture
 def patched_decoder_config(decoder_config):
     """Provides a config with patch embedding."""
-    # FIX: Create a new config object instead of modifying the fixture in place.
     config_dict = decoder_config.to_dict()
     config_dict["value_embedding_config"] = {"type": "patch", "kwargs": {"patch_size": 2}}
     return TransformerTimeSeriesConfig.from_dict(config_dict)
@@ -70,7 +69,6 @@ def decoder(decoder_config, module_builder):
 
 @pytest.fixture
 def patched_decoder(patched_decoder_config):
-    # We need a new builder for the patched config
     builder = ModuleBuilder(patched_decoder_config)
     return TimeSeriesTransformerDecoder(
         config=patched_decoder_config,
@@ -119,4 +117,45 @@ def test_patched_decoder_forward_pass(patched_decoder):
     )
 
 
-def test_decoder_kv_ca
+def test_decoder_kv_caching_mechanism(decoder):
+    batch_size, history_len, enc_seq_len = 2, 8, 10
+    d_model = decoder.config.d_model
+
+    history_embeds = torch.randn(batch_size, history_len, d_model)
+    encoder_hidden_states = torch.randn(batch_size, enc_seq_len, d_model)
+
+    # First pass with history
+    output_with_cache = decoder(
+        hidden_states=history_embeds,
+        encoder_hidden_states=encoder_hidden_states,
+        use_cache=True,
+        return_dict=True,
+    )
+    past_key_values = output_with_cache.past_key_values
+
+    # Second pass with a single new token
+    new_token_embeds = torch.randn(batch_size, 1, d_model)
+    output_stepwise = decoder(
+        hidden_states=new_token_embeds,
+        encoder_hidden_states=encoder_hidden_states,
+        past_key_values=past_key_values,
+        use_cache=True,
+        return_dict=True,
+    )
+
+    # For comparison, run without cache on the full sequence
+    full_sequence_embeds = torch.cat([history_embeds, new_token_embeds], dim=1)
+    output_full = decoder(
+        hidden_states=full_sequence_embeds,
+        encoder_hidden_states=encoder_hidden_states,
+        use_cache=False,
+        return_dict=True,
+    )
+
+    # The last hidden state from the full pass should be very close to the
+    # hidden state from the stepwise pass.
+    assert torch.allclose(
+        output_full.last_hidden_state[:, -1, :],
+        output_stepwise.last_hidden_state[:, -1, :],
+        atol=1e-5,
+    )

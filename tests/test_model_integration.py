@@ -106,7 +106,11 @@ def test_generation_output_shape(generation_model, generation_config):
     )
     with torch.no_grad():
         generated_sequence_b4 = model.generate(encoder_inputs=past_values_b4)
-        expected_shape_b4 = (
-            batch_size,
-            generation_config.prediction_length,
-            generation_config.feature_s
+    expected_shape_b4 = (
+        batch_size,
+        generation_config.prediction_length,
+        generation_config.feature_size,
+    )
+    assert generated_sequence_b4.shape == expected_shape_b4, (
+        f"Generated sequence shape for batch size 4 is incorrect. Expected {expected_shape_b4}, got {generated_sequence_b4.shape}"
+    )
