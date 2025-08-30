@@ -8,12 +8,13 @@ from temporal.configs.transformer_block_config import (
 )
 from temporal.configs.attention_config import FullAttentionConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
-# FIX: Import specific head and embedding configs
-from temporal.configs.output_head_config import LinearOutputHeadConfig
+# FIX: Import the correct base class 'OutputHeadConfig'
+from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.loss_config import TimeSeriesLossConfig
+# FIX: Import the correct specific embedding classes
 from temporal.configs.embedding_config import TimeSeriesValueEmbeddingConfig, SinusoidalPositionalEmbeddingConfig
 
 # --- Fixtures ---
@@ -30,8 +31,8 @@ def basic_config():
             type="transformer_architecture", layout="encoder-decoder"
         ),
         loss_config=TimeSeriesLossConfig(loss_type="mse"),
-        # FIX: Instantiate the correct, specific config classes
-        output_head_config=LinearOutputHeadConfig(type="linear", output_size=1),
+        # FIX: Use the correct class with the 'type' argument
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
         value_embedding_config=TimeSeriesValueEmbeddingConfig(type="value", feature_size=1),
         positional_embedding_config=SinusoidalPositionalEmbeddingConfig(type="sinusoidal"),
         encoder_blocks=[
@@ -111,8 +112,6 @@ def test_multi_feature_forward_pass(basic_config):
     config_dict = basic_config.to_dict()
     config_dict["feature_size"] = 3
     config_dict["output_head_config"]["output_size"] = 3
-    
-    # FIX: Explicitly set the feature_size for the value embedding to match.
     config_dict["value_embedding_config"]["feature_size"] = 3
     
     multi_feature_config = TransformerTimeSeriesConfig.from_dict(config_dict)
