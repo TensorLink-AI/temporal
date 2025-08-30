@@ -179,10 +179,23 @@ class BaseMultiHeadAttention(nn.Module):
                 scores = scores + bias
                 
             if attention_mask is not None:
+                # --- FIX START: Robustly handle attention mask shapes ---
+                # During generation with a KV cache, the query length is 1, but the key length grows.
+                # The attention mask might be oversized. We must slice it to match the scores.
+                query_length = q.size(-2)
+                key_length = k.size(-2)
+                
+                # Ensure the mask is 4D
                 if attention_mask.dim() == 2:
                     attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
                 elif attention_mask.dim() == 3:
                     attention_mask = attention_mask.unsqueeze(1)
+                
+                # Expected mask shape is [B, 1, T_q, T_k]. Slice to match actual T_q and T_k.
+                expected_mask_shape = (B, 1, query_length, key_length)
+                if attention_mask.shape != expected_mask_shape:
+                    attention_mask = attention_mask[:, :, -query_length:, :key_length]
+                # --- FIX END ---
                 scores = scores + attention_mask
 
             probs = self._compute_attn_probs(scores)
