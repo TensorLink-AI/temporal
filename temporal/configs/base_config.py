@@ -49,12 +49,7 @@ class BaseConfig:
         else:
             target_cls = cls
 
-        # Get all fields of the target dataclass that can be initialized.
-        # This is the set of "known" parameters for the target version.
         known_keys = {f.name for f in fields(target_cls) if f.init}
-
-        # Separate known keys from unknown keys.
-        # Unknown keys will either be passed to kwargs or discarded if no kwargs field exists.
         known_data = {}
         unknown_data = {}
 
@@ -64,15 +59,16 @@ class BaseConfig:
             else:
                 unknown_data[k] = v
 
-        # If the target class has a 'kwargs' field, absorb unknown data into it.
-        # Prioritize explicitly passed kwargs over those in unknown_data.
         if 'kwargs' in known_keys:
             existing_kwargs = known_data.get('kwargs', {})
-            # Merge unknown_data into existing_kwargs, existing_kwargs values take precedence
+            # FIX: Recursively build nested configs within kwargs
+            for key, val in existing_kwargs.items():
+                if isinstance(val, dict) and 'type' in val and val['type'] in CONFIG_REGISTRY:
+                    existing_kwargs[key] = CONFIG_REGISTRY[val['type']].from_dict(val)
+            
             merged_kwargs = {**unknown_data, **existing_kwargs}
             known_data['kwargs'] = merged_kwargs
         elif unknown_data:
-            # If there are unknown keys but no 'kwargs' field, you might want to log this.
             print(f"Warning: Discarding unknown keys for {target_cls.__name__}: {list(unknown_data.keys())}")
 
 
@@ -82,7 +78,6 @@ class BaseConfig:
                 field_value = known_data[f.name]
                 field_type = f.type
 
-                # Handle Optional[Type]
                 if hasattr(field_type, '__origin__') and field_type.__origin__ is Optional:
                     field_type = field_type.__args__[0]
 
@@ -90,7 +85,6 @@ class BaseConfig:
                     known_data[f.name] = field_type.from_dict(field_value)
                 elif isinstance(field_value, list):
                     list_items = []
-                    # Determine the type of list elements
                     list_item_type = None
                     if hasattr(f.type, '__args__') and f.type.__args__:
                         list_item_type = f.type.__args__[0]

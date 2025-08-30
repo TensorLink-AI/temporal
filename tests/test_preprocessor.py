@@ -3,7 +3,8 @@ import torch
 from temporal.models.preprocessor import InputPreprocessor
 from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
-from temporal.configs.embedding_config import EmbeddingConfig, TimeSeriesPatchEmbeddingConfig
+# FIX: Import specific embedding configs instead of the base class
+from temporal.configs.embedding_config import TimeSeriesValueEmbeddingConfig, SinusoidalPositionalEmbeddingConfig, TimeSeriesPatchEmbeddingConfig
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
@@ -16,14 +17,15 @@ def base_config():
     return TransformerTimeSeriesConfig(
         d_model=16,
         feature_size=4,
-        value_embedding_config=EmbeddingConfig(type="value", input_dim=4, d_model=16),
-        positional_embedding_config=EmbeddingConfig(
-            type="sinusoidal", d_model=16, kwargs={"max_seq_len": 100}
+        # FIX: Instantiate the correct, specific config classes
+        value_embedding_config=TimeSeriesValueEmbeddingConfig(type="value", feature_size=4),
+        positional_embedding_config=SinusoidalPositionalEmbeddingConfig(
+            type="sinusoidal", max_seq_len=100
         ),
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        output_head_config=OutputHeadConfig(type="linear", output_size=1, hidden_size=16),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 
@@ -89,9 +91,10 @@ def test_verbose_output(preprocessor, capsys):
 
 def test_patched_preprocessor_padding(base_config):
     """Tests that the preprocessor correctly pads for patch embedding."""
+    # FIX: Correctly create the patched config from the base config's dictionary
     patched_config_dict = base_config.to_dict()
     patched_config_dict["value_embedding_config"] = TimeSeriesPatchEmbeddingConfig(
-        patch_size=4, d_model=16
+        type="patch", patch_size=4, feature_size=4
     ).to_dict()
     patched_config = TransformerTimeSeriesConfig.from_dict(patched_config_dict)
 
@@ -102,4 +105,5 @@ def test_patched_preprocessor_padding(base_config):
 
     output = preprocessor.process(input_values, verbose=True)
 
+    # After padding to 12, 12/4 = 3 patches
     assert output["hidden_states"].shape[1] == 3

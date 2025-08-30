@@ -8,12 +8,13 @@ from temporal.configs.transformer_block_config import (
 )
 from temporal.configs.attention_config import FullAttentionConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
-from temporal.configs.output_head_config import OutputHeadConfig
+# FIX: Import specific head and embedding configs
+from temporal.configs.output_head_config import LinearOutputHeadConfig
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.loss_config import TimeSeriesLossConfig
-from temporal.configs.embedding_config import EmbeddingConfig
+from temporal.configs.embedding_config import TimeSeriesValueEmbeddingConfig, SinusoidalPositionalEmbeddingConfig
 
 # --- Fixtures ---
 
@@ -29,9 +30,10 @@ def basic_config():
             type="transformer_architecture", layout="encoder-decoder"
         ),
         loss_config=TimeSeriesLossConfig(loss_type="mse"),
-        output_head_config=OutputHeadConfig(type="linear", output_size=1, hidden_size=16),
-        value_embedding_config=EmbeddingConfig(type="value", input_dim=1, d_model=16),
-        positional_embedding_config=EmbeddingConfig(type="sinusoidal", d_model=16),
+        # FIX: Instantiate the correct, specific config classes
+        output_head_config=LinearOutputHeadConfig(type="linear", output_size=1),
+        value_embedding_config=TimeSeriesValueEmbeddingConfig(type="value", feature_size=1),
+        positional_embedding_config=SinusoidalPositionalEmbeddingConfig(type="sinusoidal"),
         encoder_blocks=[
             EncoderBlockConfig(
                 type="default_encoder",
@@ -110,8 +112,8 @@ def test_multi_feature_forward_pass(basic_config):
     config_dict["feature_size"] = 3
     config_dict["output_head_config"]["output_size"] = 3
     
-    # FIX: Explicitly set the input_dim for the value embedding to match the feature_size.
-    config_dict["value_embedding_config"]["input_dim"] = 3
+    # FIX: Explicitly set the feature_size for the value embedding to match.
+    config_dict["value_embedding_config"]["feature_size"] = 3
     
     multi_feature_config = TransformerTimeSeriesConfig.from_dict(config_dict)
     model = build_time_series_transformer(multi_feature_config)

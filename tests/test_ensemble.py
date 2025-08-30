@@ -13,7 +13,8 @@ class MockModel(nn.Module):
         return self.linear(self.dropout(x))
 
     def generate(self, **kwargs):
-        return self.forward(torch.randn(1, 10))
+        # FIX: Return a 4D tensor to match the expected output shape
+        return self.forward(torch.randn(1, 10)).unsqueeze(0).unsqueeze(2)
 
 class TestEnsembleSampler(unittest.TestCase):
 
