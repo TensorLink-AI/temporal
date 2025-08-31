@@ -12,6 +12,9 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
             prediction_length=10,
             architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
         )
+        # FIX: Add the attribute required by the transformers base class
+        self.config._attn_implementation_internal = "eager"
+        
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()
 
@@ -21,7 +24,9 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
         self.model.forward(input_values=input_values, attention_mask=attention_mask)
         self.model.temporal.forward.assert_called_once_with(
             encoder_inputs=input_values,
-            attention_mask=attention_mask
+            attention_mask=attention_mask,
+            decoder_inputs=None,
+            targets=None
         )
 
     def test_generate_pass(self):

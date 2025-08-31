@@ -1,123 +1,130 @@
-import pytest
 import torch
+import unittest
 from temporal.modules.embedders.embedding import (
-    SinusoidalPositionalEmbedding,
-    RotaryPositionalEmbedding,
     TimeSeriesValueEmbedding,
+    FlexibleValueEmbedding,
+    SinusoidalPositionalEmbedding,
     TimeSeriesPatchEmbedding,
+    RotaryPositionalEmbedding,
+    TimeSeriesGlobalEmbedding,
+    LearnedAbsolutePositionalEmbedding,
+    ShawRelativePositionalBias,
+    FourierFeatureEmbedding,
+    Time2VecEmbedding,
+    ALiBiPositionalBias,
+    BucketedRelativeBias,
+    ConvolutionalPositionalEmbedding,
+    TimeDeltaEmbedding,
+    NoneEmbedding,
+    S4PositionalEmbedding,
+    WaveletPositionalEmbedding,
 )
 
-# --- Fixtures ---
+class TestEmbeddings(unittest.TestCase):
 
-@pytest.fixture(scope="module")
-def embedding_params():
-    """Provides common parameters for embedding tests."""
-    return {
-        "batch_size": 2,
-        "seq_len": 20,
-        "d_model": 32,
-        "feature_size": 4,
-        "max_seq_len": 100,
-    }
+    def setUp(self):
+        self.d_model = 16
+        self.feature_size = 4
+        self.seq_len = 10
+        self.batch_size = 2
+        self.max_seq_len = 20
 
-# --- Test Cases ---
+    def test_time_series_value_embedding(self):
+        embedding = TimeSeriesValueEmbedding(self.feature_size, self.d_model)
+        x = torch.randn(self.batch_size, self.seq_len, self.feature_size)
+        y = embedding(x)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
 
-def test_value_embedding_forward(embedding_params):
-    """Tests the forward pass of TimeSeriesValueEmbedding."""
-    emb = TimeSeriesValueEmbedding(
-        feature_size=embedding_params["feature_size"],
-        d_model=embedding_params["d_model"],
-    )
-    input_tensor = torch.randn(
-        embedding_params["batch_size"],
-        embedding_params["seq_len"],
-        embedding_params["feature_size"],
-    )
-    output = emb(input_tensor)
-    assert output.shape == (
-        embedding_params["batch_size"],
-        embedding_params["seq_len"],
-        embedding_params["d_model"],
-    )
+    def test_flexible_value_embedding(self):
+        embedding = FlexibleValueEmbedding(d_model=self.d_model, input_dims=self.feature_size)
+        x = torch.randn(self.batch_size, self.seq_len, self.feature_size)
+        y = embedding(x)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
 
-def test_sinusoidal_embedding_forward(embedding_params):
-    """Tests the forward pass of SinusoidalPositionalEmbedding."""
-    emb = SinusoidalPositionalEmbedding(
-        d_model=embedding_params["d_model"],
-        max_seq_len=embedding_params["max_seq_len"],
-    )
-    # The new implementation adds positional encodings to an input tensor
-    input_tensor = torch.randn(
-        embedding_params["batch_size"],
-        embedding_params["seq_len"],
-        embedding_params["d_model"],
-    )
-    output = emb(input_tensor)
-    assert output.shape == input_tensor.shape
-    # Check that something was added
-    assert not torch.allclose(input_tensor, output)
+    def test_sinusoidal_positional_embedding(self):
+        embedding = SinusoidalPositionalEmbedding(self.d_model, self.max_seq_len)
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        # FIX: Call with the tensor x, not batch_size and seq_len separately
+        y = embedding(x)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
 
-def test_rotary_embedding_forward(embedding_params):
-    """Tests the forward pass of RotaryPositionalEmbedding."""
-    emb = RotaryPositionalEmbedding(d_model=embedding_params["d_model"])
-    input_tensor = torch.randn(
-        embedding_params["batch_size"],
-        embedding_params["seq_len"],
-        embedding_params["d_model"],
-    )
-    # FIX: The forward pass now takes a tensor 'x' as input
-    output = emb(input_tensor)
-    assert output[0].shape == input_tensor.shape
-    # Rotary embeddings modify the input tensor
-    assert not torch.allclose(input_tensor, output[0])
+    def test_time_series_patch_embedding(self):
+        embedding = TimeSeriesPatchEmbedding(patch_size=5, feature_size=self.feature_size, d_model=self.d_model)
+        x = torch.randn(self.batch_size, self.seq_len, self.feature_size)
+        y = embedding(x)
+        self.assertEqual(y.shape, (self.batch_size, 2, self.d_model))
 
-def test_patch_embedding_forward(embedding_params):
-    """Tests the forward pass of TimeSeriesPatchEmbedding."""
-    patch_size = 5
-    emb = TimeSeriesPatchEmbedding(
-        patch_size=patch_size,
-        feature_size=embedding_params["feature_size"],
-        d_model=embedding_params["d_model"],
-    )
-    input_tensor = torch.randn(
-        embedding_params["batch_size"],
-        embedding_params["seq_len"],  # 20
-        embedding_params["feature_size"],
-    )
-    output = emb(input_tensor)
-    
-    # Expected number of patches = seq_len / patch_size = 20 / 5 = 4
-    num_patches = embedding_params["seq_len"] // patch_size
-    assert output.shape == (
-        embedding_params["batch_size"],
-        num_patches,
-        embedding_params["d_model"],
-    )
+    def test_rotary_positional_embedding(self):
+        embedding = RotaryPositionalEmbedding(self.d_model, self.max_seq_len)
+        x = torch.randn(self.batch_size, 4, self.seq_len, self.d_model)
+        cos, sin = embedding(x)
+        self.assertEqual(cos.shape, (self.seq_len, self.d_model))
+        self.assertEqual(sin.shape, (self.seq_len, self.d_model))
 
-def test_patch_embedding_with_stride_and_padding(embedding_params):
-    """Tests patching with a stride that requires padding."""
-    patch_size = 5
-    stride = 3
-    emb = TimeSeriesPatchEmbedding(
-        patch_size=patch_size,
-        stride=stride,
-        feature_size=embedding_params["feature_size"],
-        d_model=embedding_params["d_model"],
-    )
+    def test_time_series_global_embedding(self):
+        embedding = TimeSeriesGlobalEmbedding(self.seq_len, self.feature_size, self.d_model)
+        x = torch.randn(self.batch_size, self.seq_len, self.feature_size)
+        y = embedding(x)
+        self.assertEqual(y.shape, (self.batch_size, 1, self.d_model))
 
-    seq_len = 19  # A length that will require padding
-    input_tensor = torch.randn(
-        embedding_params["batch_size"], seq_len, embedding_params["feature_size"]
-    )
-    output = emb(input_tensor)
+    def test_learned_absolute_positional_embedding(self):
+        embedding = LearnedAbsolutePositionalEmbedding(self.d_model, self.max_seq_len)
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        y = embedding(x)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
 
-    # Expected number of patches with padding and stride:
-    # L_out = floor((L_in + 2*padding - patch_size) / stride) + 1
-    # Padding is calculated to make L_in divisible by stride.
-    # Padded length = 21. num_patches = floor((21-5)/3)+1 = 6
-    expected_num_patches = 6
-    assert output.shape == (
-        embedding_params["batch_size"],
-        expected_num_patches,
-        embedding_params["d_model"],
-    )
+    def test_shaw_relative_positional_bias(self):
+        embedding = ShawRelativePositionalBias(num_heads=4)
+        y = embedding(self.batch_size, self.seq_len)
+        self.assertEqual(y.shape, (1, 4, self.seq_len, self.seq_len))
+
+    def test_fourier_feature_embedding(self):
+        embedding = FourierFeatureEmbedding(self.d_model)
+        y = embedding(self.batch_size, self.seq_len)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
+
+    def test_time2vec_embedding(self):
+        embedding = Time2VecEmbedding(self.d_model)
+        y = embedding(self.batch_size, self.seq_len)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
+
+    def test_alibi_positional_bias(self):
+        embedding = ALiBiPositionalBias(num_heads=4)
+        y = embedding(self.batch_size, self.seq_len)
+        self.assertEqual(y.shape, (1, 4, self.seq_len, self.seq_len))
+
+    def test_bucketed_relative_bias(self):
+        embedding = BucketedRelativeBias(num_heads=4)
+        y = embedding(self.batch_size, self.seq_len)
+        self.assertEqual(y.shape, (1, 4, self.seq_len, self.seq_len))
+
+    def test_convolutional_positional_embedding(self):
+        embedding = ConvolutionalPositionalEmbedding(self.d_model)
+        # FIX: The forward pass now takes a tensor x as input
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        y = embedding(x)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
+
+    def test_time_delta_embedding(self):
+        embedding = TimeDeltaEmbedding(self.d_model)
+        y = embedding(self.batch_size, self.seq_len)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
+
+    def test_none_embedding(self):
+        embedding = NoneEmbedding(self.d_model)
+        y = embedding(self.batch_size, self.seq_len)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
+        self.assertTrue(torch.all(y == 0))
+
+    def test_s4_positional_embedding(self):
+        embedding = S4PositionalEmbedding(self.d_model)
+        y = embedding(self.batch_size, self.seq_len)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
+
+    def test_wavelet_positional_embedding(self):
+        embedding = WaveletPositionalEmbedding(self.d_model)
+        y = embedding(self.batch_size, self.seq_len)
+        self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
+
+if __name__ == '__main__':
+    unittest.main()

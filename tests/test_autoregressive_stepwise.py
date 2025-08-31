@@ -11,11 +11,13 @@ class MockModel(nn.Module, AutoregressiveStepwiseMixin):
         self.config = config
         self.preprocessor = MagicMock()
         self.decoder = MagicMock()
-        self.output_heads = {"point": MagicMock()}
+        # FIX: Make output_heads a callable MagicMock that returns a dictionary
+        self.output_heads = MagicMock()
+        self.output_heads.return_value = {"point": MagicMock()}
 
     def _get_primary_head(self):
-        return self.output_heads["point"]
-
+        # This now correctly simulates getting a specific head from a head collection
+        return self.output_heads()["point"]
 
 class TestAutoregressiveStepwiseMixin(unittest.TestCase):
 
@@ -24,6 +26,9 @@ class TestAutoregressiveStepwiseMixin(unittest.TestCase):
         self.config.feature_size = 1
         self.config.prediction_length = 5
         self.model = MockModel(self.config)
+        # FIX: The preprocessor needs a denormalize method
+        self.model.preprocessor.denormalize.return_value = torch.randn(2, 5, 1)
+
 
     def test_generate(self):
         decoder_inputs = torch.randn(2, 10, 1)
@@ -31,11 +36,11 @@ class TestAutoregressiveStepwiseMixin(unittest.TestCase):
             "hidden_states": torch.randn(2, 1, 1),
             "attention_mask": torch.ones(2, 1),
         }
-        # FIX: Return an object with attributes, not a dict
         self.model.decoder.return_value = SimpleNamespace(
             last_hidden_state=torch.randn(2, 1, 1),
             past_key_values=None
         )
+        
         primary_head = self.model._get_primary_head()
         primary_head.return_value = {"params": torch.randn(2, 1, 1)}
         primary_head.predict.return_value = torch.randn(2, 1, 1)
@@ -53,11 +58,11 @@ class TestAutoregressiveStepwiseMixin(unittest.TestCase):
             "hidden_states": torch.randn(2, 1, 1),
             "attention_mask": torch.ones(2, 1),
         }
-        # FIX: Return an object with attributes, not a dict
         self.model.decoder.return_value = SimpleNamespace(
             last_hidden_state=torch.randn(2, 1, 1),
             past_key_values=None
         )
+        
         primary_head = self.model._get_primary_head()
         primary_head.return_value = {"params": torch.randn(2, 1, 1)}
         primary_head.predict.return_value = torch.randn(2, 1, 1)
