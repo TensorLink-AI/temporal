@@ -193,7 +193,7 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
         # 4. Project to d_model
         return self.proj(patches)
 
-# Rotary Positional Embedding
+# --- Rotary Positional Embedding (small tweaks) ---
 @register_module("embedding", "rotary")
 class RotaryPositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, max_seq_len: int = 2048, base: int = 10000):
@@ -215,22 +215,31 @@ class RotaryPositionalEmbedding(BaseEmbedding):
 
     def forward(self, x: torch.Tensor, seq_len: int = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Infers seq_len from input and returns the cos/sin caches.
-        Args:
-            x: A dummy tensor of shape [B, H, L, D] to infer device.
-            seq_len: The sequence length.
-        Returns:
-            Tuple of (cos, sin), each of shape [seq_len, d_model].
+        Returns cos/sin caches with shape [seq_len, d_model] on x's device/dtype.
         """
         if seq_len is None:
             seq_len = x.shape[-2]
         if seq_len > self.max_seq_len_cached or self.cos_cached.device != x.device:
             self._build_cache(max(seq_len, self.max_seq_len_cached))
-        
-        cos = self.cos_cached[:seq_len].to(x.device)
-        sin = self.sin_cached[:seq_len].to(x.device)
-        
+
+        # Cast to match Q/K dtype (important for AMP) and device.
+        cos = self.cos_cached[:seq_len].to(device=x.device, dtype=x.dtype)
+        sin = self.sin_cached[:seq_len].to(device=x.device, dtype=x.dtype)
         return cos, sin
+
+    # Optional ergonomic helper for absolute positions (prevents out-of-range when using position_ids)
+    def cos_sin_for_positions(self, x: torch.Tensor, position_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Ensure the cache covers max(position_ids) and return cos/sin caches.
+        position_ids: [B, T] long, absolute positions
+        """
+        needed = int(position_ids.max().item()) + 1
+        if needed > self.max_seq_len_cached or self.cos_cached.device != x.device:
+            self._build_cache(max(needed, self.max_seq_len_cached))
+        cos = self.cos_cached.to(device=x.device, dtype=x.dtype)
+        sin = self.sin_cached.to(device=x.device, dtype=x.dtype)
+        return cos, sin
+
         
 # --- Other Embedding Implementations (Unchanged) ---
 # Global Embedding
