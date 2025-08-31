@@ -1,6 +1,6 @@
 import torch
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, create_autospec
 from temporal.models.transformer_model import TransformerTemporalModel
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.architecture_config import TransformerArchitectureConfig
@@ -11,16 +11,16 @@ class TestTransformerModel(unittest.TestCase):
     def setUp(self):
         # A generic builder for all tests
         self.builder = MagicMock()
-        self.builder.build_preprocessor.return_value = MagicMock(spec=torch.nn.Module)
-        self.builder.build_encoder.return_value = MagicMock(spec=torch.nn.Module)
-        self.builder.build_decoder.return_value = MagicMock(spec=torch.nn.Module)
-        self.builder.build_output_heads.return_value = MagicMock(spec=torch.nn.Module)
-        self.builder.build_loss.return_value = MagicMock(spec=torch.nn.Module)
+        self.builder.build_preprocessor.return_value = create_autospec(torch.nn.Module, instance=True)
+        self.builder.build_encoder.return_value = create_autospec(torch.nn.Module, instance=True)
+        self.builder.build_decoder.return_value = create_autospec(torch.nn.Module, instance=True)
+        self.builder.build_output_heads.return_value = create_autospec(torch.nn.Module, instance=True)
+        self.builder.build_loss.return_value = create_autospec(torch.nn.Module, instance=True)
 
     def test_forward_encoder_decoder(self):
         # FIX: Create a specific, valid config for this test
         config = TransformerTimeSeriesConfig(
-            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder"),
+            architecture=TransformerArchitectureConfig(layout="encoder-decoder"),
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1 # Provide a valid float
@@ -36,7 +36,7 @@ class TestTransformerModel(unittest.TestCase):
     def test_forward_encoder_only(self):
         # FIX: Create a specific, valid config for this test
         config = TransformerTimeSeriesConfig(
-            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-only"),
+            architecture=TransformerArchitectureConfig(layout="encoder-only"),
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             hidden_dropout_prob=0.1
         )
@@ -50,7 +50,7 @@ class TestTransformerModel(unittest.TestCase):
     def test_forward_decoder_only(self):
         # FIX: Create a specific, valid config for this test
         config = TransformerTimeSeriesConfig(
-            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="decoder-only"),
+            architecture=TransformerArchitectureConfig(layout="decoder-only"),
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1
         )
@@ -64,7 +64,7 @@ class TestTransformerModel(unittest.TestCase):
     def test_forward_with_loss(self):
         # FIX: Create a specific, valid config for this test
         config = TransformerTimeSeriesConfig(
-            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder"),
+            architecture=TransformerArchitectureConfig(layout="encoder-decoder"),
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1

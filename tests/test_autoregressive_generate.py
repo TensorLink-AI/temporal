@@ -42,9 +42,9 @@ def patched_model_config():
                 ),
             )
         ],
-        value_embedding_config=TimeSeriesPatchEmbeddingConfig(patch_size=2, feature_size=3),
+        value_embedding_config=TimeSeriesPatchEmbeddingConfig(patch_size=1, feature_size=1),
         loss_config=LossConfig(type="timeseries_generic"),
-        output_head_config=OutputHeadConfig(type="linear", output_size=3),
+        output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 

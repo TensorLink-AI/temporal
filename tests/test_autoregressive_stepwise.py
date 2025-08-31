@@ -9,15 +9,15 @@ from temporal.models.mixin.autoregressive_stepwise import AutoregressiveStepwise
 class FakeHead:
     def __call__(self, hidden_states):
         # Mimic the forward pass, returning a parameter tensor
-        return torch.randn(hidden_states.size(0), hidden_states.size(1), 1)
+        return {"params": torch.randn(hidden_states.size(0), hidden_states.size(1), 1)}
         
     def predict(self, params, method="mean"):
         # Prediction is based on the tensor from the forward pass
-        return torch.randn(params.size(0), params.size(1), 1)
+        return torch.randn(params["params"].size(0), params["params"].size(1), 1)
 
     def sample(self, params, **kwargs):
         # Sampling is based on the tensor from the forward pass
-        return torch.randn(params.size(0), params.size(1), 1)
+        return torch.randn(params["params"].size(0), params["params"].size(1), 1)
 
 class MockModel(nn.Module, AutoregressiveStepwiseMixin):
     def __init__(self, config):

@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import MagicMock
 from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+from temporal.configs.architecture_config import TransformerArchitectureConfig
 
 # FIX: Create a simple stub nn.Module for type checking
 class StubModule(torch.nn.Module):
@@ -13,7 +14,7 @@ class StubModule(torch.nn.Module):
 class TestEncoders(unittest.TestCase):
 
     def setUp(self):
-        self.config = TransformerTimeSeriesConfig()
+        self.config = TransformerTimeSeriesConfig(architecture=TransformerArchitectureConfig())
         self.builder = MagicMock()
         # FIX: The builder must return a valid nn.Module instance
         self.builder.build_block.return_value = StubModule()
@@ -42,7 +43,7 @@ class TestEncoders(unittest.TestCase):
 
     def test_forward_with_output_hidden_states(self):
         hidden_states = torch.randn(2, 10, 16)
-        output = self.encoder(hidden_states, output_hidden_states=True)
+        output = self.encoder(hidden_states, output_hidden_states=_content)
         self.assertIsNotNone(output.hidden_states)
         self.assertEqual(len(output.hidden_states), 3)
 

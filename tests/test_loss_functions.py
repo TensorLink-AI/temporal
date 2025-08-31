@@ -15,17 +15,17 @@ from temporal.modules.losses.loss_functions import (
 class TestLossFunctions(unittest.TestCase):
 
     def setUp(self):
-        self.preds = torch.randn(2, 10, 5)
+        self.preds = torch.randn(2, 10, 3)
         self.targets = torch.randn(2, 10)
 
     def test_mq_loss(self):
         loss_fn = MQLoss(quantiles=[0.1, 0.5, 0.9])
-        loss = loss_fn(self.preds, self.targets)
+        loss = loss_fn(self.preds, self.targets.unsqueeze(-1))
         self.assertIsInstance(loss, torch.Tensor)
 
     def test_weighted_quantile_loss(self):
         loss_fn = WeightedQuantileLoss(quantiles=(0.1, 0.5, 0.9))
-        loss = loss_fn(self.preds, self.targets)
+        loss = loss_fn(self.preds, self.targets.unsqueeze(-1))
         self.assertIsInstance(loss, torch.Tensor)
 
     def test_quantile_loss(self):
@@ -35,12 +35,12 @@ class TestLossFunctions(unittest.TestCase):
 
     def test_kernel_energy_loss(self):
         loss_fn = KernelEnergyLoss()
-        loss = loss_fn(self.preds, self.targets)
+        loss = loss_fn(self.preds, self.targets.unsqueeze(-1))
         self.assertIsInstance(loss, torch.Tensor)
 
     def test_energy_distance_loss(self):
         loss_fn = EnergyDistanceLoss()
-        loss = loss_fn(self.preds, self.targets)
+        loss = loss_fn(self.preds, self.targets.unsqueeze(-1))
         self.assertIsInstance(loss, torch.Tensor)
 
     def test_spectral_loss(self):
