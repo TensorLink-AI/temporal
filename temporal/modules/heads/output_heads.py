@@ -115,7 +115,12 @@ class LinearOutputHead(BaseOutputHead):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.proj(x)  # [B,T,F]
-
+    def predict(self, y_hat: torch.Tensor, method: str = "mean") -> torch.Tensor:
+        """
+        For a linear head, the prediction is simply its forward pass output.
+        The `method` argument is ignored but included for API consistency.
+        """
+        return y_hat
     def sample(
         self,
         y_hat: torch.Tensor,                      # [B,1,F] from forward()
