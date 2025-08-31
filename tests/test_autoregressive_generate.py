@@ -22,7 +22,7 @@ def patched_model_config():
     """Provides a config for a patched encoder-decoder model."""
     return TransformerTimeSeriesConfig(
         d_model=16,
-        feature_size=3,
+        feature_size=1,
         prediction_length=6,  # Multiple of patch size
         context_length=10,
         architecture=ArchitectureConfig(
