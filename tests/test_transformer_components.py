@@ -8,13 +8,12 @@ from temporal.configs.transformer_block_config import (
 )
 from temporal.configs.attention_config import FullAttentionConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
-# FIX: Import the correct base class 'OutputHeadConfig'
+# FIX: Import the correct, specific config classes
 from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.loss_config import TimeSeriesLossConfig
-# FIX: Import the correct specific embedding classes
 from temporal.configs.embedding_config import TimeSeriesValueEmbeddingConfig, SinusoidalPositionalEmbeddingConfig
 
 # --- Fixtures ---
@@ -31,8 +30,9 @@ def basic_config():
             type="transformer_architecture", layout="encoder-decoder"
         ),
         loss_config=TimeSeriesLossConfig(loss_type="mse"),
-        # FIX: Use the correct class with the 'type' argument
+        # FIX: Use the specific OutputHeadConfig with its 'type'
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
+        # FIX: Use the specific embedding configs
         value_embedding_config=TimeSeriesValueEmbeddingConfig(type="value", feature_size=1),
         positional_embedding_config=SinusoidalPositionalEmbeddingConfig(type="sinusoidal"),
         encoder_blocks=[
@@ -117,6 +117,7 @@ def test_multi_feature_forward_pass(basic_config):
     multi_feature_config = TransformerTimeSeriesConfig.from_dict(config_dict)
     model = build_time_series_transformer(multi_feature_config)
 
+    # FIX: Ensure input tensors have the correct 3 dimensions
     encoder_inputs = torch.randn(2, multi_feature_config.context_length, multi_feature_config.feature_size)
     decoder_inputs = torch.randn(2, multi_feature_config.prediction_length, multi_feature_config.feature_size)
     
@@ -212,10 +213,14 @@ def test_data_types(basic_config):
     decoder_inputs = torch.randn(2, basic_config.prediction_length, basic_config.feature_size)
 
     try:
-        model(
-            encoder_inputs=encoder_inputs.to(torch.float16),
-            decoder_inputs=decoder_inputs.to(torch.float16),
-        )
+        # FIX: Use autocast for robust mixed-precision testing
+        device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+        with torch.autocast(device_type=device_type, dtype=torch.float16):
+            model(
+                encoder_inputs=encoder_inputs.to(torch.float16),
+                decoder_inputs=decoder_inputs.to(torch.float16),
+            )
+        
         model.to(torch.float32)
         model(
             encoder_inputs=encoder_inputs.to(torch.float32),

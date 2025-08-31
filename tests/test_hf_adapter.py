@@ -8,20 +8,26 @@ from temporal.configs.architecture_config import TransformerArchitectureConfig
 class TestTimeSeriesTransformerModel(unittest.TestCase):
 
     def setUp(self):
-        self.config = TransformerTimeSeriesConfig(
+        # FIX: Create a mutable copy of the config for modification
+        config_dict = TransformerTimeSeriesConfig(
             prediction_length=10,
             architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
-        )
-        # FIX: Add the attribute required by the transformers base class
-        self.config._attn_implementation_internal = "eager"
+        ).to_dict()
         
+        # The transformers library expects this attribute
+        config_dict['_attn_implementation_internal'] = "eager"
+        
+        # Create a new config from the modified dictionary
+        self.config = TransformerTimeSeriesConfig.from_dict(config_dict)
+
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()
 
     def test_forward_pass(self):
         input_values = torch.randn(2, 4, 8)
         attention_mask = torch.ones(2, 4)
-        self.model.forward(input_values=input_values, attention_mask=attention_mask)
+        # The forward pass now also expects decoder_inputs and targets, provide them
+        self.model.forward(input_values=input_values, attention_mask=attention_mask, decoder_inputs=None, targets=None)
         self.model.temporal.forward.assert_called_once_with(
             encoder_inputs=input_values,
             attention_mask=attention_mask,
