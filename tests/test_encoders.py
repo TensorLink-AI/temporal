@@ -28,12 +28,11 @@ class TestEncoders(unittest.TestCase):
             ),
             # Add attributes required by the encoder's __init__
             hidden_dropout_prob=0.1,
-            layer_norm_config=NormalizationConfig(type="layer", d_model=16),
+            layer_norm_config=NormalizationConfig(type="layer"),
         )
         # The encoder now expects a ModuleList of layers, not configs
         self.layers = nn.ModuleList([MockEncoderLayer(), MockEncoderLayer()])
-        self.builder = MagicMock()
-        self.encoder = TimeSeriesTransformerEncoder(self.config, self.layers, self.builder)
+        self.encoder = TimeSeriesTransformerEncoder(self.config, self.layers)
         
         # Mock the layer normalization that is applied at the end of the forward pass
         self.encoder.layer_norm = MagicMock(return_value=torch.randn(2, 10, 16))
@@ -51,7 +50,7 @@ class TestEncoders(unittest.TestCase):
             MockEncoderLayer(return_attentions=True),
             MockEncoderLayer(return_attentions=True),
         ])
-        self.encoder = TimeSeriesTransformerEncoder(self.config, self.layers, self.builder)
+        self.encoder = TimeSeriesTransformerEncoder(self.config, self.layers)
         self.encoder.layer_norm = MagicMock(return_value=torch.randn(2, 10, 16))
 
         output = self.encoder(hidden_states, output_attentions=True)

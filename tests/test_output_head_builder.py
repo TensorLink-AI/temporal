@@ -31,7 +31,7 @@ class TestOutputHeadBuilder(unittest.TestCase):
 
     def test_build_quantile_regression_head(self):
         self.config.output_head_config = QuantileRegressionOutputHeadConfig(
-            type="quantile_regression", num_quantiles=20, output_size=20
+            type="quantile_regression", num_quantiles=5, output_size=5
         )
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
@@ -39,7 +39,7 @@ class TestOutputHeadBuilder(unittest.TestCase):
 
     def test_build_distpred_head(self):
         self.config.output_head_config = DistPredOutputHeadConfig(
-            type="distpred", output_size=1, num_outputs=3
+            type="distpred", output_size=1, num_outputs=3, dist_family="Gaussian"
         )
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
