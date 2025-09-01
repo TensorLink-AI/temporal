@@ -17,6 +17,14 @@ from temporal.registry.core import register_module
 from temporal.configs.base_config import register_config_type
 from dataclasses import dataclass
 
+# Dummy MSE loss for testing registration
+@register_module("loss", "mse")
+class DummyMSELoss(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+    def forward(self, preds, targets):
+        return ((preds - targets) ** 2).mean()
+
 
 # --- Fixtures ---
 
@@ -48,14 +56,16 @@ def valid_encoder_decoder_config():
                 ),
             )
         ],
-        loss_config=LossConfig(type="point_forecast_mse"),
+        loss_config=LossConfig(type="mse"), # Changed to "mse" for registration test
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
 
 @pytest.fixture
 def valid_decoder_only_config():
-    """Provides a valid configuration for a decoder-only model."""
+    """
+    Provides a valid configuration for a decoder-only model.
+    """
     return TransformerTimeSeriesConfig(
         d_model=16,
         feature_size=3,
@@ -70,7 +80,7 @@ def valid_decoder_only_config():
                 ),
             )
         ],
-        loss_config=LossConfig(type="point_forecast_mse"),
+        loss_config=LossConfig(type="mse"), # Changed to "mse" for registration test
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
@@ -125,7 +135,7 @@ def test_build_raises_for_missing_encoder_blocks():
                 ),
             )
         ],
-        loss_config=LossConfig(type="point_forecast_mse"),
+        loss_config=LossConfig(type="mse"), # Changed to "mse"
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     with pytest.raises(
@@ -146,7 +156,7 @@ def test_build_raises_for_missing_decoder_blocks():
         prediction_length=5,
         context_length=10,
         architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
-        loss_config=LossConfig(type="point_forecast_mse"),
+        loss_config=LossConfig(type="mse"), # Changed to "mse"
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     with pytest.raises(

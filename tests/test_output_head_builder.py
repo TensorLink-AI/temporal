@@ -8,17 +8,21 @@ from temporal.configs.output_head_config import (
     QuantileRegressionOutputHeadConfig,
     DistPredOutputHeadConfig,
     MixtureOutputHeadConfig,
+    LinearOutputHeadConfig # Import LinearOutputHeadConfig
 )
+from temporal.configs.embedding_config import ValueEmbeddingConfig # Import ValueEmbeddingConfig
 
 class TestOutputHeadBuilder(unittest.TestCase):
     def setUp(self):
         self.config = MagicMock()
         self.config.d_model = 16
         self.config.feature_size = 4
+        # Add a mock for value_embedding_config with a kwargs attribute
+        self.config.value_embedding_config = MagicMock(spec=ValueEmbeddingConfig, kwargs={})
         self.builder = MagicMock()
 
     def test_build_linear_head(self):
-        self.config.output_head_config = OutputHeadConfig(type="linear", output_size=1)
+        self.config.output_head_config = LinearOutputHeadConfig(type="linear", output_size=1)
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
         self.assertIsInstance(head, nn.Module)

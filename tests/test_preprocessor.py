@@ -10,6 +10,7 @@ from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.output_head_config import OutputHeadConfig
+import logging
 
 
 @pytest.fixture
@@ -77,12 +78,13 @@ def test_shape_validation_failure(preprocessor, monkeypatch):
         preprocessor.process(input_values, validate_shapes=True)
 
 
-@patch("builtins.print")
-def test_verbose_output(mock_print, preprocessor):
-    """Tests that the verbose flag calls the print function."""
+def test_verbose_output(preprocessor, caplog):
+    """Tests that the verbose flag outputs log messages."""
+    caplog.set_level(logging.INFO) # Set logging level to capture INFO messages
     input_values = torch.randn(2, 10, 4)
     preprocessor.process(input_values, verbose=True)
-    mock_print.assert_called()
+    assert len(caplog.records) > 0 # Check if any log messages were captured
+    assert "Preprocessor: Processing input" in caplog.text # Check for a specific message
 
 
 def test_patched_preprocessor_padding(base_config):

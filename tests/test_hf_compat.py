@@ -10,9 +10,9 @@ class TestHFCompatibleTimeSeriesConfig(unittest.TestCase):
         custom_config = TransformerTimeSeriesConfig(
             architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
         )
-        with patch.object(custom_config, 'to_dict', return_value={
+        with patch.object(custom_config, 'to_flat_dict', return_value={
             "architecture": {"type": "transformer_architecture", "layout": "encoder-decoder"}
-        }) as mock_to_dict:
+        }) as mock_to_flat_dict:
             hf_config = HFCompatibleTimeSeriesConfig.from_custom(custom_config)
         self.assertEqual(hf_config.model_type, "transformer_time_series")
         self.assertEqual(hf_config.architecture["layout"], "encoder-decoder")
