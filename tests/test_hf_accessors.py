@@ -13,6 +13,10 @@ class MockModel(nn.Module):
         self.config = config
         self.linear = nn.Linear(10, 10)
 
+    # Add a state_dict method to the mock model
+    def state_dict(self):
+        return {"weight": torch.randn(1)}
+
 class MockConfig:
     def __init__(self, **kwargs):
         self.model_type = kwargs.get("model_type", "mock")
@@ -39,7 +43,7 @@ class TestHfAccessors(unittest.TestCase):
         save_hf(self.model, self.config, self.save_directory, safe=True)
         self.assertTrue(os.path.exists(os.path.join(self.save_directory, "config.json")))
         self.assertTrue(os.path.exists(os.path.join(self.save_directory, "model.safetensors")))
-        mock_save.assert_called_once() # This assertion should pass now
+        mock_save.assert_called_once()
 
 
     def test_save_hf_unsafe(self):

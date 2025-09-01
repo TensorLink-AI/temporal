@@ -100,7 +100,7 @@ class TestEmbeddings(unittest.TestCase):
     def test_convolutional_positional_embedding(self):
         embedding = ConvolutionalPositionalEmbedding(self.d_model)
         x = torch.randn(self.batch_size, self.seq_len, self.d_model)
-        y = embedding(x, injection_vector=None)
+        y = embedding(x)
         self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
 
     def test_time_delta_embedding(self):

@@ -1,5 +1,6 @@
 import pytest
 import torch
+import logging
 from unittest.mock import patch
 from temporal.models.preprocessor import InputPreprocessor
 from temporal.models.module_builder_helper import ModuleBuilder
@@ -57,11 +58,11 @@ def test_shape_validation_failure(preprocessor, monkeypatch):
     with pytest.raises(AssertionError, match="Shape mismatch"):
         preprocessor.process(input_values, validate_shapes=True)
 
-def test_verbose_output(preprocessor, capsys):
-    input_values = torch.randn(2, 10, 4)
-    preprocessor.process(input_values, verbose=True)
-    captured = capsys.readouterr()
-    assert "Preprocessor: Processing input" in captured.out
+def test_verbose_output(preprocessor, caplog):
+    with caplog.at_level(logging.INFO):
+        input_values = torch.randn(2, 10, 4)
+        preprocessor.process(input_values, verbose=True)
+    assert "Preprocessor: Processing input" in caplog.text
 
 def test_patched_preprocessor_padding(base_config):
     patched_config_dict = base_config.to_dict()

@@ -12,6 +12,7 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
         self.config = MagicMock(spec=TransformerTimeSeriesConfig)
         self.config.prediction_length = 10
         self.config.architecture = TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
+        self.config._attn_implementation = "eager"
 
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()

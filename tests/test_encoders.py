@@ -6,6 +6,7 @@ from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.architecture_config import TransformerArchitectureConfig
 from temporal.configs.normalization_config import NormalizationConfig
+from temporal.configs.transformer_block_config import EncoderBlockConfig
 
 # A mock layer that returns a dict, as expected by the encoder
 class MockEncoderLayer(nn.Module):
@@ -26,15 +27,18 @@ class TestEncoders(unittest.TestCase):
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
-            # Add attributes required by the encoder's __init__
+            encoder_blocks=[EncoderBlockConfig(type="default_encoder")] * 2, # Add block_configs
             hidden_dropout_prob=0.1,
             layer_norm_config=NormalizationConfig(type="layer"),
         )
-        # The encoder now expects a ModuleList of layers, not configs
         self.layers = nn.ModuleList([MockEncoderLayer(), MockEncoderLayer()])
-        self.encoder = TimeSeriesTransformerEncoder(self.config, self.layers)
+        # Correctly instantiate the encoder with the config and layers
+        self.encoder = TimeSeriesTransformerEncoder(
+            config=self.config,
+            block_configs=self.config.encoder_blocks,
+            layers=self.layers
+        )
         
-        # Mock the layer normalization that is applied at the end of the forward pass
         self.encoder.layer_norm = MagicMock(return_value=torch.randn(2, 10, 16))
 
 
@@ -45,12 +49,16 @@ class TestEncoders(unittest.TestCase):
 
     def test_forward_with_output_attentions(self):
         hidden_states = torch.randn(2, 10, 16)
-        # Re-initialize with a layer that is configured to return attentions
         self.layers = nn.ModuleList([
             MockEncoderLayer(return_attentions=True),
             MockEncoderLayer(return_attentions=True),
         ])
-        self.encoder = TimeSeriesTransformerEncoder(self.config, self.layers)
+        # Re-initialize the encoder with the new layers
+        self.encoder = TimeSeriesTransformerEncoder(
+            config=self.config,
+            block_configs=self.config.encoder_blocks,
+            layers=self.layers
+        )
         self.encoder.layer_norm = MagicMock(return_value=torch.randn(2, 10, 16))
 
         output = self.encoder(hidden_states, output_attentions=True)

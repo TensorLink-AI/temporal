@@ -43,10 +43,8 @@ class TestEmbeddings(unittest.TestCase):
 
     def test_sinusoidal_positional_embedding(self):
         embedding = SinusoidalPositionalEmbedding(self.d_model, self.max_seq_len)
-        # Call with batch_size and seq_len to get PE directly
         y = embedding(batch_size=self.batch_size, seq_len=self.seq_len)
         self.assertEqual(y.shape, (self.batch_size, self.seq_len, self.d_model))
-        # Test additive mode as well
         x = torch.randn(self.batch_size, self.seq_len, self.d_model)
         y_add = embedding(x)
         self.assertEqual(y_add.shape, (self.batch_size, self.seq_len, self.d_model))
@@ -55,14 +53,12 @@ class TestEmbeddings(unittest.TestCase):
         embedding = TimeSeriesPatchEmbedding(patch_size=5, feature_size=self.feature_size, d_model=self.d_model)
         x = torch.randn(self.batch_size, self.seq_len, self.feature_size)
         y = embedding(x)
-        # The sequence length becomes seq_len // patch_size (10 // 5 = 2)
         self.assertEqual(y.shape, (self.batch_size, self.seq_len // 5, self.d_model))
 
     def test_rotary_positional_embedding(self):
         embedding = RotaryPositionalEmbedding(self.d_model, self.max_seq_len)
-        # RoPE returns cos and sin, so we need to capture both
-        # The forward method takes x (tensor) or seq_len. Let's pass seq_len directly
-        cos, sin = embedding(seq_len=self.seq_len)
+        x = torch.randn(self.batch_size, self.seq_len, self.d_model)
+        cos, sin = embedding(x=x)
         self.assertEqual(cos.shape, (self.seq_len, self.d_model))
         self.assertEqual(sin.shape, (self.seq_len, self.d_model))
 

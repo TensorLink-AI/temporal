@@ -1,53 +1,46 @@
 import torch
 import torch.nn as nn
 import unittest
-from unittest.mock import MagicMock, create_autospec
+from unittest.mock import MagicMock
 from temporal.models.transformer_model import TransformerTemporalModel
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.architecture_config import TransformerArchitectureConfig
 from temporal.configs.transformer_block_config import EncoderBlockConfig, DecoderBlockConfig
 
-# Custom mock nn.Module to satisfy type checks
-class MockNNModule(nn.Module):
-    def __init__(self, mock_obj):
+# Define a simple mock layer that is a subclass of nn.Module
+class MockLayer(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.mock = mock_obj
+        self.layer = nn.Linear(16, 16) # Dummy layer
 
-    def forward(self, *args, **kwargs):
-        return self.mock(*args, **kwargs)
-
-    def __getattr__(self, name):
-        # Delegate attribute access to the internal mock
-        return getattr(self.mock, name)
-
+    def forward(self, hidden_states, **kwargs):
+        # Return a dictionary to mimic the actual encoder/decoder layer outputs
+        return {"hidden_states": hidden_states}
 
 class TestTransformerModel(unittest.TestCase):
     def setUp(self):
         self.builder = MagicMock()
-        # Use the wrapper to ensure mocks are nn.Module subclasses
-        self.builder.build_preprocessor.return_value = MockNNModule(MagicMock())
-        self.builder.build_encoder.return_value = MockNNModule(MagicMock())
-        self.builder.build_decoder.return_value = MockNNModule(MagicMock())
-        self.builder.build_output_heads.return_value = MockNNModule(MagicMock())
-        self.builder.build_loss.return_value = MockNNModule(MagicMock())
+        # Configure the builder to return instances of our nn.Module subclass
+        self.builder.build_preprocessor.return_value = MockLayer()
+        self.builder.build_encoder.return_value = MockLayer()
+        self.builder.build_decoder.return_value = MockLayer()
+        self.builder.build_output_heads.return_value = nn.ModuleDict({"point": MockLayer()})
+        self.builder.build_loss.return_value = MagicMock() # Loss function doesn't need to be a module
 
     def test_forward_encoder_decoder(self):
         config = TransformerTimeSeriesConfig(
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
+            d_model=16, # Add d_model
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1,
         )
         model = TransformerTemporalModel(config, builder=self.builder)
-        # Mock the internal temporal model's forward pass
-        model.temporal = MagicMock(
-            return_value=MagicMock(logits=torch.randn(2, 5, 1))
-        )
-
-        encoder_inputs = torch.randn(2, 10, 4)
-        decoder_inputs = torch.randn(2, 5, 4)
+        
+        encoder_inputs = torch.randn(2, 10, 16)
+        decoder_inputs = torch.randn(2, 5, 16)
         output = model(encoder_inputs=encoder_inputs, decoder_inputs=decoder_inputs)
         self.assertIsNotNone(output.logits)
 
@@ -56,15 +49,13 @@ class TestTransformerModel(unittest.TestCase):
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="encoder"
             ),
+            d_model=16, # Add d_model
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             hidden_dropout_prob=0.1,
         )
         model = TransformerTemporalModel(config, builder=self.builder)
-        model.temporal = MagicMock(
-            return_value=MagicMock(logits=torch.randn(2, 10, 1))
-        )
 
-        encoder_inputs = torch.randn(2, 10, 4)
+        encoder_inputs = torch.randn(2, 10, 16)
         output = model(encoder_inputs=encoder_inputs)
         self.assertIsNotNone(output.logits)
 
@@ -73,15 +64,13 @@ class TestTransformerModel(unittest.TestCase):
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="decoder"
             ),
+            d_model=16, # Add d_model
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1,
         )
         model = TransformerTemporalModel(config, builder=self.builder)
-        model.temporal = MagicMock(
-            return_value=MagicMock(logits=torch.randn(2, 5, 1))
-        )
 
-        decoder_inputs = torch.randn(2, 5, 4)
+        decoder_inputs = torch.randn(2, 5, 16)
         output = model(decoder_inputs=decoder_inputs)
         self.assertIsNotNone(output.logits)
 
@@ -90,20 +79,17 @@ class TestTransformerModel(unittest.TestCase):
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
+            d_model=16, # Add d_model
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1,
         )
         model = TransformerTemporalModel(config, builder=self.builder)
-        model.temporal = MagicMock(
-            return_value=MagicMock(
-                logits=torch.randn(2, 5, 1), loss=torch.tensor(0.5)
-            )
-        )
+        model.loss_fn = MagicMock(return_value=torch.tensor(0.5))
 
-        encoder_inputs = torch.randn(2, 10, 4)
-        decoder_inputs = torch.randn(2, 5, 4)
-        targets = torch.randn(2, 5, 4)
+        encoder_inputs = torch.randn(2, 10, 16)
+        decoder_inputs = torch.randn(2, 5, 16)
+        targets = torch.randn(2, 5, 16)
         output = model(
             encoder_inputs=encoder_inputs,
             decoder_inputs=decoder_inputs,

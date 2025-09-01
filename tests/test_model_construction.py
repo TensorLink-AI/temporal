@@ -137,23 +137,23 @@ def test_build_with_missing_loss_config_succeeds(valid_encoder_decoder_config):
     del bad_config_dict["loss_config"]
     config_without_loss = TransformerTimeSeriesConfig.from_dict(bad_config_dict)
     model = build_time_series_transformer(config_without_loss)
-    assert model.loss_fn is None
+    assert model.loss_fn is not None # The builder now provides a default loss
+
+@register_config_type("custom_test_block")
+@dataclass(frozen=True)
+class CustomBlockConfig(BaseConfig):
+    d_model: int = 16
+
+@register_module("block", "custom_test_block")
+class CustomBlock(nn.Module):
+    def __init__(self, config, builder):
+        super().__init__()
+        self.layer = nn.Linear(config.d_model, config.d_model)
+
+    def forward(self, hidden_states, **kwargs):
+        return {"hidden_states": self.layer(hidden_states)}
 
 def test_build_with_custom_registered_components(valid_decoder_only_config):
-    @dataclass(frozen=True)
-    @register_config_type("custom_test_block")
-    class CustomBlockConfig(BaseConfig):
-        d_model: int = 16
-
-    @register_module("block", "custom_test_block")
-    class CustomBlock(nn.Module):
-        def __init__(self, config, builder):
-            super().__init__()
-            self.layer = nn.Linear(config.d_model, config.d_model)
-
-        def forward(self, hidden_states, **kwargs):
-            return {"hidden_states": self.layer(hidden_states)}
-
     custom_config_dict = valid_decoder_only_config.to_dict()
     custom_config_dict["decoder_blocks"] = [{"type": "custom_test_block", "d_model": 16}]
     

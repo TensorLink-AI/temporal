@@ -14,11 +14,12 @@ class TestTransformerEncoderLayer(unittest.TestCase):
         self.config.ffn_config = StandardFeedForwardConfig(
             type="standard", intermediate_size=32
         )
-        self.config.normalization_config = MagicMock()
+        # Correctly spec the normalization_config mock
+        self.config.normalization_config = MagicMock(spec=NormalizationConfig)
         self.builder = MagicMock()
-        self.builder.resolve_normalization.return_value = NormalizationConfig(
-            type="layer"
-        )
+        # Mock the builder to return a valid NormalizationConfig instance
+        self.builder.build_normalization.return_value = NormalizationConfig(type="layer")
+        
         self.encoder_layer = TimeSeriesTransformerEncoderLayer(self.config, self.builder)
 
     def test_forward(self):
