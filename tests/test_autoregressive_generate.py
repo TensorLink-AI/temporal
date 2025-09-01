@@ -154,5 +154,5 @@ def test_prediction_length_not_multiple_of_patch_size(patched_model):
     assert predictions.shape == (
         batch_size,
         prediction_length,
-        config.feature_size,
+        config.feature_.size,
     ), "Output shape does not match the requested non-multiple prediction length."

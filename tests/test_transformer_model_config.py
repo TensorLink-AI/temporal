@@ -8,7 +8,7 @@ class TestTransformerModelConfig(unittest.TestCase):
         config = TransformerTimeSeriesConfig(
             d_model=32,
             feature_size=4,
-            architecture=TransformerArchitectureConfig(layout="encoder-decoder")
+            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
         )
         self.assertEqual(config.d_model, 32)
         self.assertEqual(config.feature_size, 4)
@@ -18,17 +18,17 @@ class TestTransformerModelConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             TransformerTimeSeriesConfig(
                 d_model=0,
-                architecture=TransformerArchitectureConfig(layout="encoder-decoder")
+                architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
             )
         with self.assertRaises(ValueError):
             TransformerTimeSeriesConfig(
                 hidden_dropout_prob=1.1,
-                architecture=TransformerArchitectureConfig(layout="encoder-decoder")
+                architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
             )
         with self.assertRaises(ValueError):
             TransformerTimeSeriesConfig(
                 max_position_embeddings=0,
-                architecture=TransformerArchitectureConfig(layout="encoder-decoder")
+                architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
             )
 
     def test_transformer_time_series_config_from_dict(self):

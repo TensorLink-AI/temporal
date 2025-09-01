@@ -20,7 +20,7 @@ class TestTransformerModel(unittest.TestCase):
     def test_forward_encoder_decoder(self):
         # FIX: Create a specific, valid config for this test
         config = TransformerTimeSeriesConfig(
-            architecture=TransformerArchitectureConfig(layout="encoder-decoder"),
+            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder"),
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1 # Provide a valid float
@@ -36,7 +36,7 @@ class TestTransformerModel(unittest.TestCase):
     def test_forward_encoder_only(self):
         # FIX: Create a specific, valid config for this test
         config = TransformerTimeSeriesConfig(
-            architecture=TransformerArchitectureConfig(layout="encoder-only"),
+            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-only"),
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             hidden_dropout_prob=0.1
         )
@@ -50,7 +50,7 @@ class TestTransformerModel(unittest.TestCase):
     def test_forward_decoder_only(self):
         # FIX: Create a specific, valid config for this test
         config = TransformerTimeSeriesConfig(
-            architecture=TransformerArchitectureConfig(layout="decoder-only"),
+            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="decoder-only"),
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1
         )
@@ -64,7 +64,7 @@ class TestTransformerModel(unittest.TestCase):
     def test_forward_with_loss(self):
         # FIX: Create a specific, valid config for this test
         config = TransformerTimeSeriesConfig(
-            architecture=TransformerArchitectureConfig(layout="encoder-decoder"),
+            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder"),
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1

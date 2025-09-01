@@ -10,6 +10,11 @@ class TestOutputHeadBuilder(unittest.TestCase):
         self.config.d_model = 16
         self.config.feature_size = 4
         self.builder = MagicMock()
+        self.config.output_head_config = MagicMock()
+        self.config.output_head_config.__dataclass_fields__ = {
+            'type': 'mock_type',
+            'output_size': 1
+        }
 
     def test_build_linear_head(self):
         self.config.output_head_config.type = "linear"

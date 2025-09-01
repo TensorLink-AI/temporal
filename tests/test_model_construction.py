@@ -8,12 +8,13 @@ from temporal.configs.transformer_block_config import (
     DecoderBlockConfig,
 )
 from temporal.configs.architecture_config import (
-    TransformerArchitectureCode as ArchitectureConfig,
+    TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
 from temporal.configs.loss_config import LossConfig
 from temporal.configs.output_head_config import OutputHeadConfig
-from temporal.registry.core import register_module, register_config_type
+from temporal.registry.core import register_module
+from temporal.configs.base_config import register_config_type
 from dataclasses import dataclass
 
 

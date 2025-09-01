@@ -11,7 +11,7 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
         # FIX: Create a mutable copy of the config for modification
         config_dict = TransformerTimeSeriesConfig(
             prediction_length=10,
-            architecture=TransformerArchitectureConfig(layout="encoder-decoder")
+            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
         ).to_dict()
         
         # The transformers library expects this attribute

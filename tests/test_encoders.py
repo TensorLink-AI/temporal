@@ -14,7 +14,7 @@ class StubModule(torch.nn.Module):
 class TestEncoders(unittest.TestCase):
 
     def setUp(self):
-        self.config = TransformerTimeSeriesConfig(architecture=TransformerArchitectureConfig())
+        self.config = TransformerTimeSeriesConfig(architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder"))
         self.builder = MagicMock()
         # FIX: The builder must return a valid nn.Module instance
         self.builder.build_block.return_value = StubModule()
@@ -43,7 +43,7 @@ class TestEncoders(unittest.TestCase):
 
     def test_forward_with_output_hidden_states(self):
         hidden_states = torch.randn(2, 10, 16)
-        output = self.encoder(hidden_states, output_hidden_states=_content)
+        output = self.encoder(hidden_states, output_hidden_states=True)
         self.assertIsNotNone(output.hidden_states)
         self.assertEqual(len(output.hidden_states), 3)
 
