@@ -9,7 +9,7 @@ from temporal.configs.output_head_config import (
     DistPredOutputHeadConfig,
     MixtureOutputHeadConfig,
 )
-from temporal.configs.embedding_config import ValueEmbeddingConfig # Import ValueEmbeddingConfig
+from temporal.configs.embedding_config import TimeSeriesValueEmbeddingConfig # Corrected Import
 
 class TestOutputHeadBuilder(unittest.TestCase):
     def setUp(self):
@@ -17,7 +17,7 @@ class TestOutputHeadBuilder(unittest.TestCase):
         self.config.d_model = 16
         self.config.feature_size = 4
         # Add a mock for value_embedding_config with a kwargs attribute
-        self.config.value_embedding_config = MagicMock(spec=ValueEmbeddingConfig, kwargs={})
+        self.config.value_embedding_config = MagicMock(spec=TimeSeriesValueEmbeddingConfig, kwargs={}) # Corrected spec
         self.builder = MagicMock()
 
     def test_build_linear_head(self):
