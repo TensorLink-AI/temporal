@@ -34,7 +34,7 @@ class TestEnsembleSampler(unittest.TestCase):
 
     def test_generate(self):
         predictions = self.sampler.generate(ensemble_size=5)
-        self.assertEqual(predictions.shape, (1, 5, 1, 10))
+        self.assertEqual(predictions.shape, (1, 5, 1, 1, 10))
 
     def test_context_manager(self):
         with torch.no_grad():

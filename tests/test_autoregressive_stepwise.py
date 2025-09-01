@@ -13,11 +13,11 @@ class FakeHead:
         
     def predict(self, params, method="mean"):
         # Prediction is based on the tensor from the forward pass
-        return torch.randn(params["point"]["params"].size(0), params["point"]["params"].size(1), 1)
+        return torch.randn(params["params"].size(0), params["params"].size(1), 1)
 
     def sample(self, params, **kwargs):
         # Sampling is based on the tensor from the forward pass
-        return torch.randn(params["point"]["params"].size(0), params["point"]["params"].size(1), 1)
+        return torch.randn(params["params"].size(0), params["params"].size(1), 1)
 
 class MockModel(nn.Module, AutoregressiveStepwiseMixin):
     def __init__(self, config):

@@ -2,12 +2,13 @@ import torch
 import unittest
 from unittest.mock import MagicMock
 from temporal.modules.encoders.transformer_encoder_layer import TimeSeriesTransformerEncoderLayer
+from temporal.configs.attention_config import AttentionConfig
 
 class TestTransformerEncoderLayer(unittest.TestCase):
 
     def setUp(self):
         self.config = MagicMock()
-        self.config.attention_config = MagicMock()
+        self.config.attention_config = MagicMock(spec=AttentionConfig)
         self.config.ffn_config = MagicMock()
         self.config.normalization_config = MagicMock()
         self.builder = MagicMock()

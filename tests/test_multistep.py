@@ -11,7 +11,7 @@ class MockModel(nn.Module, MultiStepMixin):
         self.config = config
         self.preprocessor = MagicMock()
         self.decoder = MagicMock()
-        self.output_heads = {"point": MagicMock()}
+        self.output_heads = nn.ModuleDict({"point": MagicMock()})
 
     def _get_primary_head(self):
         return self.output_heads["point"]
