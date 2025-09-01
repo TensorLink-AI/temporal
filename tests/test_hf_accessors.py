@@ -13,9 +13,9 @@ class MockModel(nn.Module):
         self.config = config
         self.linear = nn.Linear(10, 10)
 
-    # Add a state_dict method to the mock model
     def state_dict(self):
-        return {"weight": torch.randn(1)}
+        # Return a state_dict with the correct keys
+        return {"linear.weight": self.linear.weight, "linear.bias": self.linear.bias}
 
 class MockConfig:
     def __init__(self, **kwargs):

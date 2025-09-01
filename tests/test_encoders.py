@@ -7,6 +7,7 @@ from temporal.configs.transformer_model_config import TransformerTimeSeriesConfi
 from temporal.configs.architecture_config import TransformerArchitectureConfig
 from temporal.configs.normalization_config import NormalizationConfig
 from temporal.configs.transformer_block_config import EncoderBlockConfig
+from temporal.models.module_builder_helper import ModuleBuilder
 
 # A mock layer that returns a dict, as expected by the encoder
 class MockEncoderLayer(nn.Module):
@@ -27,14 +28,16 @@ class TestEncoders(unittest.TestCase):
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
-            encoder_blocks=[EncoderBlockConfig(type="default_encoder")] * 2, # Add block_configs
+            encoder_blocks=[EncoderBlockConfig(type="default_encoder")] * 2,
             hidden_dropout_prob=0.1,
             layer_norm_config=NormalizationConfig(type="layer"),
         )
         self.layers = nn.ModuleList([MockEncoderLayer(), MockEncoderLayer()])
-        # Correctly instantiate the encoder with the config and layers
+        self.builder = MagicMock(spec=ModuleBuilder) # Add mock builder
+        
         self.encoder = TimeSeriesTransformerEncoder(
             config=self.config,
+            builder=self.builder, # Pass builder
             block_configs=self.config.encoder_blocks,
             layers=self.layers
         )
@@ -53,9 +56,9 @@ class TestEncoders(unittest.TestCase):
             MockEncoderLayer(return_attentions=True),
             MockEncoderLayer(return_attentions=True),
         ])
-        # Re-initialize the encoder with the new layers
         self.encoder = TimeSeriesTransformerEncoder(
             config=self.config,
+            builder=self.builder,
             block_configs=self.config.encoder_blocks,
             layers=self.layers
         )
@@ -69,7 +72,7 @@ class TestEncoders(unittest.TestCase):
         hidden_states = torch.randn(2, 10, 16)
         output = self.encoder(hidden_states, output_hidden_states=True)
         self.assertIsNotNone(output.hidden_states)
-        self.assertEqual(len(output.hidden_states), 3) # Initial + 2 layers
+        self.assertEqual(len(output.hidden_states), 3)
 
 if __name__ == '__main__':
     unittest.main()

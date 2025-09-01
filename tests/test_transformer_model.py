@@ -11,28 +11,30 @@ from temporal.configs.transformer_block_config import EncoderBlockConfig, Decode
 class MockLayer(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer = nn.Linear(16, 16) # Dummy layer
+        # Give it a parameter to be discoverable by things like model.parameters()
+        self.param = nn.Parameter(torch.empty(1))
 
     def forward(self, hidden_states, **kwargs):
-        # Return a dictionary to mimic the actual encoder/decoder layer outputs
+        # Return a dictionary to mimic the actual block's output structure
         return {"hidden_states": hidden_states}
 
 class TestTransformerModel(unittest.TestCase):
     def setUp(self):
         self.builder = MagicMock()
-        # Configure the builder to return instances of our nn.Module subclass
-        self.builder.build_preprocessor.return_value = MockLayer()
-        self.builder.build_encoder.return_value = MockLayer()
-        self.builder.build_decoder.return_value = MockLayer()
-        self.builder.build_output_heads.return_value = nn.ModuleDict({"point": MockLayer()})
-        self.builder.build_loss.return_value = MagicMock() # Loss function doesn't need to be a module
+        # Configure the builder to return instances of our valid nn.Module subclass
+        mock_module_instance = MockLayer()
+        self.builder.build_preprocessor.return_value = mock_module_instance
+        self.builder.build_encoder.return_value = mock_module_instance
+        self.builder.build_decoder.return_value = mock_module_instance
+        self.builder.build_output_heads.return_value = nn.ModuleDict({"point": mock_module_instance})
+        self.builder.build_loss.return_value = MagicMock()
 
     def test_forward_encoder_decoder(self):
         config = TransformerTimeSeriesConfig(
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
-            d_model=16, # Add d_model
+            d_model=16,
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1,
@@ -49,7 +51,7 @@ class TestTransformerModel(unittest.TestCase):
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="encoder"
             ),
-            d_model=16, # Add d_model
+            d_model=16,
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             hidden_dropout_prob=0.1,
         )
@@ -64,7 +66,7 @@ class TestTransformerModel(unittest.TestCase):
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="decoder"
             ),
-            d_model=16, # Add d_model
+            d_model=16,
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1,
         )
@@ -79,7 +81,7 @@ class TestTransformerModel(unittest.TestCase):
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
-            d_model=16, # Add d_model
+            d_model=16,
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1,
@@ -96,7 +98,6 @@ class TestTransformerModel(unittest.TestCase):
             targets=targets,
         )
         self.assertIsNotNone(output.loss)
-
 
 if __name__ == "__main__":
     unittest.main()

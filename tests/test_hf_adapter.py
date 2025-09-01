@@ -4,15 +4,19 @@ from unittest.mock import MagicMock
 from temporal.utils.hf_adapter import TimeSeriesTransformerModel
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.architecture_config import TransformerArchitectureConfig
+from temporal.configs.output_head_config import OutputHeadConfig
+from temporal.configs.loss_config import LossConfig
 
 class TestTimeSeriesTransformerModel(unittest.TestCase):
 
     def setUp(self):
-        # Mock the config object to allow attribute assignment
         self.config = MagicMock(spec=TransformerTimeSeriesConfig)
         self.config.prediction_length = 10
         self.config.architecture = TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
         self.config._attn_implementation = "eager"
+        # Add nested mock configs
+        self.config.output_head_config = MagicMock(spec=OutputHeadConfig)
+        self.config.loss_config = MagicMock(spec=LossConfig)
 
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()
@@ -20,7 +24,6 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
     def test_forward_pass(self):
         input_values = torch.randn(2, 4, 8)
         attention_mask = torch.ones(2, 4)
-        # The forward pass now also expects decoder_inputs and targets, provide them
         self.model.forward(input_values=input_values, attention_mask=attention_mask, decoder_inputs=None, targets=None)
         self.model.temporal.forward.assert_called_once_with(
             encoder_inputs=input_values,
