@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.architecture_config import TransformerArchitectureConfig
-from temporal.configs.normalization_config import LayerNormConfig
+from temporal.configs.normalization_config import NormalizationConfig
 
 # A mock layer that returns a dict, as expected by the encoder
 class MockEncoderLayer(nn.Module):
@@ -27,7 +27,7 @@ class TestEncoders(unittest.TestCase):
             ),
             # Add attributes required by the encoder's __init__
             hidden_dropout_prob=0.1,
-            layer_norm_config=LayerNormConfig(type="layer_norm"),
+            layer_norm_config=NormalizationConfig(type="layer"),
         )
         # The encoder now expects a ModuleList of layers, not configs
         self.layers = nn.ModuleList([MockEncoderLayer(), MockEncoderLayer()])
