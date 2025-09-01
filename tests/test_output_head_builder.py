@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import MagicMock, PropertyMock
 from temporal.models.output_head_builder import OutputHeadBuilder
 from temporal.configs.output_head_config import (
-    LinearOutputHeadConfig,
+    OutputHeadConfig,
     GaussianOutputHeadConfig,
     QuantileRegressionOutputHeadConfig,
     DistPredOutputHeadConfig,
@@ -18,7 +18,7 @@ class TestOutputHeadBuilder(unittest.TestCase):
         self.builder = MagicMock()
 
     def test_build_linear_head(self):
-        self.config.output_head_config = LinearOutputHeadConfig(type="linear", output_size=1)
+        self.config.output_head_config = OutputHeadConfig(type="linear", output_size=1)
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
         self.assertIsInstance(head, nn.Module)
