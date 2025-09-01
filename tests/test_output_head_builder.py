@@ -8,7 +8,6 @@ from temporal.configs.output_head_config import (
     QuantileRegressionOutputHeadConfig,
     DistPredOutputHeadConfig,
     MixtureOutputHeadConfig,
-    LinearOutputHeadConfig # Import LinearOutputHeadConfig
 )
 from temporal.configs.embedding_config import ValueEmbeddingConfig # Import ValueEmbeddingConfig
 
@@ -22,7 +21,8 @@ class TestOutputHeadBuilder(unittest.TestCase):
         self.builder = MagicMock()
 
     def test_build_linear_head(self):
-        self.config.output_head_config = LinearOutputHeadConfig(type="linear", output_size=1)
+        # Use OutputHeadConfig with type="linear" as it's the default and there's no LinearOutputHeadConfig dataclass
+        self.config.output_head_config = OutputHeadConfig(type="linear", output_size=1)
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
         self.assertIsInstance(head, nn.Module)
