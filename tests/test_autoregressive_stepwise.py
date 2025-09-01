@@ -6,18 +6,33 @@ from types import SimpleNamespace
 from temporal.models.mixin.autoregressive_stepwise import AutoregressiveStepwiseMixin
 
 # FIX: A robust, self-contained FakeHead for mocking
-class FakeHead:
-    def __call__(self, hidden_states):
-        # Mimic the forward pass, returning a parameter tensor
+class FakeHead(nn.Module):
+    def forward(self, hidden_states):
+        # Mimic the forward pass, returning a parameter dictionary
         return {"params": torch.randn(hidden_states.size(0), hidden_states.size(1), 1)}
-        
+
     def predict(self, params, method="mean"):
         # Prediction is based on the tensor from the forward pass
-        return torch.randn(params["params"].size(0), params["params"].size(1), 1)
+        tensor = self._extract_tensor(params)
+        return torch.randn(tensor.size(0), tensor.size(1), 1)
 
     def sample(self, params, **kwargs):
         # Sampling is based on the tensor from the forward pass
-        return torch.randn(params["params"].size(0), params["params"].size(1), 1)
+        tensor = self._extract_tensor(params)
+        return torch.randn(tensor.size(0), tensor.size(1), 1)
+    
+    def _extract_tensor(self, params):
+        if not isinstance(params, dict):
+            return params
+        
+        if "point" in params and isinstance(params["point"], dict) and "params" in params["point"]:
+            return params["point"]["params"]
+        
+        if "params" in params:
+            return params["params"]
+            
+        raise ValueError("Could not find a 'params' tensor in the mocked head outputs.")
+
 
 class MockModel(nn.Module, AutoregressiveStepwiseMixin):
     def __init__(self, config):
@@ -25,12 +40,10 @@ class MockModel(nn.Module, AutoregressiveStepwiseMixin):
         self.config = config
         self.preprocessor = MagicMock()
         self.decoder = MagicMock()
-        self._primary = FakeHead()
-        # The output_heads mock is a callable that returns a dict containing the FakeHead
-        self.output_heads = MagicMock(return_value={"point": self._primary})
+        self.output_heads = nn.ModuleDict({"point": FakeHead()})
 
     def _get_primary_head(self):
-        return self.output_heads()["point"]
+        return self.output_heads["point"]
 
 class TestAutoregressiveStepwiseMixin(unittest.TestCase):
 
