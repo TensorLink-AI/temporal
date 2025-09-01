@@ -8,10 +8,11 @@ from temporal.configs.architecture_config import TransformerArchitectureConfig
 class TestTimeSeriesTransformerModel(unittest.TestCase):
 
     def setUp(self):
-        # Mock the config object to allow attribute assignment
-        self.config = MagicMock(spec=TransformerTimeSeriesConfig)
-        self.config.prediction_length = 10
-        self.config.architecture = TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
+        # Use a concrete config object
+        self.config = TransformerTimeSeriesConfig(
+            prediction_length=10,
+            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
+        )
 
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()

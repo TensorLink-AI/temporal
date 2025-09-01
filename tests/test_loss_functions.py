@@ -20,12 +20,12 @@ class TestLossFunctions(unittest.TestCase):
 
     def test_mq_loss(self):
         loss_fn = MQLoss(quantiles=[0.1, 0.5, 0.9])
-        loss = loss_fn(self.preds.view(2, 10, -1), self.targets.view(2, 10, -1))
+        loss = loss_fn(self.preds, self.targets)
         self.assertIsInstance(loss, torch.Tensor)
 
     def test_weighted_quantile_loss(self):
         loss_fn = WeightedQuantileLoss(quantiles=(0.1, 0.5, 0.9))
-        loss = loss_fn(self.preds.view(2, 10, -1), self.targets.view(2, 10, -1))
+        loss = loss_fn(self.preds, self.targets)
         self.assertIsInstance(loss, torch.Tensor)
 
     def test_quantile_loss(self):
@@ -35,12 +35,12 @@ class TestLossFunctions(unittest.TestCase):
 
     def test_kernel_energy_loss(self):
         loss_fn = KernelEnergyLoss()
-        loss = loss_fn(self.preds.view(2, 10, -1), self.targets.view(2, 10, -1))
+        loss = loss_fn(self.preds, self.targets)
         self.assertIsInstance(loss, torch.Tensor)
 
     def test_energy_distance_loss(self):
         loss_fn = EnergyDistanceLoss()
-        loss = loss_fn(self.preds.view(2, 10, -1), self.targets.view(2, 10, -1))
+        loss = loss_fn(self.preds, self.targets)
         self.assertIsInstance(loss, torch.Tensor)
 
     def test_spectral_loss(self):
@@ -59,8 +59,9 @@ class TestLossFunctions(unittest.TestCase):
         self.assertIsInstance(loss, torch.Tensor)
 
     def test_mixture_loss(self):
-        loss_fn = MixtureLoss(components=["normal", "student_t"])
+        loss_fn = MixtureLoss()
         preds = {
+            "components": ["normal", "student_t"],
             "mixture_logits": torch.randn(2, 10, 2),
             "normal_mu": torch.randn(2, 10),
             "normal_scale": torch.randn(2, 10),

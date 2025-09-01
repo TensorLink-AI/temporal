@@ -13,7 +13,7 @@ from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
-from temporal.configs.loss_config import TimeSeriesLossConfig
+from temporal.configs.loss_config import LossConfig
 from temporal.configs.embedding_config import TimeSeriesValueEmbeddingConfig, SinusoidalPositionalEmbeddingConfig
 
 # --- Fixtures ---
@@ -23,13 +23,13 @@ def basic_config():
     """Provides a valid, detailed base configuration for component tests."""
     return TransformerTimeSeriesConfig(
         feature_size=1,
-        d_model=4,
+        d_model=16,
         context_length=10,
         prediction_length=5,
         architecture=ArchitectureConfig(
             type="transformer_architecture", layout="encoder-decoder"
         ),
-        loss_config=TimeSeriesLossConfig(loss_type="mse"),
+        loss_config=LossConfig(type="mse"),
         # FIX: Use the specific OutputHeadConfig with its 'type'
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
         # FIX: Use the specific embedding configs
