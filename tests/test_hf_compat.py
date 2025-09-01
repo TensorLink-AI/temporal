@@ -15,6 +15,7 @@ class TestHFCompatibleTimeSeriesConfig(unittest.TestCase):
 
     def test_to_custom(self):
         hf_config = HFCompatibleTimeSeriesConfig(
+            model_type="transformer_time_series",
             architecture={"type": "transformer_architecture", "layout": "encoder-decoder"}
         )
         custom_config = hf_config.to_custom()

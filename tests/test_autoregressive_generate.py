@@ -1,6 +1,6 @@
 import pytest
 import torch
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 from temporal.models.builder import build_time_series_transformer
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.transformer_block_config import (
@@ -19,11 +19,10 @@ from temporal.configs.loss_config import LossConfig
 class MockHeadWrapper(torch.nn.Module):
     def __init__(self, module_dict):
         super().__init__()
-        self._modules_dict = module_dict
+        self.point = module_dict['point']
 
     def forward(self, *args, **kwargs):
-        # Delegate to the 'point' head, which is the default
-        return self._modules_dict['point'](*args, **kwargs)
+        return self.point(*args, **kwargs)
 
 # --- Fixtures ---
 @pytest.fixture(scope="module")
@@ -116,8 +115,10 @@ def test_probabilistic_generation_quantiles(patched_model):
     # This test requires a head that can produce quantiles. We'll replace the linear head.
     original_head = patched_model.output_heads
     from temporal.modules.heads.output_heads import GaussianHead
+    mock_head = GaussianHead(hidden_size=config.d_model, output_size=config.feature_size)
+    mock_head.sample_quantiles = MagicMock(return_value=torch.randn(batch_size, config.prediction_length, config.feature_size, len(quantile_levels)))
     patched_model.output_heads = MockHeadWrapper(torch.nn.ModuleDict({
-        "point": GaussianHead(hidden_size=config.d_model, output_size=config.feature_size)
+        "point": mock_head
     }))
 
     predictions = patched_model.generate(
@@ -161,6 +162,14 @@ def test_prediction_length_not_multiple_of_patch_size(patched_model):
     context = torch.randn(batch_size, config.context_length, config.feature_size)
     prediction_length = 7  # Not a multiple of patch size 2
 
+    # Add a mock predict method to the head
+    original_head = patched_model.output_heads
+    mock_head = original_head.point
+    mock_head.predict = MagicMock(return_value=torch.randn(batch_size, prediction_length, config.feature_size))
+    patched_model.output_heads = MockHeadWrapper(torch.nn.ModuleDict({
+        "point": mock_head
+    }))
+
     predictions = patched_model.generate(
         encoder_inputs=context, prediction_length=prediction_length
     )
@@ -170,3 +179,6 @@ def test_prediction_length_not_multiple_of_patch_size(patched_model):
         prediction_length,
         config.feature_size,
     ), "Output shape does not match the requested non-multiple prediction length."
+
+    # Restore the original head
+    patched_model.output_heads = original_head

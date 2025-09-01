@@ -14,8 +14,8 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
             architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
         )
         
-        # Now, add the required attribute directly to the object
-        self.config._attn_implementation_internal = "eager"
+        # Now, add the required attribute directly to the object, bypassing the frozen dataclass
+        object.__setattr__(self.config, '_attn_implementation_internal', 'eager')
 
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()
