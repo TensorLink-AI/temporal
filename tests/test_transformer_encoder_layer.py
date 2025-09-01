@@ -3,13 +3,17 @@ import unittest
 from unittest.mock import MagicMock
 from temporal.modules.encoders.transformer_encoder_layer import TimeSeriesTransformerEncoderLayer
 from temporal.configs.attention_config import AttentionConfig
+from temporal.configs.feedforward_config import StandardFeedForwardConfig
 
 class TestTransformerEncoderLayer(unittest.TestCase):
-
     def setUp(self):
         self.config = MagicMock()
+        self.config.d_model = 16
         self.config.attention_config = MagicMock(spec=AttentionConfig)
-        self.config.ffn_config = MagicMock()
+        # Provide a concrete ffn_config that can be resolved
+        self.config.ffn_config = StandardFeedForwardConfig(
+            type="standard", intermediate_size=32
+        )
         self.config.normalization_config = MagicMock()
         self.builder = MagicMock()
         self.encoder_layer = TimeSeriesTransformerEncoderLayer(self.config, self.builder)
@@ -21,10 +25,15 @@ class TestTransformerEncoderLayer(unittest.TestCase):
 
     def test_forward_with_output_attentions(self):
         hidden_states = torch.randn(2, 10, 16)
-        self.encoder_layer.self_attn.return_value = (torch.randn(2, 10, 16), torch.randn(2, 4, 10, 10))
+        # Mock the attention module to return weights
+        self.encoder_layer.self_attn.return_value = (
+            torch.randn(2, 10, 16),
+            torch.randn(2, 4, 10, 10),
+        )
         output = self.encoder_layer(hidden_states, output_attentions=True)
         self.assertIsNotNone(output.attention_weights)
         self.assertEqual(output.attention_weights.shape, (2, 4, 10, 10))
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

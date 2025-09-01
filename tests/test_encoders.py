@@ -1,27 +1,40 @@
 import torch
+import torch.nn as nn
 import unittest
 from unittest.mock import MagicMock
 from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.architecture_config import TransformerArchitectureConfig
 
-# FIX: Create a simple stub nn.Module for type checking
-class StubModule(torch.nn.Module):
-    def forward(self, *args, **kwargs):
-        # Return a dict to mimic the expected output of a layer
-        return {"hidden_states": args[0]}
+# A mock layer that returns a dict, as expected by the encoder
+class MockEncoderLayer(nn.Module):
+    def __init__(self, return_attentions=False):
+        super().__init__()
+        self.return_attentions = return_attentions
+
+    def forward(self, hidden_states, **kwargs):
+        output = {"hidden_states": hidden_states}
+        if self.return_attentions:
+            output["attention_weights"] = torch.randn(2, 4, 10, 10)
+        return output
 
 class TestEncoders(unittest.TestCase):
-
     def setUp(self):
-        self.config = TransformerTimeSeriesConfig(architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder"))
-        self.builder = MagicMock()
-        # FIX: The builder must return a valid nn.Module instance
-        self.builder.build_block.return_value = StubModule()
+        self.config = TransformerTimeSeriesConfig(
+            architecture=TransformerArchitectureConfig(
+                type="transformer_architecture", layout="encoder-decoder"
+            ),
+            # Add attributes required by the encoder's __init__
+            hidden_dropout_prob=0.1,
+            layer_norm_config=MagicMock(),
+        )
+        # The encoder now expects a ModuleList of layers, not configs
+        self.layers = nn.ModuleList([MockEncoderLayer(), MockEncoderLayer()])
+        self.encoder = TimeSeriesTransformerEncoder(self.config, self.layers)
         
-        # We can still use MagicMock for block_configs as they are just configuration holders
-        self.block_configs = [MagicMock()] * 2
-        self.encoder = TimeSeriesTransformerEncoder(self.config, self.builder, self.block_configs)
+        # Mock the layer normalization that is applied at the end of the forward pass
+        self.encoder.layer_norm = MagicMock(return_value=torch.randn(2, 10, 16))
+
 
     def test_forward(self):
         hidden_states = torch.randn(2, 10, 16)
@@ -30,13 +43,14 @@ class TestEncoders(unittest.TestCase):
 
     def test_forward_with_output_attentions(self):
         hidden_states = torch.randn(2, 10, 16)
-        # Mock the return value of the stub to include attention weights
-        self.builder.build_block.return_value.forward = MagicMock(
-            return_value={"hidden_states": hidden_states, "attention_weights": torch.randn(2, 4, 10, 10)}
-        )
-        # Re-initialize encoder with the updated mock
-        self.encoder = TimeSeriesTransformerEncoder(self.config, self.builder, self.block_configs)
-        
+        # Re-initialize with a layer that is configured to return attentions
+        self.layers = nn.ModuleList([
+            MockEncoderLayer(return_attentions=True),
+            MockEncoderLayer(return_attentions=True),
+        ])
+        self.encoder = TimeSeriesTransformerEncoder(self.config, self.layers)
+        self.encoder.layer_norm = MagicMock(return_value=torch.randn(2, 10, 16))
+
         output = self.encoder(hidden_states, output_attentions=True)
         self.assertIsNotNone(output.attentions)
         self.assertEqual(len(output.attentions), 2)
@@ -45,7 +59,7 @@ class TestEncoders(unittest.TestCase):
         hidden_states = torch.randn(2, 10, 16)
         output = self.encoder(hidden_states, output_hidden_states=True)
         self.assertIsNotNone(output.hidden_states)
-        self.assertEqual(len(output.hidden_states), 3)
+        self.assertEqual(len(output.hidden_states), 3) # Initial + 2 layers
 
 if __name__ == '__main__':
     unittest.main()

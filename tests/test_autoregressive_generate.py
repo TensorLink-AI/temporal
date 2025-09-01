@@ -1,5 +1,6 @@
 import pytest
 import torch
+from unittest.mock import MagicMock
 from temporal.models.builder import build_time_series_transformer
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.transformer_block_config import (
@@ -13,6 +14,16 @@ from temporal.configs.architecture_config import (
     TransformerArchitectureConfig as ArchitectureConfig,
 )
 from temporal.configs.loss_config import LossConfig
+
+# --- Mock Wrapper ---
+class MockHeadWrapper(torch.nn.Module):
+    def __init__(self, module_dict):
+        super().__init__()
+        self._modules_dict = module_dict
+
+    def forward(self, *args, **kwargs):
+        # Delegate to the 'point' head, which is the default
+        return self._modules_dict['point'](*args, **kwargs)
 
 # --- Fixtures ---
 @pytest.fixture(scope="module")
@@ -52,7 +63,10 @@ def patched_model_config():
 def patched_model(patched_model_config):
     """Builds the patched model."""
     torch.manual_seed(0)
-    return build_time_series_transformer(patched_model_config)
+    model = build_time_series_transformer(patched_model_config)
+    # Wrap the output_heads in the mock wrapper
+    model.output_heads = MockHeadWrapper(model.output_heads)
+    return model
 
 
 # --- New Detailed Tests ---
@@ -102,9 +116,9 @@ def test_probabilistic_generation_quantiles(patched_model):
     # This test requires a head that can produce quantiles. We'll replace the linear head.
     original_head = patched_model.output_heads
     from temporal.modules.heads.output_heads import GaussianHead
-    patched_model.output_heads = torch.nn.ModuleDict({
+    patched_model.output_heads = MockHeadWrapper(torch.nn.ModuleDict({
         "point": GaussianHead(hidden_size=config.d_model, output_size=config.feature_size)
-    })
+    }))
 
     predictions = patched_model.generate(
         encoder_inputs=context,
@@ -154,5 +168,5 @@ def test_prediction_length_not_multiple_of_patch_size(patched_model):
     assert predictions.shape == (
         batch_size,
         prediction_length,
-        config.feature_.size,
+        config.feature_size,
     ), "Output shape does not match the requested non-multiple prediction length."

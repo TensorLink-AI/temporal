@@ -8,17 +8,14 @@ from temporal.configs.architecture_config import TransformerArchitectureConfig
 class TestTimeSeriesTransformerModel(unittest.TestCase):
 
     def setUp(self):
-        # FIX: Create a mutable copy of the config for modification
-        config_dict = TransformerTimeSeriesConfig(
+        # Create the config object first
+        self.config = TransformerTimeSeriesConfig(
             prediction_length=10,
             architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
-        ).to_dict()
+        )
         
-        # The transformers library expects this attribute
-        config_dict['_attn_implementation_internal'] = "eager"
-        
-        # Create a new config from the modified dictionary
-        self.config = TransformerTimeSeriesConfig.from_dict(config_dict)
+        # Now, add the required attribute directly to the object
+        self.config._attn_implementation_internal = "eager"
 
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()

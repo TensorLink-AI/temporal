@@ -5,6 +5,16 @@ from unittest.mock import MagicMock
 from types import SimpleNamespace
 from temporal.models.mixin.autoregressive_stepwise import AutoregressiveStepwiseMixin
 
+# --- Mock Wrapper ---
+class MockHeadWrapper(torch.nn.Module):
+    def __init__(self, module_dict):
+        super().__init__()
+        self._modules_dict = module_dict
+
+    def forward(self, *args, **kwargs):
+        # Delegate to the 'point' head, which is the default
+        return self._modules_dict['point'](*args, **kwargs)
+
 # FIX: A robust, self-contained FakeHead for mocking
 class FakeHead(nn.Module):
     def forward(self, hidden_states):
@@ -40,10 +50,10 @@ class MockModel(nn.Module, AutoregressiveStepwiseMixin):
         self.config = config
         self.preprocessor = MagicMock()
         self.decoder = MagicMock()
-        self.output_heads = nn.ModuleDict({"point": FakeHead()})
+        self.output_heads = MockHeadWrapper(nn.ModuleDict({"point": FakeHead()}))
 
     def _get_primary_head(self):
-        return self.output_heads["point"]
+        return self.output_heads._modules_dict["point"]
 
 class TestAutoregressiveStepwiseMixin(unittest.TestCase):
 

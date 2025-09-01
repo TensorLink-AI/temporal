@@ -1,53 +1,65 @@
 import torch.nn as nn
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 from temporal.models.output_head_builder import OutputHeadBuilder
+from temporal.configs.output_head_config import (
+    LinearOutputHeadConfig,
+    GaussianOutputHeadConfig,
+    QuantileRegressionOutputHeadConfig,
+    DistPredOutputHeadConfig,
+    MixtureOutputHeadConfig,
+)
 
 class TestOutputHeadBuilder(unittest.TestCase):
-
     def setUp(self):
         self.config = MagicMock()
         self.config.d_model = 16
         self.config.feature_size = 4
         self.builder = MagicMock()
-        self.config.output_head_config = MagicMock()
-        self.config.output_head_config.__dataclass_fields__ = {
-            'type': 'mock_type',
-            'output_size': 1
-        }
 
     def test_build_linear_head(self):
-        self.config.output_head_config.type = "linear"
+        self.config.output_head_config = LinearOutputHeadConfig(type="linear", output_size=1)
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
         self.assertIsInstance(head, nn.Module)
 
     def test_build_gaussian_head(self):
-        self.config.output_head_config.type = "gaussian"
+        self.config.output_head_config = GaussianOutputHeadConfig(type="gaussian", output_size=1)
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
         self.assertIsInstance(head, nn.Module)
 
     def test_build_quantile_regression_head(self):
-        self.config.output_head_config.type = "quantile_regression"
-        self.config.output_head_config.num_quantiles = 5
+        self.config.output_head_config = QuantileRegressionOutputHeadConfig(
+            type="quantile_regression", num_quantiles=5, output_size=5
+        )
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
         self.assertIsInstance(head, nn.Module)
 
     def test_build_distpred_head(self):
-        self.config.output_head_config.type = "distpred"
-        self.config.output_head_config.num_outputs = 3
+        self.config.output_head_config = DistPredOutputHeadConfig(
+            type="distpred", output_size=1, num_outputs=3
+        )
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
         self.assertIsInstance(head, nn.Module)
 
     def test_build_mixture_head(self):
-        self.config.output_head_config.type = "mixture"
-        self.config.output_head_config.components = ["normal", "student_t"]
+        # Mock the sub-head builder calls
+        self.builder.build_output_head.side_effect = [MagicMock(), MagicMock()]
+        self.config.output_head_config = MixtureOutputHeadConfig(
+            type="mixture",
+            output_size=1,
+            components=[
+                GaussianOutputHeadConfig(type="gaussian", output_size=1),
+                GaussianOutputHeadConfig(type="gaussian", output_size=1),
+            ],
+        )
         builder = OutputHeadBuilder(self.config, self.builder)
         head = builder.build()
         self.assertIsInstance(head, nn.Module)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

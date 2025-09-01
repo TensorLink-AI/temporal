@@ -112,8 +112,11 @@ def test_multi_feature_forward_pass(basic_config):
     config_dict = basic_config.to_dict()
     config_dict["feature_size"] = 3
     config_dict["output_head_config"]["output_size"] = 3
-    config_dict["value_embedding_config"]["feature_size"] = 3
-    
+    # Update value_embedding_config after feature_size is changed
+    config_dict["value_embedding_config"] = TimeSeriesValueEmbeddingConfig(
+        type="value", feature_size=3
+    ).to_dict()
+
     multi_feature_config = TransformerTimeSeriesConfig.from_dict(config_dict)
     model = build_time_series_transformer(multi_feature_config)
 
@@ -124,6 +127,7 @@ def test_multi_feature_forward_pass(basic_config):
     output = model(encoder_inputs=encoder_inputs, decoder_inputs=decoder_inputs)
 
     assert output["logits"].shape == (2, multi_feature_config.prediction_length, multi_feature_config.feature_size)
+
 
 def test_different_context_prediction_lengths(basic_config):
     """Tests that the model handles different context and prediction lengths."""
