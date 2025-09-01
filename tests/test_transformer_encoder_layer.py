@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 from temporal.modules.encoders.transformer_encoder_layer import TimeSeriesTransformerEncoderLayer
 from temporal.configs.attention_config import AttentionConfig
 from temporal.configs.feedforward_config import StandardFeedForwardConfig
+from temporal.configs.normalization_config import NormalizationConfig
 
 class TestTransformerEncoderLayer(unittest.TestCase):
     def setUp(self):
@@ -16,6 +17,10 @@ class TestTransformerEncoderLayer(unittest.TestCase):
         )
         self.config.normalization_config = MagicMock()
         self.builder = MagicMock()
+        # Mock the resolve_normalization to return a valid config object
+        self.builder.resolve_normalization.return_value = NormalizationConfig(
+            type="layer", d_model=16
+        )
         self.encoder_layer = TimeSeriesTransformerEncoderLayer(self.config, self.builder)
 
     def test_forward(self):

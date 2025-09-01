@@ -48,7 +48,7 @@ def valid_encoder_decoder_config():
                 ),
             )
         ],
-        loss_config=LossConfig(type="mse"),
+        loss_config=LossConfig(type="point_forecast_mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
@@ -70,7 +70,7 @@ def valid_decoder_only_config():
                 ),
             )
         ],
-        loss_config=LossConfig(type="mse"),
+        loss_config=LossConfig(type="point_forecast_mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
 
@@ -125,7 +125,7 @@ def test_build_raises_for_missing_encoder_blocks():
                 ),
             )
         ],
-        loss_config=LossConfig(type="mse"),
+        loss_config=LossConfig(type="point_forecast_mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     with pytest.raises(
@@ -146,7 +146,7 @@ def test_build_raises_for_missing_decoder_blocks():
         prediction_length=5,
         context_length=10,
         architecture=ArchitectureConfig(type="transformer_architecture", layout="decoder"),
-        loss_config=LossConfig(type="mse"),
+        loss_config=LossConfig(type="point_forecast_mse"),
         output_head_config=OutputHeadConfig(type="linear", output_size=1),
     )
     with pytest.raises(

@@ -54,7 +54,7 @@ class TestTransformerModel(unittest.TestCase):
     def test_forward_encoder_only(self):
         config = TransformerTimeSeriesConfig(
             architecture=TransformerArchitectureConfig(
-                type="transformer_architecture", layout="encoder-only"
+                type="transformer_architecture", layout="encoder"
             ),
             encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
             hidden_dropout_prob=0.1,
@@ -71,7 +71,7 @@ class TestTransformerModel(unittest.TestCase):
     def test_forward_decoder_only(self):
         config = TransformerTimeSeriesConfig(
             architecture=TransformerArchitectureConfig(
-                type="transformer_architecture", layout="decoder-only"
+                type="transformer_architecture", layout="decoder"
             ),
             decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             hidden_dropout_prob=0.1,

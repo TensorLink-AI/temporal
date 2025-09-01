@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import patch
 from temporal.hf_compat.config_wrapper import HFCompatibleTimeSeriesConfig
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.architecture_config import TransformerArchitectureConfig
@@ -10,11 +10,10 @@ class TestHFCompatibleTimeSeriesConfig(unittest.TestCase):
         custom_config = TransformerTimeSeriesConfig(
             architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
         )
-        # Mock the to_dict method
-        custom_config.to_dict = MagicMock(return_value={
+        with patch.object(custom_config, 'to_dict', return_value={
             "architecture": {"type": "transformer_architecture", "layout": "encoder-decoder"}
-        })
-        hf_config = HFCompatibleTimeSeriesConfig.from_custom(custom_config)
+        }) as mock_to_dict:
+            hf_config = HFCompatibleTimeSeriesConfig.from_custom(custom_config)
         self.assertEqual(hf_config.model_type, "transformer_time_series")
         self.assertEqual(hf_config.architecture["layout"], "encoder-decoder")
 

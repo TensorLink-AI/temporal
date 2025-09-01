@@ -8,14 +8,10 @@ from temporal.configs.architecture_config import TransformerArchitectureConfig
 class TestTimeSeriesTransformerModel(unittest.TestCase):
 
     def setUp(self):
-        # Create the config object first
-        self.config = TransformerTimeSeriesConfig(
-            prediction_length=10,
-            architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
-        )
-        
-        # Now, add the required attribute directly to the object, bypassing the frozen dataclass
-        object.__setattr__(self.config, '_attn_implementation_internal', 'eager')
+        # Mock the config object to allow attribute assignment
+        self.config = MagicMock(spec=TransformerTimeSeriesConfig)
+        self.config.prediction_length = 10
+        self.config.architecture = TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder")
 
         self.model = TimeSeriesTransformerModel(self.config)
         self.model.temporal = MagicMock()

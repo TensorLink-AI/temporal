@@ -23,7 +23,7 @@ def basic_config():
     """Provides a valid, detailed base configuration for component tests."""
     return TransformerTimeSeriesConfig(
         feature_size=1,
-        d_model=16,
+        d_model=4,
         context_length=10,
         prediction_length=5,
         architecture=ArchitectureConfig(

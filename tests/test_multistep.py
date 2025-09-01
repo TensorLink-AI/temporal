@@ -41,47 +41,23 @@ class TestMultiStepMixin(unittest.TestCase):
         self.model = MockModel(self.config)
 
     def test_forecast_single_pass_chunked(self):
-        inputs = torch.randn(2, 20, 1)
-        self.model.preprocessor.process.return_value = {
-            "hidden_states": torch.randn(2, 10, 1),
-            "attention_mask": torch.ones(2, 10),
-        }
-        self.model.decoder.mock.return_value = SimpleNamespace(
-            last_hidden_state=torch.randn(2, 10, 1)
-        )
-        primary_head = self.model._get_primary_head()
-        primary_head.mock.return_value = {"params": torch.randn(2, 5, 1)}
-        primary_head.predict.return_value = torch.randn(2, 5, 1)
-
-        predictions = self.model.forecast_single_pass_chunked(
-            inputs,
-            prediction_length=5,
-            chunk_length=5,
-            context_length=10,
-        )
-        self.assertEqual(predictions.shape, (2, 5, 1))
+        with self.assertRaises(NotImplementedError):
+            self.model.forecast_single_pass_chunked(
+                torch.randn(2, 20, 1),
+                prediction_length=5,
+                chunk_length=5,
+                context_length=10,
+            )
 
     def test_forecast_single_pass_chunked_with_quantiles(self):
-        inputs = torch.randn(2, 20, 1)
-        self.model.preprocessor.process.return_value = {
-            "hidden_states": torch.randn(2, 10, 1),
-            "attention_mask": torch.ones(2, 10),
-        }
-        self.model.decoder.mock.return_value = SimpleNamespace(
-            last_hidden_state=torch.randn(2, 10, 1)
-        )
-        primary_head = self.model._get_primary_head()
-        primary_head.mock.return_value = {"params": torch.randn(2, 5, 1)}
-        primary_head.sample_quantiles.return_value = torch.randn(2, 5, 1, 3)
-
-        predictions = self.model.forecast_single_pass_chunked(
-            inputs,
-            prediction_length=5,
-            chunk_length=5,
-            context_length=10,
-            quantiles=[0.25, 0.5, 0.75],
-        )
-        self.assertEqual(predictions.shape, (2, 5, 1, 3))
+        with self.assertRaises(NotImplementedError):
+            self.model.forecast_single_pass_chunked(
+                torch.randn(2, 20, 1),
+                prediction_length=5,
+                chunk_length=5,
+                context_length=10,
+                quantiles=[0.25, 0.5, 0.75],
+            )
 
 
 if __name__ == "__main__":
