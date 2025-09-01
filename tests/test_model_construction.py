@@ -14,7 +14,7 @@ from temporal.configs.feedforward_config import StandardFeedForwardConfig
 from temporal.configs.loss_config import LossConfig
 from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.registry.core import register_module
-from temporal.configs.base_config import register_config_type
+from temporal.configs.base_config import register_config_type, BaseConfig
 from dataclasses import dataclass
 
 @register_module("loss", "mse")
@@ -140,8 +140,6 @@ def test_build_with_missing_loss_config_succeeds(valid_encoder_decoder_config):
     assert model.loss_fn is None
 
 def test_build_with_custom_registered_components(valid_decoder_only_config):
-    from temporal.configs.base_config import BaseConfig
-
     @dataclass(frozen=True)
     @register_config_type("custom_test_block")
     class CustomBlockConfig(BaseConfig):
@@ -157,7 +155,7 @@ def test_build_with_custom_registered_components(valid_decoder_only_config):
             return {"hidden_states": self.layer(hidden_states)}
 
     custom_config_dict = valid_decoder_only_config.to_dict()
-    custom_config_dict["decoder_blocks"][0]["type"] = "custom_test_block"
+    custom_config_dict["decoder_blocks"] = [{"type": "custom_test_block", "d_model": 16}]
     
     custom_config = TransformerTimeSeriesConfig.from_dict(custom_config_dict)
     

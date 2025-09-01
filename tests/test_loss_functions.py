@@ -69,9 +69,9 @@ class TestLossFunctions(unittest.TestCase):
             "components": ["gaussian", "student_t"],
             "gaussian_mu": torch.randn(2, 10),
             "gaussian_sigma": torch.randn(2, 10).abs() + 1e-6,
-            "student_t_df": torch.randn(2, 10).abs() + 2.0,
-            "student_t_loc": torch.randn(2, 10),
-            "student_t_scale": torch.randn(2, 10).abs() + 1e-6,
+            "student_df": torch.randn(2, 10).abs() + 2.0,
+            "student_mu": torch.randn(2, 10),
+            "student_scale": torch.randn(2, 10).abs() + 1e-6,
         }
         loss = loss_fn(preds, self.targets_sequence)
         self.assertIsInstance(loss, torch.Tensor)
