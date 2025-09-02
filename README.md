@@ -14,6 +14,7 @@ It's easy to get started with `temporal`.
 ### Installation
 
 ```bash
+pip install uv
 pip install temporal
 ```
 Your First Forecast in 60 Seconds
@@ -102,4 +103,3 @@ While the Hugging Face `transformers` library is an incredible tool for NLP, tim
 * **Model Builder:** Automates the model creation process and ensures that the resulting model is consistent with the specified configuration.
 * **Rich Module Library:** A comprehensive library of pre-built modules, including a wide variety of attention mechanisms, embeddings, normalization layers, and output heads.
 * **Hugging Face Integration:** An adapter that allows `temporal` models to be easily shared and used within the `transformers` framework.
-

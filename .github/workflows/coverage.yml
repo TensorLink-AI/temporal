@@ -1,41 +1,36 @@
-name: Coverage Badge
+name: Coverage
 
 on:
   push:
     branches: [ main ]
   pull_request:
+    branches: [ main ]
 
 jobs:
-  coverage:
+  build:
+
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ "3.11" ]
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Poetry
-        run: pip install poetry
-
-      - name: Install dependencies (with dev)
-        run: poetry install --with dev
-
-      - name: Run tests with coverage
-        run: |
-          poetry run coverage run -m pytest -vv
-          poetry run coverage report -m
-          poetry run coverage xml
-          poetry run coverage-badge -o coverage.svg -f
-
-      - name: Upload coverage badge to gh-pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: ./
-          destination_dir: coverage
-          keep_files: true
-          allow_empty_commit: true
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install uv
+      run: pip install uv
+    - name: Install dependencies
+      run: uv sync --all-groups
+    - name: Run coverage
+      run: |
+        uv run coverage run -m pytest
+        uv run coverage report -m
+        uv run coverage-badge -o coverage.svg -f
+    - name: Commit coverage badge
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "docs: Update coverage badge"
+        file_pattern: coverage.svg
