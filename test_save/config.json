@@ -1,0 +1,70 @@
+{
+  "type": "transformer",
+  "kwargs": {},
+  "feature_size": 1,
+  "context_length": 4,
+  "prediction_length": 2,
+  "quantiles": [],
+  "output_token_lengths": 1,
+  "loss_config": {
+    "type": "mse",
+    "kwargs": {}
+  },
+  "use_dynamic_features": false,
+  "use_static_features": false,
+  "autoregressive": true,
+  "is_decoder": false,
+  "target_dim": 1,
+  "model_type": "transformer",
+  "d_model": 16,
+  "hidden_dropout_prob": 0.1,
+  "max_position_embeddings": 4096,
+  "architecture": {
+    "type": "transformer_architecture",
+    "layout": "encoder"
+  },
+  "value_embedding_config": {
+    "type": "value",
+    "kwargs": {},
+    "dropout": 0.1,
+    "embedding_dim": null,
+    "feature_size": 1,
+    "use_value_norm": false
+  },
+  "positional_embedding_config": {
+    "type": "sinusoidal",
+    "kwargs": {},
+    "dropout": 0.1,
+    "embedding_dim": null,
+    "max_seq_len": 2048
+  },
+  "encoder_blocks": [],
+  "decoder_blocks": [],
+  "output_head_config": {
+    "type": "linear",
+    "kwargs": {},
+    "output_size": 1
+  },
+  "layer_norm_config": {
+    "type": "layer",
+    "kwargs": {},
+    "eps": 1e-05,
+    "elementwise_affine": true
+  },
+  "instance_norm_config": null,
+  "head_agg_config": {
+    "type": "mean",
+    "kwargs": {}
+  },
+  "quantizer_config": null,
+  "vocab_size": null,
+  "decoder_start_token_id": null,
+  "output_attentions": false,
+  "output_hidden_states": false,
+  "use_teacher_forcing": true,
+  "aux_loss_weight": 0.01,
+  "use_cache": true,
+  "attention_blocks": null,
+  "feedforward_config": null,
+  "_name_or_path": "transformer"
+}

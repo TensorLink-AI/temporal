@@ -10,6 +10,7 @@ class TransformerArchitectureConfig(BaseConfig):
     """
     # All fields are keyword-only, so order doesn't strictly matter, but good practice
     # to put required fields first if there were any in the subclass.
+    type: str = field(default="transformer_architecture")
     layout: str = field(default="encoder-decoder")
     num_encoder_layers: int = field(default=4)
     num_decoder_layers: int = field(default=2)

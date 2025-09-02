@@ -193,7 +193,7 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
         # 4. Project to d_model
         return self.proj(patches)
 
-# Rotary Positional Embedding
+# --- Rotary Positional Embedding (small tweaks) ---
 @register_module("embedding", "rotary")
 class RotaryPositionalEmbedding(BaseEmbedding):
     def __init__(self, d_model: int, max_seq_len: int = 2048, base: int = 10000):
@@ -215,22 +215,31 @@ class RotaryPositionalEmbedding(BaseEmbedding):
 
     def forward(self, x: torch.Tensor, seq_len: int = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Infers seq_len from input and returns the cos/sin caches.
-        Args:
-            x: A dummy tensor of shape [B, H, L, D] to infer device.
-            seq_len: The sequence length.
-        Returns:
-            Tuple of (cos, sin), each of shape [seq_len, d_model].
+        Returns cos/sin caches with shape [seq_len, d_model] on x's device/dtype.
         """
         if seq_len is None:
             seq_len = x.shape[-2]
         if seq_len > self.max_seq_len_cached or self.cos_cached.device != x.device:
             self._build_cache(max(seq_len, self.max_seq_len_cached))
-        
-        cos = self.cos_cached[:seq_len].to(x.device)
-        sin = self.sin_cached[:seq_len].to(x.device)
-        
+
+        # Cast to match Q/K dtype (important for AMP) and device.
+        cos = self.cos_cached[:seq_len].to(device=x.device, dtype=x.dtype)
+        sin = self.sin_cached[:seq_len].to(device=x.device, dtype=x.dtype)
         return cos, sin
+
+    # Optional ergonomic helper for absolute positions (prevents out-of-range when using position_ids)
+    def cos_sin_for_positions(self, x: torch.Tensor, position_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Ensure the cache covers max(position_ids) and return cos/sin caches.
+        position_ids: [B, T] long, absolute positions
+        """
+        needed = int(position_ids.max().item()) + 1
+        if needed > self.max_seq_len_cached or self.cos_cached.device != x.device:
+            self._build_cache(max(needed, self.max_seq_len_cached))
+        cos = self.cos_cached.to(device=x.device, dtype=x.dtype)
+        sin = self.sin_cached.to(device=x.device, dtype=x.dtype)
+        return cos, sin
+
         
 # --- Other Embedding Implementations (Unchanged) ---
 # Global Embedding
@@ -503,22 +512,26 @@ class ConvolutionalPositionalEmbedding(BaseEmbedding):
         self.base = base_cls(d_model=d_model, max_seq_len=max_seq_len)
         self.conv = nn.Conv1d(d_model, d_model, kernel_size, padding=kernel_size // 2, groups=d_model)
 
-    def forward(self, batch_size: int, seq_len: int, past_key_values_length: int = 0) -> torch.Tensor:
-        """
-        Apply conv to base positional embeddings.
+    def forward(
+        self,
+        *,
+        batch_size: int | None = None,
+        seq_len: int | None = None,
+        past_key_values_length: int = 0,
+        x: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        # Call base with keyword-only args
+        emb = self.base(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            past_key_values_length=past_key_values_length,
+        )
+        # conv expects [B, D, L]
+        emb = emb.transpose(1, 2)
+        emb = self.conv(emb)
+        emb = emb.transpose(1, 2)
+        return emb
 
-        Args:
-            batch_size: Batch size.
-            seq_len: Sequence length.
-            past_key_values_length: Offset index.
-
-        Returns:
-            Tensor [B, seq_len, d_model].
-        """
-        emb = self.base(batch_size, seq_len, past_key_values_length)
-        x = emb.permute(0, 2, 1)
-        x = self.conv(x)
-        return x.permute(0, 2, 1)
 
 # -----------------------------
 # TimeDelta Embedding

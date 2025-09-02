@@ -26,13 +26,11 @@ class DummyGenerator:
 @pytest.fixture(autouse=True)
 def cleanup_registries():
     """Fixture to clean up registries before and after each test."""
-    # Store original state
     original_core_registry = {k: v.copy() for k, v in MODULE_REGISTRY.items()}
     original_gen_registry = GENERATE_REGISTRY.copy()
     
-    yield # Run the test
+    yield
     
-    # Restore original state
     MODULE_REGISTRY.clear()
     MODULE_REGISTRY.update(original_core_registry)
     GENERATE_REGISTRY.clear()
@@ -78,9 +76,6 @@ def test_list_registered_modules():
 
 def test_list_registered_for_empty_kind():
     """Tests listing for a valid kind with no registered modules."""
-    # FIX: The 'head_agg' kind is polluted by another test file. To make this
-    # test robust, we create a new, temporary kind that is guaranteed to be empty.
-    # This tests the function's logic without relying on fragile global state.
     test_kind = "_a_guaranteed_empty_kind_"
     MODULE_REGISTRY[test_kind] = {}
     assert list_registered(test_kind) == []

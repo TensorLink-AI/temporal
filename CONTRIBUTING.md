@@ -7,18 +7,18 @@ We welcome any type of contribution, not only code. You can help with
 - **Marketing**: writing blog posts, how-to's, etc.
 - **Community**: presenting the project at meetups, organizing a workshop, etc.
 - **Code**: take a look at the open issues. Even if you can't write code, commenting on them, showing that you care about a given issue matters. It helps us triage them.
-- **Money**: we welcome financial contributions in full transparency on our [open collective](https://opencollective.com/temporal).
+
 
 ## Developing for Temporal
 
-To get started with developing for Temporal, you will need to have `poetry` installed. You can find instructions on how to install it on the [official website](https://python-poetry.org/docs/).
+To get started with developing for Temporal, you will need to have `uv` installed. You can find instructions on how to install it on the [official website](https://astral.sh/uv).
 
-Once you have `poetry` installed, you can clone the repository and install the dependencies:
+Once you have `uv` installed, you can clone the repository and install the dependencies:
 
 ```bash
 git clone https://github.com/your-username/temporal.git
 cd temporal
-poetry install
+uv sync --all-groups
 ```
 
 This will create a virtual environment with all the necessary dependencies to run, test, and develop Temporal.
@@ -28,7 +28,7 @@ This will create a virtual environment with all the necessary dependencies to ru
 To run the tests, you can use the following command:
 
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
 ### Submitting a Pull Request

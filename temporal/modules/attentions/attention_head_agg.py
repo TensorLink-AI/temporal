@@ -90,8 +90,7 @@ class MoEAggregator(nn.Module):
         # [H, B, T, Q] → gate over heads
         scores = []
         for h in head_outputs:
-            mean_h = h.mean(dim=-1, keepdim=True)  # [B, T, 1]
-            gate = self.gate_net(mean_h)  # [B, T, 1]
+            gate = self.gate_net(h)  # [B, T, 1]
             scores.append(gate)
         weights = torch.softmax(torch.stack(scores, dim=0), dim=0)  # [H, B, T, 1]
         stacked = torch.stack(head_outputs, dim=0)  # [H, B, T, Q]
@@ -151,5 +150,4 @@ class SmallMLPAggregator(nn.Module):
         H, B, T, Q = torch.stack(head_outputs, dim=0).shape
         fused = torch.stack(head_outputs, dim=0).permute(1, 2, 0, 3).reshape(B, T, H * Q)  # (B, T, H*Q)
         return self.mlp(fused)
-
 

@@ -1,4 +1,9 @@
-# temporal: The Modern Toolkit for Time Series Forecasting
+# Temporal: The Modern Toolkit for Time Series Forecasting
+
+[![Tests](https://github.com/TensorLink-AI/temporal/actions/workflows/tests.yml/badge.svg)](https://github.com/TensorLink-AI/temporal/actions/workflows/tests.yml)
+[![Coverage](https://github.com/TensorLink-AI/temporal/actions/workflows/coverage.yml/badge.svg)](https://github.com/TensorLink-AI/temporal/actions/workflows/coverage.yml)
+[![Docs](https://github.com/TensorLink-AI/temporal/actions/workflows/docs.yml/badge.svg)](https://tensorlink-ai.github.io/temporal/)
+
 
 **Build, train, and deploy state-of-the-art deep learning models for time series forecasting with unparalleled flexibility and ease.**
 
@@ -11,6 +16,7 @@ It's easy to get started with `temporal`.
 ### Installation
 
 ```bash
+pip install uv
 pip install temporal
 ```
 Your First Forecast in 60 Seconds
@@ -99,4 +105,3 @@ While the Hugging Face `transformers` library is an incredible tool for NLP, tim
 * **Model Builder:** Automates the model creation process and ensures that the resulting model is consistent with the specified configuration.
 * **Rich Module Library:** A comprehensive library of pre-built modules, including a wide variety of attention mechanisms, embeddings, normalization layers, and output heads.
 * **Hugging Face Integration:** An adapter that allows `temporal` models to be easily shared and used within the `transformers` framework.
-

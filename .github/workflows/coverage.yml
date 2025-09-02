@@ -1,0 +1,58 @@
+name: Coverage
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ "3.11" ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          # Install runtime + dev dependencies
+          uv sync --all-groups
+          # Extra safety: ensure coverage tools are available
+          uv pip install coverage coverage-badge pytest
+
+      - name: Create coverage config
+        run: |
+          cat > .coveragerc << 'EOF'
+          [run]
+          branch = True
+          source =
+              temporal
+
+          [report]
+          ignore_errors = True
+          EOF
+
+      - name: Run coverage
+        run: |
+          uv run coverage run -m pytest -vv --disable-warnings
+          uv run coverage report -m
+          uv run coverage xml
+          uv run coverage-badge -o coverage.svg -f
+
+      - name: Commit coverage badge
+        if: github.ref == 'refs/heads/main'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs: Update coverage badge"
+          file_pattern: coverage.svg

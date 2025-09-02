@@ -25,7 +25,7 @@ class StandardFeedForwardConfig(FeedForwardConfig):
     Configuration for a standard feed-forward network.
     """
     type: str = field(default="standard") # Overriding type and making it kw_only
-    intermediate_size: int # Now a required kw-only field
+    intermediate_size: int = 128 # Now a required kw-only field
 
     def __post_init__(self):
         super().__post_init__()

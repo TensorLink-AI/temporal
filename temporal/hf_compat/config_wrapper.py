@@ -13,7 +13,7 @@ class HFCompatibleTimeSeriesConfig(PretrainedConfig):
         return instance
 
     def to_custom(self):
-        from temporal.configs.transformer_config import TransformerTimeSeriesConfig
+        from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
         # Convert HF config back to a dictionary
         custom_dict = self.to_dict()
         # Remove HF-specific keys potentially not expected by the custom config's from_dict
@@ -21,4 +21,3 @@ class HFCompatibleTimeSeriesConfig(PretrainedConfig):
         custom_dict.pop("_name_or_path", None)
         # Use the custom config's standard from_dict method
         return TransformerTimeSeriesConfig.from_dict(custom_dict)
-

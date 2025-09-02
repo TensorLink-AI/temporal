@@ -40,7 +40,8 @@ class BaseTimeSeriesConfig(BaseConfig, PretrainedConfig):
         # and we manually set attributes for frozen dataclass compatibility.
         object.__setattr__(self, "_name_or_path", self.type)
         object.__setattr__(self, "model_type", self.type)
-
+        if not hasattr(self, "_attn_implementation_internal"):
+            object.__setattr__(self, "_attn_implementation_internal", "eager")
         if self.context_length <= 0:
             raise ValueError("context_length must be > 0")
         if self.prediction_length <= 0:
@@ -69,21 +70,43 @@ class BaseTimeSeriesConfig(BaseConfig, PretrainedConfig):
 
     @classmethod
     def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        if "type" not in data:
-            data["type"] = cls.type
+        """
+        Construct a config from a Python dict, normalizing legacy keys and
+        filling sane defaults. Does not mutate the input `data`.
+        """
+        d: Dict[str, Any] = dict(data or {})  # shallow copy to avoid side-effects
 
-        if "loss_config" in data and isinstance(data["loss_config"], dict):
-            data["loss_config"] = loss_config_from_dict(data["loss_config"])
-        elif "loss_type" in data and "loss_config" not in data:
-            data["loss_config"] = loss_config_from_dict({"type": data.pop("loss_type")})
-        
-        num_quantiles = data.pop("num_quantiles", None)
-        if num_quantiles is not None and not data.get("quantiles"):
-            data["quantiles"] = np.linspace(0.5 / num_quantiles, 1 - 0.5 / num_quantiles, num_quantiles).tolist()
-        elif num_quantiles is not None and data.get("quantiles") and num_quantiles != len(data["quantiles"]):
-             raise ValueError(
-                f"num_quantiles ({num_quantiles}) does not match len(quantiles) ({len(data['quantiles'])}).Set one or the other.")
+        # Ensure required 'type' (used by BaseConfig serialization)
+        d.setdefault("type", getattr(cls, "type", cls.__name__.lower()))
 
-        instance = super().from_dict(data)
-        
+        # ---- Normalize loss config ----
+        loss_cfg = d.get("loss_config")
+        if isinstance(loss_cfg, dict):
+            d["loss_config"] = loss_config_from_dict(loss_cfg)
+        elif "loss_type" in d and "loss_config" not in d:
+            d["loss_config"] = loss_config_from_dict({"type": d.pop("loss_type")})
+
+        # ---- Quantiles handling ----
+        num_quantiles = d.pop("num_quantiles", None)
+        if num_quantiles is not None:
+            if not isinstance(num_quantiles, int) or num_quantiles <= 0:
+                raise ValueError("num_quantiles must be a positive integer")
+            if "quantiles" not in d or d["quantiles"] in (None, []):
+                d["quantiles"] = np.linspace(
+                    0.5 / num_quantiles, 1 - 0.5 / num_quantiles, num_quantiles
+                ).tolist()
+            elif len(d["quantiles"]) != num_quantiles:
+                raise ValueError(
+                    f"num_quantiles ({num_quantiles}) does not match "
+                    f"len(quantiles) ({len(d['quantiles'])}). Set one or the other."
+                )
+
+        # Create instance via parent
+        instance: T = super().from_dict(d)
+
+        # ---- HF compatibility: attention implementation flag ----
+        attn_impl = d.get("_attn_implementation") or d.get("_attn_implementation_internal")
+        if attn_impl is not None:
+            object.__setattr__(instance, "_attn_implementation_internal", attn_impl)
+
         return instance
