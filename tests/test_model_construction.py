@@ -9,8 +9,9 @@ from temporal.configs.transformer_block_config import (
     DecoderBlockConfig,
     TransformerBlockConfig,
 )
-from temporal.registry.core import register_module, CONFIG_REGISTRY
-from temporal.configs.base_config import BaseConfig, register_config_type
+# Corrected Imports
+from temporal.registry.core import register_module
+from temporal.configs.base_config import BaseConfig, register_config_type, CONFIG_REGISTRY
 
 
 @pytest.fixture
