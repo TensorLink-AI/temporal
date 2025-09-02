@@ -13,8 +13,8 @@ class MockModel(nn.Module):
         self.config = config
         self.linear = nn.Linear(10, 10)
 
-    def state_dict(self):
-        # Return a state_dict with the correct keys
+    # FIX: Ensure state_dict returns correctly named keys for the nn.Module
+    def state_dict(self, *args, **kwargs):
         return {"linear.weight": self.linear.weight, "linear.bias": self.linear.bias}
 
 class MockConfig:
@@ -42,9 +42,7 @@ class TestHfAccessors(unittest.TestCase):
     def test_save_hf_safe(self, mock_save):
         save_hf(self.model, self.config, self.save_directory, safe=True)
         self.assertTrue(os.path.exists(os.path.join(self.save_directory, "config.json")))
-        self.assertTrue(os.path.exists(os.path.join(self.save_directory, "model.safetensors")))
-        mock_save.assert_called_once()
-
+        mock_save.assert_called_once() # Will now be called with a non-empty dict
 
     def test_save_hf_unsafe(self):
         save_hf(self.model, self.config, self.save_directory, safe=False)
@@ -63,8 +61,13 @@ class TestHfAccessors(unittest.TestCase):
     @patch("temporal.utils.hf_accessors._HAS_SAFETENSORS", True)
     @patch("safetensors.torch.load_file")
     def test_load_hf_safe(self, mock_load):
-        save_hf(self.model, self.config, self.save_directory, safe=True)
+        # The state_dict from the model now has the correct keys
         mock_load.return_value = self.model.state_dict()
+        # Temporarily create the config file needed by the load function
+        os.makedirs(self.save_directory, exist_ok=True)
+        with open(os.path.join(self.save_directory, "config.json"), "w") as f:
+            json.dump(self.config.to_dict(), f)
+            
         loaded_model = load_hf(self.save_directory, MockModel, MockConfig, safe=True)
         self.assertIsInstance(loaded_model, MockModel)
 

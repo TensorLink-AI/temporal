@@ -137,7 +137,7 @@ def test_build_with_missing_loss_config_succeeds(valid_encoder_decoder_config):
     del bad_config_dict["loss_config"]
     config_without_loss = TransformerTimeSeriesConfig.from_dict(bad_config_dict)
     model = build_time_series_transformer(config_without_loss)
-    assert model.loss_fn is not None # The builder now provides a default loss
+    assert model.loss_fn is not None
 
 @register_config_type("custom_test_block")
 @dataclass(frozen=True)
