@@ -1,6 +1,8 @@
-# temporal: The Modern Toolkit for Time Series Forecasting
+# Temporal: The Modern Toolkit for Time Series Forecasting
 
-![Coverage](https://tensorlink-ai.github.io/temporal/coverage/coverage.svg)
+[![Tests](https://github.com/TensorLink-AI/temporal/actions/workflows/tests.yml/badge.svg)](https://github.com/TensorLink-AI/temporal/actions/workflows/tests.yml)
+[![Coverage](https://github.com/TensorLink-AI/temporal/actions/workflows/coverage.yml/badge.svg)](https://github.com/TensorLink-AI/temporal/actions/workflows/coverage.yml)
+[![Docs](https://github.com/TensorLink-AI/temporal/actions/workflows/docs.yml/badge.svg)](https://tensorlink-ai.github.io/temporal/)
 
 
 **Build, train, and deploy state-of-the-art deep learning models for time series forecasting with unparalleled flexibility and ease.**
