@@ -2,6 +2,7 @@ import unittest
 import torch
 import torch.nn as nn
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.architecture_config import TransformerArchitectureConfig
@@ -11,8 +12,8 @@ from temporal.models.module_builder_helper import ModuleBuilder
 
 class MockEncoderLayer(nn.Module):
     def forward(self, hidden_states, **kwargs):
-        # Return a tuple to match the expected output format of a real layer
-        return (hidden_states,)
+        # The encoder expects a dataclass-like object with a `last_hidden_state` attribute
+        return SimpleNamespace(last_hidden_state=hidden_states)
 
 class TestEncoders(unittest.TestCase):
     def setUp(self):
@@ -27,12 +28,10 @@ class TestEncoders(unittest.TestCase):
         )
         self.builder = MagicMock(spec=ModuleBuilder)
         self.builder._build.return_value = MockEncoderLayer()
-
-        # The constructor expects the builder. Layers are now built internally.
         self.encoder = TimeSeriesTransformerEncoder(
             config=self.config,
-            builder=self.builder,
-            block_configs=self.config.encoder_blocks,
+            builder=self.builder, # Pass the builder
+            block_configs=self.config.encoder_blocks
         )
 
     def test_forward(self):
