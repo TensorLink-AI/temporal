@@ -19,7 +19,9 @@ dependencies = [
   "pyarrow>=19.0.1",
   "datasets>=2.21.0",
   "pandas>=2.2.3",
-  "PyWavelets>=1.6.0",   # ✅ added
+  "PyWavelets>=1.6.0",   
+  "pydantic>=2.7.0",  
+
 
 ]
 
