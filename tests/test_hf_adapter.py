@@ -1,68 +1,118 @@
-import unittest
+# temporal/utils/hf_adapter.py
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional, Tuple, Union
+
 import torch
-import torch.nn as nn
-from unittest.mock import patch
+from torch import nn
+from transformers import PreTrainedModel
 
-from temporal.utils.hf_adapter import TimeSeriesTransformerModel, PreTrainedModel
-from temporal.configs.transformer_model_config import (
-    TransformerTimeSeriesConfig,
-    EncoderBlockConfig,
-    DecoderBlockConfig,
-)
-from temporal.configs.architecture_config import TransformerArchitectureConfig
-from temporal.configs.output_head_config import OutputHeadConfig
-from temporal.configs.loss_config import MSELossConfig
+from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+from temporal.models.builder import build_time_series_transformer
 
 
-class TestTimeSeriesTransformerModel(unittest.TestCase):
-    def setUp(self):
-        config_dict = TransformerTimeSeriesConfig(
-            feature_size=1,
-            d_model=16,
-            context_length=10,
-            prediction_length=5,
-            architecture=TransformerArchitectureConfig(
-                type="transformer_architecture", layout="encoder-decoder"
-            ),
-            # Ensure blocks exist for both sides so builder won't error
-            encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
-            decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
-            output_head_config=OutputHeadConfig(type="linear", output_size=1),
-            loss_config=MSELossConfig(type="mse"),
-        ).to_dict()
+class TimeSeriesTransformerModel(PreTrainedModel):
+    """
+    Lightweight Hugging Face-compatible wrapper that delegates to the internal
+    Temporal model while providing HF-ish argument aliases.
 
-        # HF compat: pass alias and freeze-internal value
-        config_dict["_attn_implementation"] = "eager"
-        self.config = TransformerTimeSeriesConfig.from_dict(config_dict)
-        object.__setattr__(self.config, "_attn_implementation_internal", "eager")
+    Key behaviors:
+      - Accepts `input_values` (HF audio-style) and maps it to the Temporal
+        model's `encoder_inputs`.
+      - In `generate`, accepts a positional first tensor and routes it to
+        `encoder_inputs` (or `decoder_inputs` if the layout is decoder-only).
+      - Maps `max_new_tokens` -> `prediction_length`.
+    """
+    config_class = TransformerTimeSeriesConfig
 
-        # Patch PreTrainedModel.__init__ so it doesn't try to mutate the frozen dataclass,
-        # BUT still call nn.Module.__init__ to set up _modules, etc.
-        def _fake_ptm_init(self, cfg):
-            nn.Module.__init__(self)
-            # store config only; skip HF internal mutation of cfg fields
-            self.config = cfg
+    def __init__(self, config: TransformerTimeSeriesConfig):
+        # Let PreTrainedModel handle its usual setup
+        super().__init__(config)
+        # Build the actual Temporal model once we have a valid config
+        self.temporal = build_time_series_transformer(config)
 
-        self._ptm_patch = patch.object(PreTrainedModel, "__init__", _fake_ptm_init)
-        self._ptm_patch.start()
+    # -------------------------
+    # Helpers
+    # -------------------------
+    def _layout(self) -> str:
+        arch = getattr(self.config, "architecture", None)
+        return getattr(arch, "layout", "encoder-decoder")
 
-    def tearDown(self):
-        self._ptm_patch.stop()
+    @staticmethod
+    def _pop_alias(kwargs: Dict[str, Any], src: str, dst: str) -> None:
+        if src in kwargs and dst not in kwargs:
+            kwargs[dst] = kwargs.pop(src)
 
-    def test_forward_pass(self):
-        model = TimeSeriesTransformerModel(self.config)
-        x = torch.randn(1, 10, 1)
-        out = model(input_values=x)  # smoke test
-        self.assertIsNotNone(out)
+    # -------------------------
+    # Forward
+    # -------------------------
+    def forward(
+        self,
+        *args,
+        **kwargs,
+    ):
+        """
+        HF-style forward that accepts `input_values` and routes it to
+        the Temporal model's `encoder_inputs`.
+        Also tolerates a positional first tensor and assigns it to the most
+        sensible input based on the architecture layout.
+        """
+        # If a positional tensor was passed, map it to encoder/decoder inputs.
+        if args:
+            first = args[0]
+            if (
+                isinstance(first, torch.Tensor)
+                and "encoder_inputs" not in kwargs
+                and "decoder_inputs" not in kwargs
+                and "input_values" not in kwargs
+            ):
+                if self._layout() in ("encoder", "encoder-decoder"):
+                    kwargs["encoder_inputs"] = first
+                else:
+                    kwargs["decoder_inputs"] = first
+                args = args[1:]
 
-    def test_generate_pass(self):
-        model = TimeSeriesTransformerModel(self.config)
-        x = torch.randn(1, 10, 1)
-        _ = model.generate(x, max_new_tokens=1)  # smoke test
-        self.assertTrue(True)
+        # Map HF alias -> Temporal name
+        self._pop_alias(kwargs, "input_values", "encoder_inputs")
 
-    def test_generate_pass_with_config_prediction_length(self):
-        model = TimeSeriesTransformerModel(self.config)
-        x = torch.randn(1, 10, 1)
-        _ = model.generate(x)  # uses config.prediction_length
-        self.assertTrue(True)
+        # Pass everything through to the Temporal model
+        return self.temporal(*args, **kwargs)
+
+    # -------------------------
+    # Generate
+    # -------------------------
+    @torch.no_grad()
+    def generate(
+        self,
+        *args,
+        **kwargs,
+    ):
+        """
+        HF-style generate that:
+          - Accepts a positional first tensor and routes it to encoder_inputs
+            (or decoder_inputs for decoder-only).
+          - Accepts `input_values` and routes to `encoder_inputs`.
+          - Maps `max_new_tokens` -> `prediction_length`.
+        """
+        # Positional first argument: assume it's the input tensor
+        if args:
+            first = args[0]
+            if (
+                isinstance(first, torch.Tensor)
+                and "encoder_inputs" not in kwargs
+                and "decoder_inputs" not in kwargs
+                and "input_values" not in kwargs
+            ):
+                if self._layout() in ("encoder", "encoder-decoder"):
+                    kwargs["encoder_inputs"] = first
+                else:
+                    kwargs["decoder_inputs"] = first
+                args = args[1:]
+
+        # Alias mappings
+        self._pop_alias(kwargs, "input_values", "encoder_inputs")
+        if "max_new_tokens" in kwargs and "prediction_length" not in kwargs:
+            kwargs["prediction_length"] = kwargs.pop("max_new_tokens")
+
+        return self.temporal.generate(*args, **kwargs)
