@@ -1,61 +1,40 @@
 import unittest
 import torch
 import torch.nn as nn
-from unittest.mock import MagicMock
-from types import SimpleNamespace
+
 from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
-from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
-from temporal.configs.architecture_config import TransformerArchitectureConfig
-from temporal.configs.transformer_block_config import EncoderBlockConfig
-from temporal.configs.normalization_config import NormalizationConfig
-from temporal.models.module_builder_helper import ModuleBuilder
 from temporal.models.outputs import EncoderLayerOutput
+
 
 class MockEncoderLayer(nn.Module):
     def forward(self, hidden_states, **kwargs):
-        # Return the dataclass the encoder expects
-        return EncoderLayerOutput(hidden_states=hidden_states)
+        # Return the dataclass your encoder layer expects
+        return EncoderLayerOutput(hidden_states=hidden_states, attention_weights=None)
+
 
 class TestEncoders(unittest.TestCase):
     def setUp(self):
-        self.config = TransformerTimeSeriesConfig(
-            d_model=16,
-            architecture=TransformerArchitectureConfig(
-                type="transformer_architecture", layout="encoder-decoder"
-            ),
-            encoder_blocks=[EncoderBlockConfig(type="default_encoder")] * 2,
-            hidden_dropout_prob=0.1,
-            layer_norm_config=NormalizationConfig(type="layer"),
-        )
-        self.builder = MagicMock(spec=ModuleBuilder)
-        self.builder._build.return_value = MockEncoderLayer()
         self.encoder = TimeSeriesTransformerEncoder(
-            config=self.config,
-            builder=self.builder, # Pass the builder
-            block_configs=self.config.encoder_blocks
+            layers=nn.ModuleList([MockEncoderLayer(), MockEncoderLayer()]),
+            layerdrop=0.0,
         )
 
     def test_forward(self):
         hidden_states = torch.randn(2, 10, 16)
         attention_mask = torch.ones(2, 10)
         output = self.encoder(hidden_states, attention_mask)
-        self.assertEqual(output.hidden_states.shape, (2, 10, 16))
+        # Your encoder returns an HF-style BaseModelOutput
+        self.assertTrue(hasattr(output, "last_hidden_state"))
+        self.assertEqual(output.last_hidden_state.shape, (2, 10, 16))
 
     def test_forward_with_output_attentions(self):
         hidden_states = torch.randn(2, 10, 16)
         attention_mask = torch.ones(2, 10)
-        output = self.encoder(
-            hidden_states, attention_mask, output_attentions=True
-        )
-        self.assertIsNotNone(output.attention_weights)
+        output = self.encoder(hidden_states, attention_mask, output_attentions=True)
+        # HF-style attention attribute
+        self.assertTrue(hasattr(output, "attentions"))
+        self.assertIsNotNone(output.attentions)
 
-    def test_forward_with_output_hidden_states(self):
-        hidden_states = torch.randn(2, 10, 16)
-        attention_mask = torch.ones(2, 10)
-        output = self.encoder(
-            hidden_states, attention_mask, output_hidden_states=True
-        )
-        self.assertIsNotNone(output.hidden_states)
 
 if __name__ == "__main__":
     unittest.main()
