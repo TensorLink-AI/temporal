@@ -3,7 +3,11 @@ import torch
 from unittest.mock import patch
 
 from temporal.utils.hf_adapter import TimeSeriesTransformerModel
-from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+from temporal.configs.transformer_model_config import (
+    TransformerTimeSeriesConfig,
+    EncoderBlockConfig,
+    DecoderBlockConfig,
+)
 from temporal.configs.architecture_config import TransformerArchitectureConfig
 from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.loss_config import MSELossConfig
@@ -19,16 +23,19 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
             architecture=TransformerArchitectureConfig(
                 type="transformer_architecture", layout="encoder-decoder"
             ),
+            # Ensure blocks are defined for both sides of encoder-decoder
+            encoder_blocks=[EncoderBlockConfig(type="default_encoder")],
+            decoder_blocks=[DecoderBlockConfig(type="default_decoder")],
             output_head_config=OutputHeadConfig(type="linear", output_size=1),
             loss_config=MSELossConfig(type="mse"),
         ).to_dict()
 
+        # HF compat flags
         config_dict["_attn_implementation"] = "eager"
         self.config = TransformerTimeSeriesConfig.from_dict(config_dict)
-        # Also pre-set the internal attr so patched __init__ sees it present
         object.__setattr__(self.config, "_attn_implementation_internal", "eager")
 
-        # Patch PreTrainedModel.__init__ so it doesn't try to mutate frozen fields
+        # Patch PreTrainedModel.__init__ to avoid mutating frozen dataclass fields
         self._ptm_patch = patch(
             "temporal.utils.hf_adapter.PreTrainedModel.__init__",
             lambda self, cfg: setattr(self, "config", cfg),
@@ -53,5 +60,5 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
     def test_generate_pass_with_config_prediction_length(self):
         model = TimeSeriesTransformerModel(self.config)
         x = torch.randn(1, 10, 1)
-        _ = model.generate(x)  # should default to config.prediction_length
+        _ = model.generate(x)  # defaults to config.prediction_length
         self.assertTrue(True)

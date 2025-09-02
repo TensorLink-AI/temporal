@@ -11,12 +11,12 @@ from temporal.models.outputs import EncoderLayerOutput
 
 class MockEncoderLayer(nn.Module):
     def forward(self, hidden_states, **kwargs):
-        # Return something your encoder can consume; attention can be None
+        # Minimal shape-preserving behavior; attention can be None
         return EncoderLayerOutput(hidden_states=hidden_states, attention_weights=None)
 
 
 def _extract_last_hidden_state(output):
-    # Be permissive about output shape/naming
+    # Be permissive about output carriers (tuple, dataclass, HF-style)
     if isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], torch.Tensor):
         return output[0]
     for attr in ("last_hidden_state", "hidden_states", "logits", "predictions"):
@@ -27,12 +27,13 @@ def _extract_last_hidden_state(output):
 
 class TestEncoders(unittest.TestCase):
     def setUp(self):
-        # Build via (config, builder, block_configs) since encoder now expects that
+        # Provide a real-looking config with concrete floats (no MagicMocks)
         self.config = MagicMock()
         self.config.d_model = 16
+        self.config.layerdrop = 0.0  # IMPORTANT: avoid MagicMock comparison in encoder
 
         self.builder = MagicMock(spec=ModuleBuilder)
-        # make _build return our mock layer per block
+        # Return a mock layer per block
         self.builder._build.side_effect = [MockEncoderLayer(), MockEncoderLayer()]
 
         self.block_configs = [EncoderBlockConfig(type="default_encoder"), EncoderBlockConfig(type="default_encoder")]
