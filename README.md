@@ -1,5 +1,8 @@
 # temporal: The Modern Toolkit for Time Series Forecasting
 
+![Coverage](https://tensorlink-ai.github.io/temporal/coverage/coverage.svg)
+
+
 **Build, train, and deploy state-of-the-art deep learning models for time series forecasting with unparalleled flexibility and ease.**
 
 `temporal` is a powerful and extensible Python framework designed to make cutting-edge time series forecasting accessible. It launches with a powerful, state-of-the-art Transformer toolkit, with plans to incorporate other model architectures in the near future. Whether you're a researcher experimenting with novel architectures or a practitioner building robust forecasting solutions, `temporal` provides the tools you need to get the job done.
