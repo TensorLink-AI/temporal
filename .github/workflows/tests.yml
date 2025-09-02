@@ -4,9 +4,10 @@ on:
   push:
     branches: [ main ]
   pull_request:
+    branches: [ main ]
 
 jobs:
-  tests:
+  test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -24,7 +25,11 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: |
+          # Install runtime + dev dependencies (pytest lives in dev group)
+          uv sync --all-groups
+          # Extra safety: ensure pytest is present
+          uv pip install pytest
 
       - name: Run tests
         run: uv run pytest -vv --disable-warnings
