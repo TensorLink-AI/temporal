@@ -19,8 +19,10 @@ class TestTransformerEncoderLayer(unittest.TestCase):
         self.config.hidden_dropout_prob = 0.1
 
         self.builder = MagicMock(spec=ModuleBuilder)
-        # Mock primitive builders to return tensors of the right shapes
-        self.builder.build_attention.return_value = MagicMock(return_value=(torch.randn(2, 10, 16), None))
+        # Return attention output + a non-None attention tensor
+        self.builder.build_attention.return_value = MagicMock(
+            return_value=(torch.randn(2, 10, 16), torch.randn(2, 1, 10, 10))
+        )
         self.builder.build_feedforward.return_value = MagicMock(return_value=torch.randn(2, 10, 16))
         self.builder.build_normalization.return_value = MagicMock(return_value=torch.randn(2, 10, 16))
 
@@ -29,7 +31,6 @@ class TestTransformerEncoderLayer(unittest.TestCase):
     def test_forward(self):
         hidden_states = torch.randn(2, 10, 16)
         output = self.encoder_layer(hidden_states)
-        # Your layer returns a dataclass-like object
         self.assertTrue(hasattr(output, "hidden_states"))
         self.assertEqual(output.hidden_states.shape, (2, 10, 16))
 
@@ -40,6 +41,3 @@ class TestTransformerEncoderLayer(unittest.TestCase):
         self.assertEqual(output.hidden_states.shape, (2, 10, 16))
         self.assertTrue(hasattr(output, "attention_weights"))
         self.assertIsNotNone(output.attention_weights)
-
-if __name__ == "__main__":
-    unittest.main()

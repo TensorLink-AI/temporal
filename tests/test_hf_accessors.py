@@ -13,8 +13,9 @@ from temporal.configs.loss_config import MSELossConfig
 
 
 class MockModel(nn.Module):
-    def __init__(self):
+    def __init__(self, config=None, **kwargs):
         super().__init__()
+        self.config = config
         self.l = nn.Linear(4, 4)
 
     def forward(self, x):
@@ -69,6 +70,3 @@ class TestHfAccessors(unittest.TestCase):
             f.write(b"x")
         loaded_model = load_hf(self.save_directory, MockModel, MockConfig, safe=True)
         self.assertIsInstance(loaded_model, MockModel)
-
-if __name__ == "__main__":
-    unittest.main()

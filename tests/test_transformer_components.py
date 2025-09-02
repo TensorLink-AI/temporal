@@ -11,7 +11,9 @@ def basic_config():
         d_model=16,
         context_length=10,
         prediction_length=5,
-        architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder"),
+        architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="decoder"),
+        # builder only needs decoder blocks for decoder layout
+        decoder_blocks=[{"type": "default_decoder"}],
     )
 
 
@@ -20,8 +22,7 @@ def test_multi_feature_forward_pass(basic_config):
     config_dict["feature_size"] = 3
     config_dict.setdefault("value_embedding_config", {}).update({"feature_size": 3})
     config_dict.setdefault("output_head_config", {}).update({"output_size": 3})
-    # Ensure encoder blocks exist when layout includes an encoder
-    config_dict.setdefault("encoder_blocks", [{"type": "default_encoder"}])
+    config_dict.setdefault("decoder_blocks", [{"type": "default_decoder"}])
 
     multi_feature_config = TransformerTimeSeriesConfig.from_dict(config_dict)
     model = build_time_series_transformer(multi_feature_config)
