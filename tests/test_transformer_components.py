@@ -2,7 +2,7 @@ import pytest
 import torch
 from temporal.models.builder import build_time_series_transformer
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
-from temporal.configs.embedding_config import TimeSeriesValueEmbeddingConfig
+from temporal.configs.architecture_config import TransformerArchitectureConfig
 
 @pytest.fixture
 def basic_config():
@@ -12,6 +12,8 @@ def basic_config():
         d_model=16,
         context_length=10,
         prediction_length=5,
+        # This was the missing required argument
+        architecture=TransformerArchitectureConfig(type="transformer_architecture")
     )
 
 def test_multi_feature_forward_pass(basic_config):

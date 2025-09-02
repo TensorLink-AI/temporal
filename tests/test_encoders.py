@@ -9,11 +9,12 @@ from temporal.configs.architecture_config import TransformerArchitectureConfig
 from temporal.configs.transformer_block_config import EncoderBlockConfig
 from temporal.configs.normalization_config import NormalizationConfig
 from temporal.models.module_builder_helper import ModuleBuilder
+from temporal.models.outputs import EncoderLayerOutput
 
 class MockEncoderLayer(nn.Module):
     def forward(self, hidden_states, **kwargs):
-        # The encoder expects a dataclass-like object with a `last_hidden_state` attribute
-        return SimpleNamespace(last_hidden_state=hidden_states)
+        # Return the dataclass the encoder expects
+        return EncoderLayerOutput(hidden_states=hidden_states)
 
 class TestEncoders(unittest.TestCase):
     def setUp(self):
@@ -38,7 +39,7 @@ class TestEncoders(unittest.TestCase):
         hidden_states = torch.randn(2, 10, 16)
         attention_mask = torch.ones(2, 10)
         output = self.encoder(hidden_states, attention_mask)
-        self.assertEqual(output.last_hidden_state.shape, (2, 10, 16))
+        self.assertEqual(output.hidden_states.shape, (2, 10, 16))
 
     def test_forward_with_output_attentions(self):
         hidden_states = torch.randn(2, 10, 16)
@@ -46,7 +47,7 @@ class TestEncoders(unittest.TestCase):
         output = self.encoder(
             hidden_states, attention_mask, output_attentions=True
         )
-        self.assertIsNotNone(output.attentions)
+        self.assertIsNotNone(output.attention_weights)
 
     def test_forward_with_output_hidden_states(self):
         hidden_states = torch.randn(2, 10, 16)

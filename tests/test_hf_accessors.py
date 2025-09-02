@@ -19,7 +19,16 @@ class MockModel(nn.Module):
 
 class MockConfig(TransformerTimeSeriesConfig):
     def to_dict(self):
-        return {"model_type": "mock"}
+        d = super().to_dict()
+        d.update({
+            "model_type": "mock",
+            "architecture": {"type": "transformer_architecture", "layout": "encoder"},
+            "d_model": 16,
+            "context_length": 4,
+            "prediction_length": 2,
+        })
+        return d
+
 
 class TestHfAccessors(unittest.TestCase):
     def setUp(self):

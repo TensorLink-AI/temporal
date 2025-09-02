@@ -49,7 +49,8 @@ class TimeSeriesTransformerEncoderLayer(nn.Module):
         """
         super().__init__()
         self.config = config
-        main_config: TransformerTimeSeriesConfig = builder.config
+        main_config: TransformerTimeSeriesConfig = config
+
 
         # --- Resolve Attention Config ---
         resolved_attn_config = config.attention_config

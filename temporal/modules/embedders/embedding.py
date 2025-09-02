@@ -512,22 +512,26 @@ class ConvolutionalPositionalEmbedding(BaseEmbedding):
         self.base = base_cls(d_model=d_model, max_seq_len=max_seq_len)
         self.conv = nn.Conv1d(d_model, d_model, kernel_size, padding=kernel_size // 2, groups=d_model)
 
-    def forward(self, batch_size: int, seq_len: int, past_key_values_length: int = 0) -> torch.Tensor:
-        """
-        Apply conv to base positional embeddings.
+    def forward(
+        self,
+        *,
+        batch_size: int | None = None,
+        seq_len: int | None = None,
+        past_key_values_length: int = 0,
+        x: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        # Call base with keyword-only args
+        emb = self.base(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            past_key_values_length=past_key_values_length,
+        )
+        # conv expects [B, D, L]
+        emb = emb.transpose(1, 2)
+        emb = self.conv(emb)
+        emb = emb.transpose(1, 2)
+        return emb
 
-        Args:
-            batch_size: Batch size.
-            seq_len: Sequence length.
-            past_key_values_length: Offset index.
-
-        Returns:
-            Tensor [B, seq_len, d_model].
-        """
-        emb = self.base(batch_size, seq_len, past_key_values_length)
-        x = emb.permute(0, 2, 1)
-        x = self.conv(x)
-        return x.permute(0, 2, 1)
 
 # -----------------------------
 # TimeDelta Embedding

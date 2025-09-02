@@ -18,9 +18,34 @@ class MockLayer(nn.Module):
 
 class TestTransformerModel(unittest.TestCase):
     def setUp(self):
+        class DummyValueEmbedding(nn.Module):
+            def __init__(self, in_features=1, d_model=16):
+                super().__init__()
+                self.proj = nn.Linear(in_features, d_model, bias=False)
+            def forward(self, x):
+                return self.proj(x)
+
+        class DummyPositionalEmbedding(nn.Module):
+            def __init__(self, d_model=16):
+                super().__init__()
+                self.d_model = d_model
+            def forward(self, x=None, *, batch_size=None, seq_len=None, past_key_values_length=0):
+                if x is not None:
+                    B, L, D = x.shape
+                    return torch.zeros(B, L, D, device=x.device, dtype=x.dtype)
+                return torch.zeros(batch_size, seq_len, self.d_model)
+
+        class IdentityNorm(nn.Module):
+            def forward(self, x, *args, **kwargs):
+                return x
+
         self.builder = MagicMock(spec=ModuleBuilder)
         self.builder._build.return_value = MockLayer()
-        self.builder.build_loss.return_value = nn.MSELoss() # Provide a default loss
+        self.builder.build_value_embedding.return_value = DummyValueEmbedding(in_features=1, d_model=16)
+        self.builder.build_positional_embedding.return_value = DummyPositionalEmbedding(d_model=16)
+        self.builder.build_normalization.return_value = IdentityNorm()
+        self.builder.build_loss.return_value = nn.MSELoss()
+
 
     def test_forward_encoder_decoder(self):
         config = TransformerTimeSeriesConfig(
