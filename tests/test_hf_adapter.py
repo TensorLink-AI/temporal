@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 from temporal.utils.hf_adapter import TimeSeriesTransformerModel
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
 from temporal.configs.architecture_config import TransformerArchitectureConfig
-from temporal.configs.output_head_config import OutputHeadConfig, LinearOutputHeadConfig
+from temporal.configs.output_head_config import OutputHeadConfig
 from temporal.configs.loss_config import LossConfig, MSELossConfig
 
 class TestTimeSeriesTransformerModel(unittest.TestCase):
@@ -16,7 +16,7 @@ class TestTimeSeriesTransformerModel(unittest.TestCase):
             context_length=10,
             prediction_length=5,
             architecture=TransformerArchitectureConfig(type="transformer_architecture", layout="encoder-decoder"),
-            output_head_config=LinearOutputHeadConfig(type="linear", output_size=1),
+            output_head_config=OutputHeadConfig(type="linear", output_size=1),
             loss_config=MSELossConfig(type="mse"),
         )
         # The Hugging Face model expects this attribute

@@ -9,7 +9,7 @@ from temporal.configs.transformer_block_config import (
     DecoderBlockConfig,
     TransformerBlockConfig,
 )
-from temporal.registry import register_module, register_config_type, CONFIG_REGISTRY
+from temporal.registry.core import register_module, register_config_type, CONFIG_REGISTRY
 from temporal.configs.base_config import BaseConfig
 
 
