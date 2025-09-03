@@ -170,16 +170,25 @@ def attention_config_from_dict(data: Dict[str, Any]) -> AttentionConfig:
 
     attention_type = data.get("type", "full") # Default to 'full' if type not specified
     # Map config type names to registry keys if they differ (e.g., "full" -> "full_attention")
-    type_to_registry_key = {
+    alias_map = {
         "full": "full_attention",
+        "full_attention": "full_attention",
         "patterned": "patterned_attention",
+        "patterned_attention": "patterned_attention",
         "flash": "flash_attention",
+        "flash_attention": "flash_attention",
         "lse": "lse_attention",
+        "lse_attention": "lse_attention",
+        "diff": "diffwist_attention",
         "diffwist": "diffwist_attention",
+        "diffwist_attention": "diffwist_attention",
         "hybrid": "hybrid_attention",
+        "hybrid_attention": "hybrid_attention",
     }
-    registry_key = type_to_registry_key.get(attention_type, attention_type + "_attention") # Fallback to type + _attention if not in map
-
+    registry_key = alias_map.get(
+        attention_type,
+        attention_type if attention_type.endswith("_attention") else f"{attention_type}_attention",
+    )
     config_class = CONFIG_REGISTRY.get(registry_key)
 
     if not config_class or not issubclass(config_class, AttentionConfig):
