@@ -1,5 +1,8 @@
 name: Docs
 
+permissions:
+  contents: write   # allow pushing built docs to gh-pages
+
 on:
   push:
     branches: [ main ]
