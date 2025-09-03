@@ -86,6 +86,8 @@ def transformer_block_config_from_dict(data: Dict[str, Any]) -> TransformerBlock
     type_to_registry_key = {
         "default_encoder": "encoder_block",
         "default_decoder": "decoder_block",
+        "encoder": "encoder_block",   # alias for quick API
+        "decoder": "decoder_block",   # alias for quick API
         "adaptive_patch_transformer": "adaptive_patch_transformer_block",
     }
     registry_key = type_to_registry_key.get(block_type, block_type)
