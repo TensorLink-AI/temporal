@@ -19,14 +19,142 @@ It's easy to get started with `temporal`.
 pip install uv
 pip install temporal
 ```
-Your First Forecast in 60 Seconds
-```Python
 
+## 🚀 Quick API (`temporal.quick`)
+
+The `temporal.quick` module is the **fastest way** to build, train, and predict with Temporal models — while still mapping 1:1 to the underlying typed configs and builders.
+
+### Hello, Temporal
+```python
+from temporal.quick import Temporal
+
+model = (
+    Temporal()
+      .as_encoder(n_layers=6)
+      .with_dims(d_model=512, n_heads=8)   # d_head = 64 (even → RoPE-safe)
+      .with_context(192)
+      .with_horizon(288)
+      .with_attention("full")
+      .with_rope()
+      .head_quantile([0.05, 0.5, 0.95])
+      .with_mc_samples(128)
+      .build()
+)
+
+# Train
+model.fit_arrays(inputs={"input_values": x_train}, targets=y_train, epochs=4, lr=2e-4)
+
+# Predict
+q = model.predict_quantiles({"input_values": x_future})  # [Q, T, F]
+```
+
+### One-liner helper
+```python
+from temporal.quick import forecast
+
+q = forecast({"input_values": x}, horizon=96, context=192, targets=y,
+             arch="decoder", attention="full", rope=True)
+```
+
+### Common recipes
+
+#### Decoder-only with RoPE
+```python
+Temporal().as_decoder(6).with_dims(512, 8).with_context(192).with_horizon(288).with_rope() \
+    .head_quantile([0.05, 0.5, 0.95]).build()
+```
+
+#### Enc–Dec with d_head = 64
+```python
+Temporal().as_encdec(8, 4).with_dims(512, 8).with_context(336).with_horizon(96).with_rope() \
+    .head_quantile([0.05, 0.5, 0.95]).build()
+```
+
+#### Patterned (local) attention
+```python
+Temporal().as_encoder(6).with_dims(512, 8).with_context(256).with_horizon(96) \
+    .with_attention("patterned").with_attention_pattern(kind="local", window_size=128, stride=64) \
+    .head_quantile([0.1, 0.5, 0.9]).build()
+```
+
+#### ALiBi & qk-LayerNorm
+```python
+Temporal().as_decoder(6).with_dims(512, 8).with_context(192).with_horizon(96) \
+    .with_alibi().with_qk_layernorm().head_gaussian().build()
+```
+
+#### Value patch embedding
+```python
+Temporal().as_encoder(4).with_dims(512, 8).with_context(256).with_horizon(96) \
+    .value_embedding("patch", patch_size=4, feature_size=512, stride=2, use_mlp=True, mlp_hidden_size=1024) \
+    .positional_embedding("sinusoidal") \
+    .head_quantile([0.05, 0.5, 0.95]).build()
+```
+
+#### RevIN (instance normalization)
+```python
+Temporal().as_encoder(6).with_dims(512, 8).with_context(192).with_horizon(96) \
+    .with_instance_norm(type="revin", num_features=512, affine=True, subtract_last=False) \
+    .build()
+```
+
+### API cheat sheet
+| Category      | Method                                                                        | Notes                                                              |
+| :------------ | :---------------------------------------------------------------------------- | :----------------------------------------------------------------- |
+| Topology      | `.as_encoder(n), .as_decoder(n), .as_encdec(n_enc, n_dec)`                      | Build stack type & depth                                           |
+| Dims          | `.with_dims(d_model, n_heads, dropout?, max_pos?)`                             | Validates `d_model % n_heads == 0` and RoPE’s even `d_head`          |
+| Windows       | `.with_context(L), .with_horizon(H)`                                          | Look-back and forecast length                                      |
+| Attention     | `.with_attention(kind, **cfg)`                                                | `full`, `patterned`, `lse`, `hybrid`, `diffwist`                   |
+| RoPE/ALiBi    | `.with_rope(base=10000), .with_alibi()`                                        | Set inside attention config                                        |
+| QK Norm/Bias  | `.with_qk_layernorm(), .with_attention_bias(True | False)`                      |                                                                    |
+| Patterns      | `.with_attention_pattern(kind, window_size, stride?, dilation?, global_indices?)` | For `patterned`                                                    |
+| Embeddings    | `.value_embedding("value" | "patch", **cfg)`                                   |                                                                    |
+| Positional    | `.positional_embedding("sinusoidal" | "learned_abs")`                           |                                                                    |
+| Norms (model) | `.with_layer_norm(kind="layer" | "rms")`                                       |                                                                    |
+| Instance Norm | `.with_instance_norm(type="revin" | "dynamic_revin")`                          |                                                                    |
+| Block Norm    | `.with_block_norm(kind="layer" | "rms")`                                       |                                                                    |
+| Heads/Loss    | `.head_quantile(qs), .head_gaussian(), .head_mixture(kind, components)`       | CRPS or NLL                                                        |
+| Aggregation   | `.head_aggregator(kind="mean" | "gated")`                                     |                                                                    |
+| Train         | `.fit_arrays(...), .fit_dataloader(...), .train_config(...)`                   | AMP, grad clip, etc.                                               |
+| Inference     | `.predict_samples(...), .predict_quantiles(...), .predict_point(...)`          | Uses MC-dropout                                                    |
+
+### Config mapping (trustworthy)
+
+All methods compile into the same typed configs your core builder expects:
+
+*   `TransformerTimeSeriesConfig`
+*   `transformer_block_config_from_dict`
+*   `attention_config` (with `use_rope`, `use_alibi`, `qk_layernorm`, `bias`, `pattern`)
+*   `embedding_config` (value/patch + positional)
+*   `normalization_config` (`layer`/`rms`/`scale` + RevIN variants)
+*   `output_head_config`, `loss_config`, `head_aggregation_config`
+
+This guarantees clean parity between `temporal.quick` and the low-level modules.
+
+### Tests
+
+A matching test suite (`tests/test_quick_api.py`) validates:
+
+*   Attention kind mapping (incl. RoPE/ALiBi flags)
+*   Embeddings (value patch) & positional choices
+*   Norms (Layer/RMS/Scale), RevIN variants, block norms
+*   Heads/loss/aggregation config propagation
+*   Fit/predict shape sanity with stubbed model & sampler
+
+Run:
+```bash
+pytest -q
+```
+
+## 🚀 Getting Started (low-level builder)
+
+If you prefer configs + builder directly:
+
+```python
 import torch
 from temporal.models import build_time_series_transformer
 from temporal.configs import TransformerTimeSeriesConfig
 
-# 1. Define your model with a simple configuration
 config = TransformerTimeSeriesConfig(
     feature_size=1,
     context_length=128,
@@ -36,16 +164,11 @@ config = TransformerTimeSeriesConfig(
     output_head_config={"type": "linear", "output_size": 1},
 )
 
-# 2. Build your model
 model = build_time_series_transformer(config)
-
-# 3. Make a forecast!
-# (B, T, F) -> (1, 128, 1)
-context = torch.randn(1, 128, 1)
-forecast = model.generate(context, prediction_length=24)
-
+forecast = model.generate(torch.randn(1, 128, 1), prediction_length=24)
 print(forecast.shape)  # torch.Size([1, 24, 1])
 ```
+
 ## ✨ Key Features
 * **Configuration-Driven:** Design complex models with simple, readable configurations. No more boilerplate code.
 * **Modular and Extensible:** Swap out components like attention mechanisms, normalization layers, and output heads with ease. Add your own custom components with a single decorator.
