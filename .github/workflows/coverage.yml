@@ -1,5 +1,8 @@
 name: Coverage
 
+permissions:
+  contents: write   # allow auto-commit to push coverage.svg back to main
+
 on:
   push:
     branches: [ main ]
