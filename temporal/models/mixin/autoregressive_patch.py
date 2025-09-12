@@ -11,86 +11,62 @@ logger = logging.getLogger(__name__)
 
 class AutoregressivePatchMixin:
     """
-    Patch-based autoregressive generation that returns a consistent ForecastBundle.
+    Patch-based autoregressive generation in *latent patch space*.
 
-    This mixin is designed for models that autoregress in a *patch latent space*
-    (decoder predicts the next patch embedding), then reconstruct the native
-    time-domain sequence from the generated patch embeddings, and finally apply
-    probabilistic output heads (e.g., Gaussian / StudentT / MDN / DistPred).
+    Pipeline
+    --------
+    1) Build initial latent patch sequence (encoder+preprocessor OR decoder_inputs+preprocessor).
+    2) Warm the decoder cache by running the *full* context once.
+    3) Iterate num_patch_steps times:
+         - Take the previous step's *decoder last hidden* (single token),
+         - Wrap with fresh position/LN/dropout via preprocessor._prepare_decoder_inputs_for_generation(...)
+         - Decode one token with KV cache,
+         - Collect the new latent patch.
+    4) Reconstruct native-time embeddings via `self.output_patch_reconstructor`,
+       reshape to [B, T_native, d_model], trim to prediction_length.
+    5) Run primary head once on full horizon -> params (tensor or dict).
+    6) Optionally compute quantiles (tensor) once.
+    7) Produce point via sampling/predict/quantile median, then optional denorm.
 
-    Assumptions about the host model
-    --------------------------------
-    • self.config
-        - feature_size: int          (# target features/channels F)
-        - d_model: int               (head input size after reconstruction)
-        - prediction_length: Optional[int]
-        - num_attention_heads: Optional[int]
-    • self.preprocessor
-        - patch_size: int
-        - process(input_values, attention_mask, is_causal, ...)
-        - _prepare_decoder_inputs_for_generation(patch_embeds, attention_mask, past_key_values_length, is_causal)
-        - denormalize(tensor)   # optional; applied to point only
-    • self.encoder (optional) and self.decoder: HuggingFace-style
-        - return_dict=True objects with .last_hidden_state and .past_key_values
-    • self.output_patch_reconstructor(patch_embeds) -> Tensor
-        - Typically maps [B, T_patch, D_latent] -> [B, T_patch, d_model]
-          which we then reshape into [B, T_native, d_model]
-    • self.output_heads: nn.Module or nn.ModuleList
-        - forward(x_last) returns tensor OR dict of params
-        - predict(params, method=...) -> [B, T, F]
-        - sample(params, **kwargs)    -> [B, T, F]   (vectorized heads only; see notes)
-        - sample_quantiles(params, quantile_levels) -> [B, T, 1/F?, Q]  (normalized here)
-    • optional: self.head_aggregator(list_of_head_outputs) -> head_output
-
-    Key guarantees
-    --------------
-    * bundle.point is always a Tensor [B, T, F]
-    * bundle.quantiles is either None or a Tensor [B, T, F, Q]
-    * bundle.params is the stacked raw *primary head* outputs:
-        - Tensor for Gaussian/StudentT/QuantileRegression/etc.
-        - Dict[str, Tensor] for Mixture (MDN) / DistPred
-    * No dicts are ever placed into bundle.quantiles (prevents `.shape` errors)
-
-    Notes on sampling with patch generation
-    ---------------------------------------
-    In this patch paradigm the decoder’s AR loop happens in *latent patch space*.
-    Output heads are applied *after* the full horizon is reconstructed.
-    Therefore, head.sample(...) does **not** influence the decoder’s next state.
-    We still allow sampling to produce a sample path as the returned `point`
-    (when the head supports *vectorized* sampling on [B, T, ...] params, e.g.,
-    Gaussian/StudentT). For heads that implement only one-step sampling
-    (e.g., MDN sample() that returns [B,1,1]), we fall back to predict(...).
+    Requirements on host model
+    --------------------------
+    self.config:
+      - d_model: int
+      - feature_size: int
+      - prediction_length: Optional[int]
+      - num_attention_heads: Optional[int]
+    self.preprocessor:
+      - process(input_values, attention_mask, is_causal, ...)
+      - _prepare_decoder_inputs_for_generation(patch_embeds, attention_mask, past_key_values_length, is_causal)
+      - denormalize(tensor)
+      - value_embedding may expose .output_patch_size
+      - patch_size (int)
+    self.encoder / self.decoder: HuggingFace-style returning .last_hidden_state, .past_key_values
+    self.output_patch_reconstructor: nn.Module mapping [B, T_patch, D_latent] -> [B, T_patch, d_model] or
+                                     [B, T_patch, output_patch_size*d_model]
+    self.output_heads: nn.Module or nn.ModuleList with:
+       - forward(x) -> tensor or dict
+       - predict(params, method=...) -> [B, T, F]
+       - sample(params, **kwargs) -> [B, T, F] (optional vectorized)
+       - sample_quantiles(params, quantile_levels) -> [B, T, F?, Q] (tensor preferred)
     """
 
     # ---------------------------------------------------------------------
-    # Basic utilities (parity with stepwise mixin)
+    # Utilities
     # ---------------------------------------------------------------------
     def enable_dropout(self) -> None:
-        """Enable dropout layers (for MC dropout)."""
         for m in self.modules():
             if isinstance(m, nn.Dropout):
                 m.train()
 
     def _get_primary_head(self) -> nn.Module:
-        """Return the first (primary) head."""
         return self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
 
     def _get_cache_length(self, past_key_values) -> int:
-        """
-        Infer cached sequence length L from past_key_values.
-
-        Supports shapes like:
-          • (B,H,L,D)  (typical HF layout)
-          • (B,L,H,D)
-          • (B,L,D)
-
-        Uses self.config.num_attention_heads / self.config.d_model to disambiguate.
-        """
+        """Infer cached length L from various KV layouts."""
         if past_key_values is None:
             return 0
-
         first_layer = past_key_values[0]
-        # Extract key tensor from common layouts: (k, v, ...) or {"k": ...}
         if isinstance(first_layer, (tuple, list)):
             key_tensor = first_layer[0]
         elif isinstance(first_layer, dict):
@@ -101,64 +77,29 @@ class AutoregressivePatchMixin:
                 except Exception:
                     key_tensor = None
         else:
-            # Some kernels might store the key tensor directly
             key_tensor = first_layer
-
         if key_tensor is None:
             return 0
 
         ndim = key_tensor.ndim
         nh = getattr(getattr(self, "config", object), "num_attention_heads", None)
-
         if ndim == 4:
-            # candidates: (B,H,L,D) or (B,L,H,D)
-            _, a1, a2, _ = key_tensor.shape
+            _, a1, a2, _ = key_tensor.shape   # (B,H,L,D) or (B,L,H,D)
             if nh is not None:
-                if a1 == nh and a2 != nh:
-                    return int(a2)  # (B,H,L,D)
-                if a2 == nh and a1 != nh:
-                    return int(a1)  # (B,L,H,D)
-            # Heuristic: L is the larger of a1/a2 (usually L >> H)
+                if a1 == nh and a2 != nh: return int(a2)
+                if a2 == nh and a1 != nh: return int(a1)
             return int(max(a1, a2))
-
         if ndim == 3:
-            # candidates: (B,L,D) or (B,D,L)
-            _, a1, a2 = key_tensor.shape
+            _, a1, a2 = key_tensor.shape      # (B,L,D) or (B,D,L)
             d_model = getattr(getattr(self, "config", object), "d_model", None)
             if d_model is not None:
-                if a2 == d_model:
-                    return int(a1)  # (B,L,D)
-                if a1 == d_model:
-                    return int(a2)  # (B,D,L)
-            # fallback: the larger tail dim is likely L
+                if a2 == d_model: return int(a1)
+                if a1 == d_model: return int(a2)
             return int(max(a1, a2))
-
-        # Unknown layout; safest fallback
         return 0
 
     @staticmethod
-    def _get_scalar_value(value: Union[torch.Tensor, float, int, Any], name: str) -> Optional[float]:
-        """
-        Convert a value to float if possible; reduce 0-d/1-d tensors to a scalar.
-        """
-        if value is None:
-            return None
-        if torch.is_tensor(value):
-            temp = value
-            while temp.numel() > 1:
-                logger.warning(f"Tensor for '{name}' had {temp.numel()} elements; taking the first.")
-                temp = temp[0]
-            if temp.numel() == 1:
-                return float(temp.item())
-            raise ValueError(f"Could not reduce '{name}' tensor of shape {value.shape} to scalar.")
-        try:
-            return float(value)
-        except (TypeError, ValueError) as e:
-            raise TypeError(f"Could not convert '{name}'={value} (type {type(value)}) to float. Error: {e}")
-
-    @staticmethod
     def _normalize_levels(quantile_levels: Optional[List[float]]) -> Optional[List[float]]:
-        """Validate and sort requested quantile levels."""
         if quantile_levels is None:
             return None
         qs = [float(q) for q in quantile_levels]
@@ -167,37 +108,10 @@ class AutoregressivePatchMixin:
         return sorted(qs)
 
     @staticmethod
-    def _ensure_b1f(x: torch.Tensor, feature_size: int) -> torch.Tensor:
-        """
-        Ensure feedback shape [B, 1, F] from common variants (not used by patch AR loop,
-        but kept for parity and potential re-use).
-        """
-        if x.ndim == 4:  # [B,1,F,K]
-            x = x.mean(dim=-1)
-        if x.ndim == 3:
-            if x.size(-1) == 1 and feature_size > 1:
-                x = x.expand(x.size(0), x.size(1), feature_size)
-            return x
-        if x.ndim == 2:
-            x = x.unsqueeze(1)
-            if x.size(-1) == 1 and feature_size > 1:
-                x = x.expand(x.size(0), x.size(1), feature_size)
-            return x
-        if x.ndim == 1:
-            x = x.view(x.shape[0], 1, 1)
-            if feature_size > 1:
-                x = x.expand(x.size(0), x.size(1), feature_size)
-            return x
-        raise ValueError(f"Expected feedback tensor with 1–4 dims, got {x.shape}")
-
-    @staticmethod
     def _ensure_components_present(params: Dict[str, Any], head: nn.Module) -> Dict[str, Any]:
-        """
-        Ensure a MDN/DistPred-like dict has a 'components' key when the head exposes it.
-        """
         if "components" not in params and hasattr(head, "components"):
             try:
-                params = dict(params)  # shallow copy
+                params = dict(params)
                 params["components"] = list(getattr(head, "components"))
             except Exception:
                 pass
@@ -206,45 +120,27 @@ class AutoregressivePatchMixin:
     @staticmethod
     def _normalize_quantile_shape(q: torch.Tensor, *, feature_size: int, Q: int) -> torch.Tensor:
         """
-        Normalize various quantile shapes to [B, T, F, Q].
-
-        Accepts:
-          • [B, T, Q]      -> [B, T, 1, Q]
-          • [B, T, F, Q]   -> as-is
-          • [B, T, Q, F]   -> [B, T, F, Q]
-          • [B, Q]         -> [B, 1, 1, Q]
+        -> [B, T, F, Q]
+        accepts [B,T,Q], [B,T,F,Q], [B,T,Q,F], [B,Q]
         """
         if q.ndim == 4:
-            if q.shape[-1] == Q:
-                return q
-            if q.shape[-2] == Q:
-                return q.permute(0, 1, 3, 2)
+            if q.shape[-1] == Q: return q
+            if q.shape[-2] == Q: return q.permute(0, 1, 3, 2)
             return q
         if q.ndim == 3 and q.shape[-1] == Q:
-            return q.unsqueeze(-2)
+            return q.unsqueeze(-2)            # [B,T,Q] -> [B,T,1,Q]
         if q.ndim == 2 and q.shape[-1] == Q:
-            return q.unsqueeze(1).unsqueeze(2)
+            return q.unsqueeze(1).unsqueeze(2)  # [B,Q] -> [B,1,1,Q]
         raise ValueError(f"Cannot normalize quantile tensor of shape {tuple(q.shape)} to [B,T,F,Q].")
 
-    # ---------------------------------------------------------------------
-    # Post-quantiles & point extraction (parity with stepwise mixin)
-    # ---------------------------------------------------------------------
     def _post_quantiles_any(
         self,
         params_or_preds: Union[torch.Tensor, Dict[str, Any], List[Any]],
         head: nn.Module,
         quantile_levels: List[float],
     ) -> Union[torch.Tensor, Dict[str, Any], List[Any]]:
-        """
-        Compute quantiles once on stacked params for tensor OR dict OR list-of-heads.
-
-        Returns a tensor [B, T, F, Q] when the head supports quantiles. For ModuleList
-        setups, you can adapt to per-head if needed. By design we bundle *primary head*
-        quantiles.
-        """
         F = getattr(self.config, "feature_size", 1)
         Q = len(quantile_levels)
-
         if hasattr(head, "sample_quantiles") and callable(getattr(head, "sample_quantiles")):
             try:
                 src = params_or_preds
@@ -253,11 +149,10 @@ class AutoregressivePatchMixin:
                 out = head.sample_quantiles(src, quantile_levels)
                 if torch.is_tensor(out):
                     return self._normalize_quantile_shape(out, feature_size=F, Q=Q)
-                return out  # if a head returns a non-tensor, we skip bundling into quantiles
+                return out
             except Exception as e:
-                logger.warning(f"Post-quantiles on primary head failed; returning raw params. Error: {e}")
+                logger.warning(f"Post-quantiles failed; returning raw params. Error: {e}")
                 return params_or_preds
-
         return params_or_preds
 
     def _compute_point_from_params(
@@ -267,17 +162,10 @@ class AutoregressivePatchMixin:
         *,
         quantiles_tensor: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """
-        Compute a point forecast either from a given quantile tensor (median slice) or
-        by calling head.predict(...).
-        """
         if isinstance(quantiles_tensor, torch.Tensor):
             mid = quantiles_tensor.shape[-1] // 2
             point = quantiles_tensor[..., mid]
-            if point.ndim == 2:
-                point = point.unsqueeze(-1)
-            return point
-
+            return point if point.ndim == 3 else point.unsqueeze(-1)
         if source is not None and hasattr(head, "predict"):
             src = source
             if isinstance(src, dict):
@@ -286,14 +174,11 @@ class AutoregressivePatchMixin:
                 pv = head.predict(src, method="median")
             except Exception:
                 pv = head.predict(src, method="mean")
-            if pv.ndim == 2:
-                pv = pv.unsqueeze(-1)
-            return pv
-
-        raise TypeError("Cannot compute point forecast from given params; add 'predict()' to this head.")
+            return pv if pv.ndim == 3 else pv.unsqueeze(-1)
+        raise TypeError("Cannot compute point forecast; head needs predict() or quantiles_tensor must be provided.")
 
     # ---------------------------------------------------------------------
-    # Generation (patch latent AR, then heads on full horizon)
+    # Latent Patch AR
     # ---------------------------------------------------------------------
     @torch.no_grad()
     def generate(
@@ -304,9 +189,9 @@ class AutoregressivePatchMixin:
         attention_mask: Optional[torch.Tensor] = None,
         decoder_attention_mask: Optional[torch.Tensor] = None,
         use_cache: bool = True,
-        decoder_start_token_id: Optional[Any] = None,   # compatibility only
-        eos_token_id: Optional[Any] = None,             # unused in patch AR; kept for parity
-        early_stopping: bool = False,                   # unused in patch AR; kept for parity
+        decoder_start_token_id: Optional[Any] = None,
+        eos_token_id: Optional[Any] = None,
+        early_stopping: bool = False,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         prediction_strategy: Optional[Union[str, float, int]] = None,
@@ -314,44 +199,24 @@ class AutoregressivePatchMixin:
         validate_shapes: bool = True,
         verbose: bool = True,
         *,
-        sampling: bool = False,                         # sampling affects returned point only (see class doc)
+        sampling: bool = False,
         sampling_kwargs: Optional[Dict[str, Any]] = None,
-        store_sampled: bool = False,                    # no-op in patch AR; kept for API parity
+        store_sampled: bool = False,
         enable_mc_dropout: bool = False,
         return_raw: bool = False,
         post_quantiles: bool = True,
         return_bundle: bool = False,
         **kwargs,
-    ) -> Union[
-        torch.Tensor,
-        Dict[str, torch.Tensor],
-        ForecastBundle,
-        List[Dict[str, Union[torch.Tensor, List[str]]]],
-    ]:
+    ) -> Union[torch.Tensor, Dict[str, torch.Tensor], ForecastBundle, List[Dict[str, Union[torch.Tensor, List[str]]]]]:
         """
-        Patch-based autoregressive forecast.
-
-        Steps
-        -----
-        1) Encode context (if encoder exists) and seed the decoder with the last
-           context patch (enc-dec) or the provided decoder_inputs (dec-only).
-        2) Autoregressively predict *patch embeddings* for ceil(pred_len / patch_size) steps.
-        3) Reconstruct native-time embeddings and reshape to [B, T_native, d_model].
-        4) Apply primary output head on the full horizon to get params (tensor/dict).
-        5) Optionally compute quantiles once on the stacked params (MDN-safe).
-        6) Compute a point forecast via:
-              • sampling (vectorized heads only) OR
-              • predict(method=prediction_strategy or 'median') OR
-              • median from computed quantiles
-        7) Optionally denormalize the point (and quantiles when tensor).
-        8) Return ForecastBundle or (quantiles if tensor) else point.
+        Latent patch AR with proper cache warm-up + single-token stepping.
         """
         self.eval()
         if enable_mc_dropout:
             self.enable_dropout()
 
         if encoder_inputs is None and decoder_inputs is None:
-            raise ValueError("You must provide either 'encoder_inputs' or 'decoder_inputs'.")
+            raise ValueError("Provide either 'encoder_inputs' (enc-dec) or 'decoder_inputs' (dec-only).")
 
         if prediction_length is None:
             prediction_length = getattr(self.config, "prediction_length", 0)
@@ -364,9 +229,10 @@ class AutoregressivePatchMixin:
             return ForecastBundle(point=empty) if return_bundle else empty
 
         patch_size = int(getattr(self.preprocessor, "patch_size", 1))
-        num_patch_steps = (prediction_length + patch_size - 1) // patch_size  # ceil-div
+        output_patch_size = getattr(getattr(self.preprocessor, "value_embedding", object), "output_patch_size", patch_size)
+        num_patch_steps = (prediction_length + output_patch_size - 1) // output_patch_size  # ceil-div wrt output_patch_size
 
-        # --------- Encoder path (if present) to get context patches ---------
+        # --------- Build context latent patches ---------
         encoder_hidden_states = None
         if hasattr(self, "encoder") and self.encoder is not None and encoder_inputs is not None:
             enc_proc = self.preprocessor.process(
@@ -376,17 +242,16 @@ class AutoregressivePatchMixin:
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
-            context_patches = enc_proc["hidden_states"]  # [B, T_ctx_patch, D_latent]
+            ctx_latent = enc_proc["hidden_states"]  # [B, T_ctx_patch, D_latent]
             enc_out = self.encoder(
-                hidden_states=context_patches,
+                hidden_states=ctx_latent,
                 attention_mask=enc_proc["attention_mask"],
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=True,
             )
             encoder_hidden_states = enc_out.last_hidden_state
-            # Seed decoder with last context patch
-            decoder_patch_seq = context_patches[:, -1:, :]  # [B, 1, D_latent]
+            initial_patches = ctx_latent  # seed sequence comes from preprocessor/encoder path
         elif decoder_inputs is not None:
             dec_proc0 = self.preprocessor.process(
                 input_values=decoder_inputs,
@@ -395,27 +260,43 @@ class AutoregressivePatchMixin:
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
-            decoder_patch_seq = dec_proc0["hidden_states"]  # [B, T0_patch, D_latent]
+            initial_patches = dec_proc0["hidden_states"]  # full prompt in latent space
         else:
-            raise ValueError("Could not determine architecture: provide encoder_inputs (enc-dec) or decoder_inputs (dec-only).")
+            raise ValueError("Could not determine architecture.")
 
-        # --------- AR loop in patch space ---------
+        # --------- Warm the decoder cache ONCE with the full context ---------
+        warm = self.preprocessor._prepare_decoder_inputs_for_generation(
+            patch_embeds=initial_patches,
+            attention_mask=decoder_attention_mask,   # 2D -> folded to patch mask inside
+            past_key_values_length=0,
+            is_causal=True,
+        )
+        warm_out = self.decoder(
+            hidden_states=warm["hidden_states"],
+            attention_mask=warm["attention_mask"],
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=attention_mask,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=True,
+        )
+        past_key_values = warm_out.past_key_values if use_cache else None
+        last_hidden = warm_out.last_hidden_state[:, -1:, :]   # [B,1,D_latent]
+
+        # --------- Single-token AR loop in latent space ---------
         generated_patches: List[torch.Tensor] = []
-        past_key_values = None
-
         for _ in range(num_patch_steps):
-            step_in = decoder_patch_seq[:, -1:, :] if (use_cache and past_key_values is not None) else decoder_patch_seq
             past_len = self._get_cache_length(past_key_values)
-
-            dec_proc = self.preprocessor._prepare_decoder_inputs_for_generation(
-                patch_embeds=step_in,
-                attention_mask=(None if (use_cache and past_key_values is not None) else decoder_attention_mask),
+            step = self.preprocessor._prepare_decoder_inputs_for_generation(
+                patch_embeds=last_hidden,                # previous decoder hidden as next token (latent)
+                attention_mask=None,                     # causal-only; cache length handled via past_len
                 past_key_values_length=past_len,
                 is_causal=True,
             )
             dec_out = self.decoder(
-                hidden_states=dec_proc["hidden_states"],
-                attention_mask=dec_proc["attention_mask"],
+                hidden_states=step["hidden_states"],     # [B,1,D_latent] after pos/LN/dropout
+                attention_mask=step["attention_mask"],   # 4D causal (1 x (past_len+1)) mask
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=attention_mask,
                 past_key_values=past_key_values,
@@ -424,10 +305,8 @@ class AutoregressivePatchMixin:
                 output_hidden_states=output_hidden_states,
                 return_dict=True,
             )
-            next_patch = dec_out.last_hidden_state[:, -1:, :]  # [B,1,D_latent]
-            generated_patches.append(next_patch)
-            decoder_patch_seq = torch.cat([decoder_patch_seq, next_patch], dim=1)
-
+            last_hidden = dec_out.last_hidden_state[:, -1:, :]     # [B,1,D_latent]
+            generated_patches.append(last_hidden)
             if use_cache:
                 past_key_values = dec_out.past_key_values
 
@@ -437,8 +316,7 @@ class AutoregressivePatchMixin:
 
         # --------- Reconstruct native-time embeddings ---------
         all_patches = torch.cat(generated_patches, dim=1)  # [B, T_patch_out, D_latent]
-        recon = self.output_patch_reconstructor(all_patches)  # [B, T_patch_out, d_model] OR [B, T_patch_out, output_patch_size*d_model]
-
+        recon = self.output_patch_reconstructor(all_patches)  # [B, T_patch_out, d_model] or [B, T_patch_out, output_patch_size*d_model]
         if recon.ndim != 3:
             raise RuntimeError(
                 f"output_patch_reconstructor must return [B,T_patch,d_model] "
@@ -449,22 +327,15 @@ class AutoregressivePatchMixin:
         if B2 != B:
             raise RuntimeError(f"Reconstructor batch mismatch: expected {B}, got {B2}")
 
-        output_patch_size = getattr(getattr(self.preprocessor, "value_embedding", object), "output_patch_size", patch_size)
         d_model_cfg = getattr(self.config, "d_model", None)
-
-        # Case A: recon is already flattened (most common)
         if d_model_cfg is not None and proj == output_patch_size * d_model_cfg:
             d_model = d_model_cfg
             head_inputs = recon.contiguous().view(B, T_patch_out * output_patch_size, d_model)
-
-        # Case B: recon returns one vector per patch (rare / fallback)
         elif d_model_cfg is not None and proj == d_model_cfg:
             d_model = d_model_cfg
             head_inputs = recon.unsqueeze(2).expand(B, T_patch_out, output_patch_size, d_model).reshape(
                 B, T_patch_out * output_patch_size, d_model
             )
-
-        # Case C: infer d_model when not in config
         else:
             if proj % output_patch_size != 0:
                 raise RuntimeError(
@@ -473,32 +344,35 @@ class AutoregressivePatchMixin:
             d_model = proj // output_patch_size
             head_inputs = recon.contiguous().view(B, T_patch_out * output_patch_size, d_model)
 
-        # Trim to requested horizon
+        # Trim to requested horizon (native steps)
         head_inputs = head_inputs[:, :prediction_length, :]  # [B, T, d_model]
 
-        # --------- Apply primary head on full horizon (get params) ---------
+        # --------- Head: params once on full horizon ---------
         primary_head = self._get_primary_head()
-        params_stacked = primary_head(head_inputs)  # tensor OR dict, usually [B, T, ...] / dict of [B, T, ...]
+        params_stacked = primary_head(head_inputs)
         if isinstance(params_stacked, dict):
             params_stacked = self._ensure_components_present(params_stacked, primary_head)
 
-        # --------- Quantiles (once; MDN-safe) ---------
+        # --------- Quantiles (optional, once) ---------
         levels = self._normalize_levels(quantile_levels)
         q_tensor: Optional[torch.Tensor] = None
         if levels is not None and post_quantiles:
             out_q = self._post_quantiles_any(params_stacked, primary_head, levels)
             if torch.is_tensor(out_q):
-                q_tensor = self._normalize_quantile_shape(out_q, feature_size=getattr(self.config, "feature_size", 1), Q=len(levels))
+                q_tensor = self._normalize_quantile_shape(
+                    out_q,
+                    feature_size=getattr(self.config, "feature_size", 1),
+                    Q=len(levels),
+                )
 
         # --------- Point forecast ---------
-        # Prefer sampling when requested and supported *vectorized*; else predict; else median from q_tensor.
         if sampling and hasattr(primary_head, "sample"):
             try:
                 point = primary_head.sample(params_stacked, **(sampling_kwargs or {}))
                 if not torch.is_tensor(point):
                     raise TypeError("head.sample(...) did not return a Tensor.")
             except Exception as e:
-                logger.warning(f"Vectorized sampling failed for primary head; falling back to predict(...). Error: {e}")
+                logger.warning(f"Vectorized sampling failed; falling back to predict(...). Error: {e}")
                 point = self._compute_point_from_params(params_stacked, primary_head, quantiles_tensor=q_tensor)
         else:
             point = self._compute_point_from_params(params_stacked, primary_head, quantiles_tensor=q_tensor)
@@ -506,13 +380,12 @@ class AutoregressivePatchMixin:
         if point.ndim == 2:
             point = point.unsqueeze(-1)  # [B,T] -> [B,T,1]
 
-        # --------- Optional denormalization (point & quantiles) ---------
+        # --------- Optional denormalization ---------
         if hasattr(self.preprocessor, "denormalize") and not return_raw:
             try:
                 point = self.preprocessor.denormalize(point)
             except Exception as e:
                 logger.warning(f"Denormalization failed; returning raw point. Error: {e}")
-
             if isinstance(q_tensor, torch.Tensor):
                 try:
                     q_tensor = self.preprocessor.denormalize(q_tensor)
@@ -523,10 +396,9 @@ class AutoregressivePatchMixin:
         bundle = ForecastBundle(
             point=point,                 # [B, T, F]
             quantiles=q_tensor,          # [B, T, F, Q] or None
-            params=params_stacked,       # Tensor for Gaussian/StudentT/QR; Dict for MDN/DistPred
+            params=params_stacked,       # Tensor or Dict (e.g., MDN/DistPred)
             extras=HeadExtras(),
         )
-
         if return_bundle:
             return bundle
         if isinstance(q_tensor, torch.Tensor):
@@ -542,8 +414,18 @@ class AutoregressivePatchMixin:
         **kwargs,
     ):
         """
-        Convenience wrapper around `generate` for encoder/decoder configurations.
-
+        Convenience wrapper around `generate`.
+        
+        Parameters
+        ----------
+        inputs : Tensor
+            Input sequence [B, T, F] (for encoder-decoder: historical context,
+            for decoder-only: prompt).
+        prediction_length : int
+            Number of steps to forecast in native time steps.
+        quantiles : List[float] | None
+            Quantiles to compute post-hoc (e.g., [0.1, 0.5, 0.9]).
+        
         Parameters
         ----------
         inputs : Tensor
