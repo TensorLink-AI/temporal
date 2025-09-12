@@ -119,7 +119,7 @@ class InputPreprocessor(nn.Module):
         final_mask = None
 
         if is_causal:
-            final_mask = self._make_causal_mask((bsz, seq_len), dtype, device, past_key_values_length)
+            final_mask = self._make_causal_mask((bsz, seq_lechn), dtype, device, past_key_values_length)
 
         if attention_mask is not None:
             processed_mask = attention_mask  # [B, L_raw]

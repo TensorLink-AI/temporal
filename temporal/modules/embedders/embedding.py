@@ -148,19 +148,37 @@ class SinusoidalPositionalEmbedding(BaseEmbedding):
         pe = self.pe[:, positions, :].to(dtype=dtype, device=device)  # [1, T, D]
         return pe.expand(batch_size, -1, -1)
 
-# Patch Embedding
 @register_module("embedding", "patch")
 class TimeSeriesPatchEmbedding(BaseEmbedding):
-    def __init__(self, patch_size: int, feature_size: int, d_model: int, stride: Optional[int] = None, pad_value: float = 0.0, use_mlp: bool = False, mlp_hidden_size: Optional[int] = None, output_patch_size: Optional[int] = None):
+    def __init__(
+        self,
+        patch_size: int,
+        feature_size: int,
+        d_model: int,
+        stride: Optional[int] = None,
+        pad_value: float = 0.0,
+        use_mlp: bool = False,
+        mlp_hidden_size: Optional[int] = None,
+        output_patch_size: Optional[int] = None,
+        reconstructor_kind: str = "linear",               # "linear" | "factorized" | "mlp"
+        reconstructor_hidden_size: Optional[int] = None,  # used for factorized/mlp
+        reconstructor_activation: Optional[str] = "gelu", # None | "relu" | "gelu"
+    ):
         super().__init__(d_model)
         self.patch_size = patch_size
         self.stride = stride or patch_size
         self.pad_value = pad_value
         self.flat_size = patch_size * feature_size
         self.output_patch_size = output_patch_size if output_patch_size is not None else patch_size
+
         self.use_mlp = use_mlp
         self.mlp_hidden_size = mlp_hidden_size
-        
+
+        # store reconstructor defaults
+        self.reconstructor_kind = reconstructor_kind
+        self.reconstructor_hidden_size = reconstructor_hidden_size
+        self.reconstructor_activation = reconstructor_activation
+
         if use_mlp:
             H = mlp_hidden_size or d_model
             self.proj = nn.Sequential(
@@ -172,28 +190,43 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
             self.proj = nn.Linear(self.flat_size, d_model, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Correctly pads, unfolds, and projects the input tensor into patches.
-        Args:
-            x: Input tensor of shape [B, L, F].
-        Returns:
-            Tensor of shape [B, num_patches, d_model].
-        """
         B, L, F = x.shape
-        
-        # 1. Pad the sequence length if necessary
         pad_len = (self.stride - (L - self.patch_size) % self.stride) % self.stride
         if pad_len > 0:
             x = nn.functional.pad(x, (0, 0, 0, pad_len), "constant", self.pad_value)
-        
-        # 2. Unfold to create patches: [B, F, num_patches, patch_size]
         patches = x.permute(0, 2, 1).unfold(dimension=2, size=self.patch_size, step=self.stride)
-        
-        # 3. Flatten patch and feature dimensions: [B, num_patches, F * patch_size]
         patches = patches.permute(0, 2, 1, 3).contiguous().view(B, -1, self.flat_size)
-        
-        # 4. Project to d_model
         return self.proj(patches)
+
+    # Factory uses stored defaults but can be overridden per-call
+    def make_reconstructor(
+        self,
+        *,
+        kind: Optional[str] = None,
+        hidden_size: Optional[int] = None,
+        activation: Optional[str] = None,
+    ) -> nn.Module:
+        kind = (kind or self.reconstructor_kind or "linear").lower()
+        H = int(hidden_size or self.reconstructor_hidden_size or self.d_model)
+        act = activation if activation is not None else self.reconstructor_activation
+
+        d_model = self.d_model
+        out_dim = self.output_patch_size * d_model
+
+        def _act(name: Optional[str]) -> nn.Module:
+            if name is None: return nn.Identity()
+            name = name.lower()
+            return nn.ReLU() if name == "relu" else (nn.GELU() if name == "gelu" else nn.Identity())
+
+        if kind == "linear":
+            return nn.Linear(d_model, out_dim)
+        if kind == "factorized":
+            return nn.Sequential(nn.Linear(d_model, H), nn.Identity(), nn.Linear(H, out_dim))
+        if kind == "mlp":
+            return nn.Sequential(nn.Linear(d_model, H), _act(act), nn.Linear(H, out_dim))
+        raise ValueError(f"Unknown reconstructor kind: {kind}")
+
+
 
 # --- Rotary Positional Embedding (small tweaks) ---
 @register_module("embedding", "rotary")

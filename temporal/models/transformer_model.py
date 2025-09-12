@@ -155,27 +155,9 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         self.output_patch_reconstructor = None # Start as None
         #  partion this out eventually to make it cleaner
         if self.preprocessor.is_patched:
-            patch_size = self.preprocessor.patch_size
-            output_patch_size = getattr(self.preprocessor.value_embedding, 'output_patch_size', patch_size)
-            use_mlp = getattr(self.preprocessor.value_embedding, 'use_mlp', False)
-            mlp_hidden_size = getattr(self.preprocessor.value_embedding, 'mlp_hidden_size', None) or (patch_size * 2)
-            d_model = self.config.d_model
+                self.output_patch_reconstructor = self.preprocessor.value_embedding.make_reconstructor()
 
-            # The reconstructor's job is to project each patch token's hidden state
-            # back to the hidden dimension space for each time step in the patch.
-            output_projection_size = output_patch_size * d_model
 
-            if use_mlp:
-                print(f"INFO: Building MLP patch_merger (d_model -> {mlp_hidden_size} -> {output_projection_size}).")
-                self.output_patch_reconstructor = nn.Sequential(
-                    nn.Linear(d_model, mlp_hidden_size),
-                    nn.ReLU(),
-                    nn.Linear(mlp_hidden_size, output_projection_size)
-                )
-            else:
-                print(f"INFO: Building Linear patch_merger (d_model -> {output_projection_size}).")
-                self.output_patch_reconstructor = nn.Linear(d_model, output_projection_size)
-        
         # 5. Loss function. Build if not provided.
         if loss_fn is not None:
             self.loss_fn = loss_fn
