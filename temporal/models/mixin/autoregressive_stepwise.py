@@ -679,199 +679,128 @@ class AutoregressiveStepwiseMixin:
                 decoder_inputs = encoder_inputs[:, -1:, :].clone()
             else:
                 raise ValueError("Decoder-only generation needs a real prompt in decoder_inputs.")
+        
+        # === CORRECTED AUTOREGRESSIVE LOGIC FOR REV-IN STYLE PREPROCESSOR ===
 
-        # Warm step to infer storage shape
-        warm_mask = (
-            decoder_attention_mask
-            if decoder_attention_mask is not None
-            else torch.ones(decoder_inputs.size(0), decoder_inputs.size(1), device=decoder_inputs.device, dtype=torch.float32)
-        )
-        warm_proc = self.preprocessor.process(
-            input_values=decoder_inputs,
-            past_key_values_length=0,
-            attention_mask=warm_mask,
-            is_causal=True,
-            validate_shapes=validate_shapes,
-            verbose=verbose,
-        )
-        warm_hidden_in = warm_proc["hidden_states"]
-        if hasattr(self, "_values_to_hidden"):
-            warm_hidden_in = self._values_to_hidden(warm_hidden_in)
+        # 1. NORMALIZE ONCE: Apply instance normalization to the initial context.
+        # This is the only time statistics are calculated. The preprocessor's internal
+        # state (mean/std) is now set for the entire generation process.
+        normalized_context = self.preprocessor.instance_norm(decoder_inputs, mode='norm', mask=decoder_attention_mask)
 
-        warm_out = self.decoder(
-            hidden_states=warm_hidden_in,
-            attention_mask=warm_proc["attention_mask"],
+        # 2. PROCESS CONTEXT: Run the rest of the preprocessing steps (embedding, etc.)
+        # on the now-normalized context to prepare it for the decoder.
+        initial_processed = self.preprocessor.process(
+            input_values=normalized_context, # Pass in the normalized data
+            attention_mask=decoder_attention_mask,
+            is_causal=True
+        )
+        initial_hidden_states = initial_processed["hidden_states"]
+        initial_attention_mask = initial_processed["attention_mask"]
+
+        # 3. WARM UP CACHE: Run the decoder on the full context to populate the KV cache.
+        dec_out = self.decoder(
+            hidden_states=initial_hidden_states,
+            attention_mask=initial_attention_mask,
             encoder_hidden_states=encoder_hidden_states,
-            use_cache=False,
+            use_cache=use_cache,
             return_dict=True,
         )
-        warm_last = warm_out.last_hidden_state[:, -1:, :]  # [B,1,D]
-        warm_head = self._get_head_output(warm_last)
+        past_key_values = dec_out.past_key_values if use_cache else None
+        
+        # The input for the *first* prediction is the hidden state of the *last* context token.
+        next_step_hidden = dec_out.last_hidden_state[:, -1:, :]
 
-        defer_q = (post_quantiles and quantile_levels is not None)
-        warm_pred = self._compute_prediction_to_store(
-            warm_head, prediction_strategy, quantile_levels, primary_head, defer_quantiles=defer_q
-        )
+        # Initialize accumulators
+        sampled_steps = []  # will store denormalized values if store_sampled=True
+        params_acc_list = []
 
-        # Preallocate if we are storing a tensor; otherwise use a list
-        use_prealloc = torch.is_tensor(warm_pred)
-        if use_prealloc:
-            step_out_shape = warm_pred.shape[2:]  # drop T=1
-            store_acc = torch.zeros(
-                (B, prediction_length, *step_out_shape),
-                device=warm_pred.device,
-                dtype=warm_pred.dtype,
-            )
-        else:
-            store_list: List[Any] = []
-            store_acc = None
-
-        sampled_steps: List[torch.Tensor] = []
-        params_acc_tensor: Optional[torch.Tensor] = None
-        params_acc_dict_tensors: Optional[Dict[str, List[torch.Tensor]]] = None
-        params_acc_dict_meta: Optional[Dict[str, Any]] = None
-
-        # AR loop
-        past_key_values = None
-        eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
-        next_input = decoder_inputs
-
+        # 4. AUTOREGRESSIVE LOOP: Operates entirely in the normalized space.
         for i in range(prediction_length):
-            step_input = next_input
-            past_len = self._get_cache_length(past_key_values)
+            # Get model output for the current step
+            head_out_params = self._get_head_output(next_step_hidden)
+            params_acc_list.append(head_out_params)
 
-            if decoder_attention_mask is not None:
-                if decoder_attention_mask.dim() != 2 or decoder_attention_mask.size(0) != step_input.size(0):
-                    raise ValueError("decoder_attention_mask must be [B, T_step].")
-                dec2d_mask = decoder_attention_mask
-            else:
-                dec2d_mask = torch.ones(step_input.size(0), step_input.size(1), device=step_input.device, dtype=torch.float32)
-
-            dec_proc = self.preprocessor.process(
-                input_values=step_input,
-                past_key_values_length=past_len,
-                attention_mask=dec2d_mask,
-                is_causal=True,
-                validate_shapes=validate_shapes,
-                verbose=verbose,
+            # Determine the next feedback value (this is NORMALIZED)
+            next_val_normalized = self._compute_next_decoder_input_value(
+                head_out_params,
+                prediction_strategy,
+                primary_head,
+                use_sampling=sampling,
+                sampling_kwargs=sampling_kwargs
             )
-            dec_hidden_in = dec_proc["hidden_states"]
-            if hasattr(self, "_values_to_hidden"):
-                dec_hidden_in = self._values_to_hidden(dec_hidden_in)
 
+            # If storing the sampled path, we denormalize it here for later use.
+            if store_sampled:
+                denorm_val = self.preprocessor.denormalize(next_val_normalized)
+                sampled_steps.append(denorm_val)
+
+            # Optional early stopping check (on the denormalized value for interpretability)
+            if early_stopping and eos_token_id is not None:
+                eos_value_scalar = self._get_scalar_value(eos_token_id, "eos_token_id")
+                # Denormalize just for the check
+                check_val = self.preprocessor.denormalize(next_val_normalized)
+                target = torch.full_like(check_val, eos_value_scalar)
+                if torch.allclose(check_val, target, rtol=0.0, atol=1e-6):
+                    logger.info(f"Early stopping triggered at step {i + 1}.")
+                    break
+
+            # Prepare the single new normalized token for the next decoder pass
+            # a) Value embedding
+            next_embed = self.preprocessor.value_embedding(next_val_normalized)
+            
+            # b) Add positional encoding and create attention mask for this step
+            past_len = self._get_cache_length(past_key_values)
+            processed_step = self.preprocessor._prepare_decoder_inputs_for_generation(
+                patch_embeds=next_embed,
+                past_key_values_length=past_len
+            )
+
+            # Run the decoder on just the new token
             dec_out = self.decoder(
-                hidden_states=dec_hidden_in,
-                attention_mask=dec_proc["attention_mask"],
+                hidden_states=processed_step["hidden_states"],
+                attention_mask=processed_step["attention_mask"],
                 encoder_hidden_states=encoder_hidden_states,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=True,
+                return_dict=True
             )
 
-            last_hidden = dec_out.last_hidden_state[:, -1:, :]  # [B,1,D]
-            head_out = self._get_head_output(last_hidden)
+            # Update state for the next iteration
+            past_key_values = dec_out.past_key_values
+            next_step_hidden = dec_out.last_hidden_state
 
-            # Collect raw params for later bundling
-            if torch.is_tensor(head_out):
-                v = head_out if head_out.ndim >= 3 else head_out.unsqueeze(1)  # [B,1,...]
-                params_acc_tensor = v if params_acc_tensor is None else torch.cat([params_acc_tensor, v], dim=1)
-            elif isinstance(head_out, dict):
-                params_acc_dict_tensors, params_acc_dict_meta = self._accum_params_dict_step(
-                    params_acc_dict_tensors, params_acc_dict_meta, head_out
-                )
-
-            # Append stored trajectory (possibly deferring quantiles)
-            to_store = self._compute_prediction_to_store(
-                head_out, prediction_strategy, quantile_levels, primary_head, defer_quantiles=defer_q
-            )
-            if use_prealloc:
-                if not torch.is_tensor(to_store):
-                    # switch to list mode
-                    use_prealloc = False
-                    store_list = [store_acc[:, 0:1]] if store_acc is not None else []
-                    store_acc = None
-                    store_list.append(to_store)
-                else:
-                    store_acc[:, i] = to_store.squeeze(1)
-            else:
-                store_list.append(to_store)
-
-            # Feedback for next step
-            next_val = self._compute_next_decoder_input_value(
-                head_out, prediction_strategy, primary_head,
-                use_sampling=sampling, sampling_kwargs=sampling_kwargs
-            )
-            if store_sampled:
-                sampled_steps.append(next_val)
-            next_input = next_val
-
-            if use_cache:
-                past_key_values = dec_out.past_key_values
-
-            # Optional early stop
-            if early_stopping and eos_value_scalar is not None:
-                target = torch.full_like(next_val, eos_value_scalar)
-                if torch.allclose(next_val, target, rtol=0.0, atol=1e-6):
-                    logger.info(f"Early stopping triggered at step {i + 1}.")
-                    if use_prealloc and store_acc is not None:
-                        store_acc = store_acc[:, : i + 1]
-                    break
-
-        # Assemble stored trajectory for legacy return paths
-        if use_prealloc and store_acc is not None:
-            stored = store_acc
-        else:
-            if store_list and isinstance(store_list[0], dict):
-                stored = store_list
-            elif store_list:
-                stored = torch.cat(store_list, dim=1)
-            else:
-                stored = None
-
-        # --------- stack params for bundle ---------
+        # 5. ASSEMBLE AND DENORMALIZE ONCE
+        if not params_acc_list:
+             empty = torch.empty((B, 0, getattr(self.config, "feature_size", 1)), device=device, dtype=dtype)
+             return ForecastBundle(point=empty) if return_bundle else empty
+        
         params_stacked: Union[torch.Tensor, Dict[str, Any], None] = None
-        if params_acc_tensor is not None:
-            params_stacked = params_acc_tensor               # e.g., Gaussian/StudentT/QR => [B,T,...]
-        elif params_acc_dict_tensors is not None:
-            params_stacked = self._stack_params_dict(params_acc_dict_tensors, params_acc_dict_meta)  # MDN/DistPred dict
-
-        # --------- point & quantiles (MDN-safe) ---------
+        if torch.is_tensor(params_acc_list[0]):
+            params_stacked = torch.cat(params_acc_list, dim=1)
+        elif isinstance(params_acc_list[0], dict):
+            acc_tensors: Dict[str, List[torch.Tensor]] = {}
+            acc_meta: Optional[Dict[str, Any]] = None
+            for step_dict in params_acc_list:
+                acc_tensors, acc_meta = self._accum_params_dict_step(acc_tensors, acc_meta, step_dict)
+            params_stacked = self._stack_params_dict(acc_tensors, acc_meta)
+        
         levels = self._normalize_levels(quantile_levels)
+        point, q_tensor, params_for_bundle = self._extract_bundle_parts(primary_head, params_stacked, levels)
 
-        if params_stacked is None:
-            # Fallback: nothing accumulated (rare)
-            if torch.is_tensor(stored) and stored.size(-1) == getattr(self.config, "feature_size", stored.size(-1)):
-                point = stored
-                q_tensor = None
-                params_for_bundle = None
-            else:
-                raise RuntimeError("No head params were collected during generation.")
-        else:
-            point, q_tensor, params_for_bundle = self._extract_bundle_parts(primary_head, params_stacked, levels)
-
-        # If requested, override point with the actually sampled AR path
         if store_sampled and sampled_steps:
             point = torch.cat(sampled_steps, dim=1)
+            return_raw = True # The sampled path is already denormalized
 
-        # Optional denormalization on point only
         if hasattr(self.preprocessor, "denormalize") and not return_raw:
-            if isinstance(point, torch.Tensor) and point.size(-1) == getattr(self.config, "feature_size", point.size(-1)):
-                point = self.preprocessor.denormalize(point)
-
-        # Build bundle
-        extras_dict: Dict[str, Any] = {}
-        try:
-            extras_obj = HeadExtras(**extras_dict)  # type: ignore[arg-type]
-        except Exception:
-            extras_obj = extras_dict  # type: ignore[assignment]
+            point = self.preprocessor.denormalize(point)
+            if q_tensor is not None:
+                q_tensor = self.preprocessor.denormalize(q_tensor)
 
         bundle = ForecastBundle(
-            point=point,                 # [B, T, F]
-            quantiles=q_tensor,          # [B, T, F, Q] or None (always Tensor if present)
-            params=params_for_bundle,    # Tensor for Gaussian/StudentT/QR; Dict for MDN/DistPred
-            extras=extras_obj,
+            point=point,
+            quantiles=q_tensor,
+            params=params_for_bundle,
+            extras=HeadExtras(),
         )
 
         if return_bundle:
