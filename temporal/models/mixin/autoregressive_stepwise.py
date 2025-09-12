@@ -685,12 +685,12 @@ class AutoregressiveStepwiseMixin:
         # 1. NORMALIZE ONCE: Apply instance normalization to the initial context.
         # This is the only time statistics are calculated. The preprocessor's internal
         # state (mean/std) is now set for the entire generation process.
-        normalized_context = self.preprocessor.instance_norm(decoder_inputs, mode='norm', mask=decoder_attention_mask)
+       # normalized_context = self.preprocessor.instance_norm(decoder_inputs, mode='norm', mask=decoder_attention_mask)
 
         # 2. PROCESS CONTEXT: Run the rest of the preprocessing steps (embedding, etc.)
         # on the now-normalized context to prepare it for the decoder.
         initial_processed = self.preprocessor.process(
-            input_values=normalized_context, # Pass in the normalized data
+            input_values=decoder_inputs,
             attention_mask=decoder_attention_mask,
             is_causal=True
         )
