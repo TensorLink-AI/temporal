@@ -96,7 +96,6 @@ class AutoregressivePatchMixin:
         elif isinstance(first_layer, dict):
             key_tensor = first_layer.get("k") or first_layer.get("key")
             if key_tensor is None:
-                # fall back to "first value" if dict order is friendly
                 try:
                     key_tensor = next(iter(first_layer.values()))
                 except Exception:
@@ -254,7 +253,7 @@ class AutoregressivePatchMixin:
                 out = head.sample_quantiles(src, quantile_levels)
                 if torch.is_tensor(out):
                     return self._normalize_quantile_shape(out, feature_size=F, Q=Q)
-                return out  # if a head returns a non-tensor (we don't place into bundle.quantiles)
+                return out  # if a head returns a non-tensor, we skip bundling into quantiles
             except Exception as e:
                 logger.warning(f"Post-quantiles on primary head failed; returning raw params. Error: {e}")
                 return params_or_preds
@@ -344,13 +343,8 @@ class AutoregressivePatchMixin:
               • sampling (vectorized heads only) OR
               • predict(method=prediction_strategy or 'median') OR
               • median from computed quantiles
-        7) Optionally denormalize the point.
+        7) Optionally denormalize the point (and quantiles when tensor).
         8) Return ForecastBundle or (quantiles if tensor) else point.
-
-        Important
-        ---------
-        • sampling=True does NOT influence the decoder’s AR loop here. It only
-          changes how we produce the final `point` from the stacked head params.
         """
         self.eval()
         if enable_mc_dropout:
@@ -396,14 +390,14 @@ class AutoregressivePatchMixin:
         elif decoder_inputs is not None:
             dec_proc0 = self.preprocessor.process(
                 input_values=decoder_inputs,
-                attention_mask=attention_mask,
+                attention_mask=decoder_attention_mask,
                 is_causal=True,
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
             decoder_patch_seq = dec_proc0["hidden_states"]  # [B, T0_patch, D_latent]
         else:
-            raise ValueError("Could not determine architecture: provide encoder_inputs (for enc-dec) or decoder_inputs (for dec-only).")
+            raise ValueError("Could not determine architecture: provide encoder_inputs (enc-dec) or decoder_inputs (dec-only).")
 
         # --------- AR loop in patch space ---------
         generated_patches: List[torch.Tensor] = []
@@ -446,18 +440,19 @@ class AutoregressivePatchMixin:
         recon = self.output_patch_reconstructor(all_patches)  # [B, T_patch_out, d_model] OR [B, T_patch_out, output_patch_size*d_model]
 
         if recon.ndim != 3:
-            raise RuntimeError(f"output_patch_reconstructor must return [B,T_patch,d_model] "
-                            f"or [B,T_patch,output_patch_size*d_model], got {tuple(recon.shape)}")
+            raise RuntimeError(
+                f"output_patch_reconstructor must return [B,T_patch,d_model] "
+                f"or [B,T_patch,output_patch_size*d_model], got {tuple(recon.shape)}"
+            )
 
         B2, T_patch_out, proj = recon.shape
         if B2 != B:
             raise RuntimeError(f"Reconstructor batch mismatch: expected {B}, got {B2}")
 
-        patch_size = int(getattr(self.preprocessor, "patch_size", 1))
         output_patch_size = getattr(getattr(self.preprocessor, "value_embedding", object), "output_patch_size", patch_size)
         d_model_cfg = getattr(self.config, "d_model", None)
 
-        # Case A: recon is already flattened (most common in your build)
+        # Case A: recon is already flattened (most common)
         if d_model_cfg is not None and proj == output_patch_size * d_model_cfg:
             d_model = d_model_cfg
             head_inputs = recon.contiguous().view(B, T_patch_out * output_patch_size, d_model)
@@ -465,7 +460,6 @@ class AutoregressivePatchMixin:
         # Case B: recon returns one vector per patch (rare / fallback)
         elif d_model_cfg is not None and proj == d_model_cfg:
             d_model = d_model_cfg
-            # Safest fallback: tile each patch vector across output_patch_size native steps
             head_inputs = recon.unsqueeze(2).expand(B, T_patch_out, output_patch_size, d_model).reshape(
                 B, T_patch_out * output_patch_size, d_model
             )
@@ -482,7 +476,6 @@ class AutoregressivePatchMixin:
         # Trim to requested horizon
         head_inputs = head_inputs[:, :prediction_length, :]  # [B, T, d_model]
 
-
         # --------- Apply primary head on full horizon (get params) ---------
         primary_head = self._get_primary_head()
         params_stacked = primary_head(head_inputs)  # tensor OR dict, usually [B, T, ...] / dict of [B, T, ...]
@@ -495,48 +488,43 @@ class AutoregressivePatchMixin:
         if levels is not None and post_quantiles:
             out_q = self._post_quantiles_any(params_stacked, primary_head, levels)
             if torch.is_tensor(out_q):
-                # normalize to [B, T, F, Q]
                 q_tensor = self._normalize_quantile_shape(out_q, feature_size=getattr(self.config, "feature_size", 1), Q=len(levels))
-            else:
-                # If a head returns non-tensor (shouldn't happen), skip bundling in quantiles
-                q_tensor = None
 
         # --------- Point forecast ---------
         # Prefer sampling when requested and supported *vectorized*; else predict; else median from q_tensor.
-        point: torch.Tensor
         if sampling and hasattr(primary_head, "sample"):
             try:
-                # Vectorized sampling over [B, T, ...] params (e.g., Gaussian/StudentT heads)
-                sampled = primary_head.sample(params_stacked, **(sampling_kwargs or {}))
-                if not torch.is_tensor(sampled):
+                point = primary_head.sample(params_stacked, **(sampling_kwargs or {}))
+                if not torch.is_tensor(point):
                     raise TypeError("head.sample(...) did not return a Tensor.")
-                point = sampled  # expected [B, T, F]
             except Exception as e:
                 logger.warning(f"Vectorized sampling failed for primary head; falling back to predict(...). Error: {e}")
                 point = self._compute_point_from_params(params_stacked, primary_head, quantiles_tensor=q_tensor)
         else:
             point = self._compute_point_from_params(params_stacked, primary_head, quantiles_tensor=q_tensor)
 
-        # --------- Optional denormalization (point only) ---------
+        if point.ndim == 2:
+            point = point.unsqueeze(-1)  # [B,T] -> [B,T,1]
+
+        # --------- Optional denormalization (point & quantiles) ---------
         if hasattr(self.preprocessor, "denormalize") and not return_raw:
-            if isinstance(point, torch.Tensor) and point.size(-1) == getattr(self.config, "feature_size", point.size(-1)):
+            try:
+                point = self.preprocessor.denormalize(point)
+            except Exception as e:
+                logger.warning(f"Denormalization failed; returning raw point. Error: {e}")
+
+            if isinstance(q_tensor, torch.Tensor):
                 try:
-                    point = self.preprocessor.denormalize(point)
+                    q_tensor = self.preprocessor.denormalize(q_tensor)
                 except Exception as e:
-                    logger.warning(f"Denormalization failed; returning raw point. Error: {e}")
+                    logger.warning(f"Quantile denormalization failed; returning raw quantiles. Error: {e}")
 
         # --------- Bundle ---------
-        extras_dict: Dict[str, Any] = {}
-        try:
-            extras_obj = HeadExtras(**extras_dict)  # type: ignore[arg-type]
-        except Exception:
-            extras_obj = extras_dict  # type: ignore[assignment]
-
         bundle = ForecastBundle(
             point=point,                 # [B, T, F]
             quantiles=q_tensor,          # [B, T, F, Q] or None
             params=params_stacked,       # Tensor for Gaussian/StudentT/QR; Dict for MDN/DistPred
-            extras=extras_obj,
+            extras=HeadExtras(),
         )
 
         if return_bundle:

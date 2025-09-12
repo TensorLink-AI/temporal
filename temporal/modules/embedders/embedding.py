@@ -158,6 +158,8 @@ class TimeSeriesPatchEmbedding(BaseEmbedding):
         self.pad_value = pad_value
         self.flat_size = patch_size * feature_size
         self.output_patch_size = output_patch_size if output_patch_size is not None else patch_size
+        self.use_mlp = use_mlp
+        self.mlp_hidden_size = mlp_hidden_size
         
         if use_mlp:
             H = mlp_hidden_size or d_model
