@@ -38,7 +38,7 @@ class InputPreprocessor(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.quantizer: Optional[BaseQuantizer] = None
         if config.quantizer_config:
-            self.quantizer = self.builder.build_quantizer(config.quantizer_config)
+            self.quantizer = builder.build_quantizer(config.quantizer_config)
 
         # Patch flags
         self.is_patched = isinstance(self.value_embedding, TimeSeriesPatchEmbedding)
