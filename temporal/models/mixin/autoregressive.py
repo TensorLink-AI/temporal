@@ -11,7 +11,7 @@ from .autoregressive_stepwise import AutoregressiveStepwiseMixin
 logger = logging.getLogger(__name__)
 
 
-class AutoregressiveMixin(
+class AutoregressiveDispatchMixin(
     AutoregressiveLatentMixin, AutoregressivePatchMixin, AutoregressiveStepwiseMixin
 ):
     """
