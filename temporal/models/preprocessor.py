@@ -74,7 +74,13 @@ class InputPreprocessor(nn.Module):
         # --- Value embedding (patch embed handles its own padding) ---
         value_embeds = self.value_embedding(x)                     # [B, T_tok, d_model]
         B, T_tok, d_model = value_embeds.shape
-
+        quantizer_loss = None
+        if self.quantizer is not None:
+            quantizer_output = self.quantizer(value_embedded)
+            hidden_states = quantizer_output["quantized"]
+            quantizer_loss = quantizer_output.get("loss") # Can be None
+        else:
+            hidden_states = value_embedded
         # --- Positional embedding ---
         pos_embed = self.positional_embedding(
             x=value_embeds, batch_size=B, seq_len=T_tok, past_key_values_length=past_key_values_length

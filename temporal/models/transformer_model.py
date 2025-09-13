@@ -17,6 +17,7 @@ from temporal.models.output_head_builder import OutputHeadBuilder
 from temporal.modules.encoders.encoders import TimeSeriesTransformerEncoder
 from temporal.modules.decoders.decoders import TimeSeriesTransformerDecoder
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
+from temporal.modules.losses.losses import DiscreteLoss # Import DiscreteLoss for type checking
 
 
 @dataclass
@@ -176,9 +177,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         """Return the primary output head."""
         return self.output_heads[0] if isinstance(self.output_heads, nn.ModuleList) else self.output_heads
 
-
-   
-
     def forward(
         self,
         encoder_inputs: Optional[torch.Tensor] = None,
@@ -197,7 +195,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
     ) -> TransformerOutput:
         """
         Performs a forward pass through the entire transformer model.
-
+ 
         Args:
             encoder_inputs (Optional[torch.Tensor]): Inputs for the encoder,
                 shape `[B, L_enc, F_enc]`.
@@ -225,7 +223,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
 
         Returns:
-            TransformerOutput: A structured object containing the model's outputs.
+            TransformerOutput: A structured object containing the model's outputs.       
         """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -235,6 +233,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
 
         # Step 1: Run the encoder if it exists.
         encoder_outputs = None
+        encoder_quantizer_loss = None
         if self.encoder:
             if encoder_inputs is None:
                 raise ValueError("The model's encoder requires 'encoder_inputs'.")
@@ -242,10 +241,11 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             processed_encoder = self.preprocessor.process(
                 input_values=encoder_inputs,
                 attention_mask=attention_mask,
-                is_causal=False,  # Encoders are never causal
+                is_causal=False,
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
+            encoder_quantizer_loss = processed_encoder.pop("quantizer_loss", None)
             encoder_outputs = self.encoder(
                 hidden_states=processed_encoder["hidden_states"],
                 attention_mask=processed_encoder["attention_mask"],
@@ -257,31 +257,29 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
 
         # Step 2: Run the decoder.
         encoder_hidden_states = encoder_outputs.last_hidden_state if encoder_outputs else None
-        
+        decoder_outputs = None
+        decoder_quantizer_loss = None
         if self.decoder:
             if decoder_inputs is None:
                 raise ValueError("The model's decoder requires 'decoder_inputs'.")
             
-
-            # NEW
             past_kv_length = 0
             if past_key_values is not None:
                 try:
-                    # first layer's self-attn key: (B, H, T_cached, Dh) -> use T_cached
                     k0 = past_key_values[0][0]
                     past_kv_length = k0.size(-2)
                 except Exception:
-                    # very safe fallback: everything before current step is "past"
                     past_kv_length = decoder_inputs.size(1) - 1
 
             processed_decoder = self.preprocessor.process(
                 input_values=decoder_inputs,
                 past_key_values_length=past_kv_length,
                 attention_mask=decoder_attention_mask,
-                is_causal=True, # Decoders are always causal
+                is_causal=True,
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
+            decoder_quantizer_loss = processed_decoder.pop("quantizer_loss", None)
 
             decoder_outputs = self.decoder(
                 hidden_states=processed_decoder["hidden_states"],
@@ -299,14 +297,12 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             if encoder_hidden_states is None:
                 raise ValueError("Model requires an encoder or decoder to produce output for the head.")
             input_to_heads = encoder_hidden_states
-            decoder_outputs = None
 
         # Step 3: Reconstruct sequence from patches if necessary.
         if self.preprocessor.is_patched:
             reconstructed_output = self.output_patch_reconstructor(input_to_heads)
             
             B, T_tok, _ = reconstructed_output.shape
-            # Ensure patch_size is accessible for reconstruction
             patch_size = self.preprocessor.patch_size 
             output_patch_size = getattr(self.preprocessor.value_embedding, 'output_patch_size', patch_size)
             d_model = self.config.d_model
@@ -318,11 +314,10 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             self.config.architecture.layout == "decoder" 
         ):
             num_target_steps = targets.size(1)
-
             if input_to_heads.shape[1] < num_target_steps:
                  raise ValueError(
                      f"Input to heads ({input_to_heads.shape[1]} steps) is shorter than targets ({num_target_steps} steps). "
-                     f"Cannot align for loss calculation. Ensure your decoder_inputs or model's effective output length in 'forward' covers your targets."
+                     f"Cannot align for loss calculation."
                  )
             input_to_heads = input_to_heads[:, -num_target_steps:, :]
         
@@ -333,30 +328,43 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
 
         # Step 6: Calculate the loss if targets are provided.
         loss = None
+        main_loss = None
         total_aux_loss = None
+
         if encoder_outputs and hasattr(encoder_outputs, 'aux_loss') and encoder_outputs.aux_loss is not None:
             total_aux_loss = encoder_outputs.aux_loss
         if decoder_outputs and hasattr(decoder_outputs, 'aux_loss') and decoder_outputs.aux_loss is not None:
             total_aux_loss = (total_aux_loss + decoder_outputs.aux_loss) if total_aux_loss is not None else decoder_outputs.aux_loss
 
+        total_quantizer_loss = 0.0
+        if encoder_quantizer_loss is not None:
+            total_quantizer_loss += encoder_quantizer_loss
+        if decoder_quantizer_loss is not None:
+            total_quantizer_loss += decoder_quantizer_loss
+
         if targets is not None:
             if self.loss_fn is None:
                 raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
 
+            # Check if we are in quantization mode (discrete loss) or regression mode
+            if isinstance(self.loss_fn, DiscreteLoss):
+                with torch.no_grad():
+                    # Targets are continuous, need to get their discrete token indices
+                    target_indices = self.preprocessor.quantizer.get_indices(targets)
+                main_loss = self.loss_fn(preds=logits, targets=target_indices, loss_mask=loss_mask)
+            else: # Regression mode
+                if self.preprocessor.instance_norm is not None:
+                    targets = self.preprocessor.instance_norm.transform(targets)
+                main_loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
 
-            if self.preprocessor.instance_norm is not None:
-                normalized_targets = self.preprocessor.instance_norm.transform(targets)
-                loss = self.loss_fn(preds= logits, targets=normalized_targets, loss_mask=loss_mask)
-            else:
-                loss = self.loss_fn(preds= logits, targets=targets, loss_mask=loss_mask)
-
+            # Combine main task loss with auxiliary losses
+            loss = main_loss + total_quantizer_loss
             if total_aux_loss is not None:
                 loss += self.config.aux_loss_weight * total_aux_loss.mean()
-
-        # Step 7: Build a tensor for `logits` to return and denormalize for convenience.
-        #         If the head returns a dict (e.g., DistPred), we convert to a point forecast first.
-        #point_logits = self._point_from_head_out(head_out)     # always a Tensor now
-        #final_logits = self.preprocessor.denormalize( logits)
+        
+        # For monitoring, report quantizer loss even if no targets are given
+        elif total_quantizer_loss > 0:
+            loss = total_quantizer_loss
 
         return TransformerOutput(
             loss=loss,
@@ -370,3 +378,4 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             encoder_hidden_states=encoder_outputs.hidden_states if encoder_outputs else None,
             encoder_attentions=encoder_outputs.attentions if encoder_outputs else None,
         )
+

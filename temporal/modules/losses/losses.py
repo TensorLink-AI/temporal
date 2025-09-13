@@ -941,3 +941,91 @@ class TimeFlowLoss(BaseLoss):
 
         # 5) apply sequence mask (if any) and reduction
         return self._apply_reduction(loss, loss_mask)
+
+
+@register_module("loss", "discrete")
+class DiscreteLoss(BaseLoss):
+    """
+    A dedicated loss class for discrete (classification-style) time series tasks,
+    such as predicting quantized tokens. It primarily uses Cross-Entropy Loss.
+
+    Attributes:
+        loss_fn: The underlying Cross-Entropy loss function.
+        vocab_size (int): The number of discrete classes (tokens) in the vocabulary.
+    """
+
+    def __init__(
+        self,
+        loss_type: str = "cross_entropy",
+        vocab_size: int = None,
+        reduction: str = "mean",
+        **kwargs,
+    ):
+        """
+        Initializes the DiscreteLoss.
+
+        Args:
+            loss_type (str): The type of loss. Currently only 'cross_entropy' is supported.
+            vocab_size (int): The size of the discrete vocabulary. Required for cross-entropy.
+            reduction (str): The reduction method ('mean', 'sum', 'none').
+            **kwargs: Catches unused arguments for API consistency.
+        """
+        super().__init__(reduction=reduction)
+        self.loss_type = loss_type
+
+        if loss_type == "cross_entropy":
+            if vocab_size is None or not isinstance(vocab_size, int) or vocab_size <= 0:
+                raise ValueError("`vocab_size` must be a positive integer for cross_entropy loss.")
+            self.vocab_size = vocab_size
+            self.loss_fn = nn.CrossEntropyLoss(reduction="none") # We handle reduction manually
+        else:
+            raise ValueError(f"Unsupported discrete loss_type: {loss_type}")
+
+    def forward(
+        self, preds: torch.Tensor, targets: torch.Tensor, loss_mask: torch.Tensor = None
+    ) -> torch.Tensor:
+        """
+        Calculates the cross-entropy loss for the given logits and target indices.
+
+        Args:
+            preds (torch.Tensor): The model's output logits. Expected shape is
+                [Batch, SequenceLength, VocabSize].
+            targets (torch.Tensor): The ground truth target indices. Expected shape
+                is [Batch, SequenceLength].
+            loss_mask (Optional[torch.Tensor]): An optional mask to apply to the
+                loss values, with shape [Batch, SequenceLength].
+
+        Returns:
+            torch.Tensor: The final computed loss.
+        """
+        if self.loss_type == "cross_entropy":
+            # Validate shapes for clarity
+            if preds.dim() != 3 or targets.dim() != 2:
+                 raise ValueError(
+                     f"For cross_entropy, preds must be 3D and targets 2D, "
+                     f"but got shapes {preds.shape} and {targets.shape}"
+                 )
+            if preds.shape[:2] != targets.shape:
+                raise ValueError(
+                    f"Batch and SequenceLength dimensions of preds {preds.shape[:2]} "
+                    f"must match targets {targets.shape}."
+                )
+            if preds.shape[-1] != self.vocab_size:
+                raise ValueError(
+                    f"Prediction's last dimension ({preds.shape[-1]}) must equal vocab_size ({self.vocab_size})."
+                )
+
+            # Reshape for CrossEntropyLoss:
+            # preds (logits): [B, T, V] -> [B * T, V]
+            # targets (indices): [B, T] -> [B * T]
+            preds_flat = preds.view(-1, self.vocab_size)
+            targets_flat = targets.view(-1).long() # Ensure targets are long integers
+
+            # Calculate element-wise loss and reshape back
+            elementwise_loss_flat = self.loss_fn(preds_flat, targets_flat) # [B * T]
+            elementwise_loss = elementwise_loss_flat.view(targets.shape)  # [B, T]
+
+            return self._apply_reduction(elementwise_loss, loss_mask)
+        
+        # This part should be unreachable due to __init__ checks
+        raise NotImplementedError(f"Loss type {self.loss_type} not implemented in forward pass.")
