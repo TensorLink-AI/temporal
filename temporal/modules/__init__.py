@@ -15,6 +15,7 @@ _subpkgs = [
     "heads",
     "losses",
     "norm",
+    "quantizers"
 ]
 
 for _name in _subpkgs:
