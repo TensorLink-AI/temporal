@@ -11,6 +11,7 @@ MODULE_REGISTRY: Dict[str, Dict[str, Type]] = {
     "loss": {},
     "block": {},
     "output_head": {},
+    "quantizer": {}
 }
 
 def register_module(kind: str, name: str) -> Callable:
