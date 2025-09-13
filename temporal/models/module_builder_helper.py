@@ -13,7 +13,7 @@ from temporal.configs.head_aggregation_config import HeadAggregationConfig
 from temporal.configs.loss_config import LossConfig
 from temporal.configs.base_config import BaseConfig
 from temporal.configs.transformer_block_config import TransformerBlockConfig # Import TransformerBlockConfig
-
+from temporal.configs.quantizer_config import  QuantizerConfig
 
 class ModuleBuilder:
     """A helper class to build all primitive modules of a time series model.
@@ -134,6 +134,10 @@ class ModuleBuilder:
     def build_positional_embedding(self, cfg: EmbeddingConfig) -> nn.Module:
         """Builds the positional embedding module."""
         return self._build("embedding", cfg)
+
+    def build_quantizer(self, cfg: QuantizerConfig) -> nn.Module:
+        """Builds a quantizer module from its configuration."""
+        return self._build("quantizer",cfg  )
 
     def build_normalization(self, cfg: NormalizationConfig) -> nn.Module:
         """Builds a normalization layer from a `NormalizationConfig`."""

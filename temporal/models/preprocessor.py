@@ -36,6 +36,9 @@ class InputPreprocessor(nn.Module):
         self.positional_embedding = builder.build_positional_embedding(self.config.positional_embedding_config)
         self.layernorm_embedding = builder.build_normalization(self.config.layer_norm_config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.quantizer: Optional[BaseQuantizer] = None
+        if config.quantizer_config:
+            self.quantizer = self.builder.build_quantizer(config.quantizer_config)
 
         # Patch flags
         self.is_patched = isinstance(self.value_embedding, TimeSeriesPatchEmbedding)
