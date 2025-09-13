@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Union
 import torch
 
 # Import all three autoregressive implementations
-from .autoregressive_latent import AutoregressiveLatentMixin
+from .autoregressive_latent_stepwise import AutoregressiveLatentMixin
 from .autoregressive_patch import AutoregressivePatchMixin
 from .autoregressive_stepwise import AutoregressiveStepwiseMixin
 
