@@ -177,38 +177,68 @@ class VQVAEQuantizer(BaseQuantizer):
         """Alias for quantize (useful for clarity)."""
         return self.quantize(indices)
 
-    def _ema_update(self, flat_latents: torch.Tensor, enc_onehot: torch.Tensor) -> None:
-        """
-        EMA updates per VQ-VAE v2.
-        flat_latents: [N, D]
-        enc_onehot:   [N, K] (float)
-        """
-        # N_i and latents sum per code
-        cluster_size = enc_onehot.sum(0)                               # [K]
-        embed_sum = enc_onehot.t() @ flat_latents                      # [K, D]
+    def _ema_update(self, flat_latents: torch.Tensor, flat_indices: torch.Tensor, mask: torch.Tensor) -> None:
+            """
+            Memory-efficient EMA updates using index_add_ instead of a one-hot matrix.
 
-        # Decay
-        self.ema_cluster_size.mul_(self.ema_decay).add_(cluster_size, alpha=1 - self.ema_decay)
-        self.ema_codebook.mul_(self.ema_decay).add_(embed_sum, alpha=1 - self.ema_decay)
+            Args:
+                flat_latents (torch.Tensor): Flattened latent vectors, shape [N, D].
+                flat_indices (torch.Tensor): Flattened codebook indices, shape [N].
+                mask (torch.Tensor): Flattened boolean mask, shape [N], where True indicates a valid position.
+            """
+            # --- Step 1: Filter to only include valid (unmasked) data ---
+            active_latents = flat_latents[mask]
+            active_indices = flat_indices[mask]
 
-        # Laplace smoothing to avoid div-by-zero
-        n = self.ema_cluster_size + self.ema_eps
-        self.codebook.weight.data.copy_(self.ema_codebook / n.unsqueeze(1))
+            if active_indices.numel() == 0:
+                # Skip update if the batch contained only padding
+                return
 
-        # Optional dead-code reinit
-        if self.reinit_threshold > 0.0:
-            total = self.ema_cluster_size.sum().clamp_min(self.ema_eps)
-            usage = self.ema_cluster_size / total
-            dead = usage < self.reinit_threshold
-            if dead.any():
-                # Reinit dead codes from current latents
-                dead_idx = dead.nonzero(as_tuple=False).squeeze(1)
-                num_dead = dead_idx.numel()
-                rand_idx = torch.randint(0, flat_latents.size(0), (num_dead,), device=flat_latents.device)
-                self.codebook.weight.data[dead_idx] = flat_latents[rand_idx]
-                # Reset EMA stats for those codes
-                self.ema_cluster_size[dead_idx] = flat_latents.new_full((num_dead,), flat_latents.size(0) / self.codebook_size)
-                self.ema_codebook[dead_idx] = self.codebook.weight.data[dead_idx]
+            # --- Step 2: Calculate cluster sizes and embedding sums efficiently ---
+            # Count occurrences of each code index
+            cluster_size = torch.zeros(
+                self.codebook_size,
+                device=active_latents.device,
+                dtype=torch.long
+            )
+            cluster_size.index_add_(0, active_indices, torch.ones_like(active_indices, dtype=torch.long))
+
+            # Sum the latent vectors corresponding to each code index
+            embed_sum = torch.zeros(
+                self.codebook_size, self.embedding_dim,
+                device=active_latents.device,
+                dtype=active_latents.dtype
+            )
+            embed_sum.index_add_(0, active_indices, active_latents)
+
+            # --- Step 3: Apply EMA decay ---
+            self.ema_cluster_size.mul_(self.ema_decay).add_(cluster_size, alpha=1 - self.ema_decay)
+            self.ema_codebook.mul_(self.ema_decay).add_(embed_sum, alpha=1 - self.ema_decay)
+
+            # --- Step 4: Update codebook with Laplace smoothing ---
+            n = self.ema_cluster_size.sum()
+            smoothed_cluster_size = (
+                (self.ema_cluster_size + self.ema_eps) / (n + self.codebook_size * self.ema_eps) * n
+            )
+            self.codebook.weight.data.copy_(self.ema_codebook / smoothed_cluster_size.unsqueeze(1))
+
+            # --- Step 5: Optional dead-code re-initialization (now more robust) ---
+            if self.reinit_threshold > 0.0 and self.training:
+                usage = self.ema_cluster_size / n
+                dead_codes_mask = usage < self.reinit_threshold
+                if dead_codes_mask.any():
+                    dead_indices = torch.where(dead_codes_mask)[0]
+                    num_dead = len(dead_indices)
+
+                    # Resample from the CURRENT BATCH's active latents
+                    # This is more effective than resampling from random noise or old values
+                    random_latent_indices = torch.randint(0, active_latents.size(0), (num_dead,), device=active_latents.device)
+                    new_codes = active_latents[random_latent_indices]
+
+                    self.codebook.weight.data[dead_indices] = new_codes
+                    # Reset the EMA statistics for the re-initialized codes
+                    self.ema_cluster_size[dead_indices] = smoothed_cluster_size.mean() # A reasonable starting count
+                    self.ema_codebook[dead_indices] = new_codes * self.ema_cluster_size[dead_indices].unsqueeze(1)
 
     def _metrics(self, enc_onehot: torch.Tensor) -> Dict[str, torch.Tensor]:
         # Perplexity & usage
@@ -217,74 +247,98 @@ class VQVAEQuantizer(BaseQuantizer):
         return {"perplexity": perp, "usage": probs}
 
     def forward(
-        self,
-        latents: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        latents: [B, L, D], mask: [B, L]=1 for valid, 0 for pad (optional)
-        """
-        assert latents.dim() == 3 and latents.size(-1) == self.embedding_dim, "Expected [B, L, D_model] latents"
+            self,
+            latents: torch.Tensor,
+            mask: Optional[torch.Tensor] = None,
+        ) -> Dict[str, torch.Tensor]:
+            """
+            Performs the forward pass for the VQ-VAE quantizer.
 
-        # Lazy data-driven init if desired
-        self._maybe_data_init(latents.detach())
+            Args:
+                latents (torch.Tensor): The continuous latent vectors from the encoder.
+                    Expected shape: [Batch, SequenceLength, d_model].
+                mask (Optional[torch.Tensor]): A boolean mask for handling padding.
+                    Shape: [Batch, SequenceLength], where True indicates a valid token.
 
-        B, L, D = latents.shape
-        if mask is None:
-            mask = latents.new_ones(B, L, dtype=torch.bool)
+            Returns:
+                Dict[str, torch.Tensor]: A dictionary containing:
+                    - "quantized": The quantized vectors with a straight-through gradient.
+                    - "loss": The commitment loss for training the encoder.
+                    - "indices": The discrete codebook indices for each position.
+                    - "perplexity": A scalar metric indicating codebook usage.
+                    - "usage": A vector indicating the usage frequency of each code.
+            """
+            # --- 1. Input Validation and Initialization ---
+            if latents.dim() != 3 or latents.size(-1) != self.embedding_dim:
+                raise AssertionError(f"Expected [B, L, D_model] latents, but got shape {latents.shape}")
 
-        # Indices & quantized codes
-        indices = self.get_indices(latents, mask=mask)                 # [B, L]
-        quantized = self.quantize(indices)                             # [B, L, D]
+            self._maybe_data_init(latents.detach()) # Lazy data-driven init if configured
 
-        # Losses
-        # Encourage encoder outputs to match chosen codes (commitment) and vice versa.
-        if mask is not None:
+            B, L, D = latents.shape
+            if mask is None:
+                mask = latents.new_ones(B, L, dtype=torch.bool)
+
+            # --- 2. Find Closest Codes and Quantize ---
+            # Find the index of the nearest codebook vector for each latent vector
+            indices = self.get_indices(latents, mask=mask)  # Shape: [B, L]
+            # Retrieve the corresponding quantized vectors from the codebook
+            quantized = self.quantize(indices)              # Shape: [B, L, D]
+
+            # --- 3. Calculate Loss ---
+            # The VQ-VAE loss has two components:
+            #  a) q_latent_loss: Pushes the codebook vectors towards the encoder outputs.
+            #  b) e_latent_loss (commitment loss): Pushes the encoder to commit to a code.
             m = mask.unsqueeze(-1).float()
-            e_latent_loss = F.mse_loss(quantized.detach() * m, latents * m)
-            q_latent_loss = F.mse_loss(quantized * m, (latents * m).detach())
-        else:
-            e_latent_loss = F.mse_loss(quantized.detach(), latents)
-            q_latent_loss = F.mse_loss(quantized, latents.detach())
+            q_latent_loss = F.mse_loss(quantized, latents.detach() * m, reduction='none').mean()
+            e_latent_loss = F.mse_loss(quantized.detach(), latents * m, reduction='none').mean()
 
-        loss = self.commitment_cost * e_latent_loss
-        if not self.use_ema:
-            # Gradient to codebook via codebook loss (original VQ-VAE)
-            loss = loss + q_latent_loss
+            # The final loss depends on whether EMA is used for codebook updates
+            loss = self.commitment_cost * e_latent_loss
+            if not self.use_ema:
+                # In the original VQ-VAE, gradients flow to the codebook via this loss term.
+                loss = loss + q_latent_loss
 
-        # Straight-through estimator
-        quantized_st = latents + (quantized - latents).detach()
+            # --- 4. Straight-Through Estimator ---
+            # For the backward pass, we copy the gradients from the quantized output
+            # directly to the continuous encoder output, "bypassing" the non-differentiable
+            # argmin operation.
+            quantized_st = latents + (quantized - latents).detach()
 
-        # EMA update of codebook (no gradient through codes)
-        metrics = {}
-        if self.training:
-            with torch.no_grad():
-                flat_latents = latents.reshape(-1, D)
-                flat_mask = mask.reshape(-1)                            # [B*L]
-                flat_idx = indices.reshape(-1)                          # [B*L]
+            # --- 5. EMA Codebook Update and Metrics (Memory-Optimized) ---
+            metrics = {}
+            if self.training:
+                with torch.no_grad():
+                    # Flatten tensors for efficient processing
+                    flat_latents = latents.reshape(-1, D)
+                    flat_mask = mask.reshape(-1)
+                    flat_indices = indices.reshape(-1)
 
-                # One-hot encodings only for valid positions
-                enc_onehot = F.one_hot(flat_idx, num_classes=self.codebook_size).float()
-                if flat_mask is not None:
-                    enc_onehot = enc_onehot * flat_mask.unsqueeze(-1).float()
+                    if self.use_ema:
+                        # Call the optimized EMA update function that avoids one-hot encoding
+                        self._ema_update(flat_latents, flat_indices, flat_mask)
 
-                if self.use_ema:
-                    self._ema_update(flat_latents, enc_onehot)
+                    # Calculate metrics directly from indices for the valid (unmasked) part of the batch
+                    if flat_mask.sum() > 0:
+                        active_indices = flat_indices[flat_mask]
+                        # Use bincount for a highly efficient histogram of code usage
+                        probs = torch.bincount(active_indices, minlength=self.codebook_size).float() / active_indices.numel()
+                        perplexity = torch.exp(-(probs * (probs.clamp_min(1e-12)).log()).sum())
+                        metrics = {"perplexity": perplexity, "usage": probs}
 
-                metrics = self._metrics(enc_onehot)
+            # For eval mode, we can still compute perplexity for logging without updating the codebook
+            elif not self.training:
+                with torch.no_grad():
+                    flat_indices = indices.reshape(-1)
+                    probs = torch.bincount(flat_indices, minlength=self.codebook_size).float() / flat_indices.numel()
+                    perplexity = torch.exp(-(probs * (probs.clamp_min(1e-12)).log()).sum())
+                    metrics = {"perplexity": perplexity, "usage": probs}
 
-        else:
-            # In eval, still compute perplexity/usage for logging (cheap)
-            with torch.no_grad():
-                flat_idx = indices.reshape(-1)
-                enc_onehot = F.one_hot(flat_idx, num_classes=self.codebook_size).float()
-                metrics = self._metrics(enc_onehot)
 
-        out = {
-            "quantized": quantized_st,
-            "loss": loss,
-            "indices": indices,
-            "perplexity": metrics.get("perplexity", torch.tensor(0.0, device=latents.device)),
-            "usage": metrics.get("usage", torch.zeros(self.codebook_size, device=latents.device)),
-        }
-        return out
+            # --- 6. Assemble Final Output ---
+            return {
+                "quantized": quantized_st,
+                "loss": loss,
+                "indices": indices,
+                "perplexity": metrics.get("perplexity", torch.tensor(0.0, device=latents.device)),
+                "usage": metrics.get("usage", torch.zeros(self.codebook_size, device=latents.device)),
+            }
