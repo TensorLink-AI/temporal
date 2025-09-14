@@ -79,7 +79,7 @@ class InputPreprocessor(nn.Module):
         B, T_tok, d_model = value_embeds.shape
         quantizer_loss = None
         if self.quantizer is not None:
-            quantizer_output = self.quantizer(value_embedded)
+            quantizer_output = self.quantizer(value_embeds)
             hidden_states = quantizer_output["quantized"]
             quantizer_loss = quantizer_output.get("loss") # Can be None
         else:
