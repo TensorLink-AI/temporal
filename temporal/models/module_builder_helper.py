@@ -1,7 +1,7 @@
 import inspect
 from typing import Dict, Any, Type, Optional
 import torch.nn as nn
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 from temporal.registry.core import resolve
 from temporal.configs.transformer_model_config import TransformerTimeSeriesConfig
