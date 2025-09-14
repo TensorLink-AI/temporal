@@ -354,7 +354,9 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                 main_loss = self.loss_fn(preds=logits, targets=target_indices, loss_mask=loss_mask)
             else: # Regression mode
                 if self.preprocessor.instance_norm is not None:
-                    targets = self.preprocessor.instance_norm.transform(targets)
+                  with torch.no_grad():
+                    embedded_targets = self.preprocessor.value_embedding(targets)
+                    target_indices = self.preprocessor.quantizer.get_indices(embedded_targets)
                 main_loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
 
             # Combine main task loss with auxiliary losses

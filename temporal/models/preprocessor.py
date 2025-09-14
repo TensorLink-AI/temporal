@@ -83,7 +83,7 @@ class InputPreprocessor(nn.Module):
             hidden_states = quantizer_output["quantized"]
             quantizer_loss = quantizer_output.get("loss") # Can be None
         else:
-            hidden_states = value_embedded
+            hidden_states = value_embeds
         # --- Positional embedding ---
         pos_embed = self.positional_embedding(
             x=value_embeds, batch_size=B, seq_len=T_tok, past_key_values_length=past_key_values_length
