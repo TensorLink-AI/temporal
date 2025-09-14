@@ -137,6 +137,7 @@ class ModuleBuilder:
 
     def build_quantizer(self, cfg: QuantizerConfig) -> nn.Module:
         """Builds a quantizer module from its configuration."""
+        cfg  = replace(cfg , d_model=self.config.d_model)
         return self._build("quantizer",cfg  )
 
     def build_normalization(self, cfg: NormalizationConfig) -> nn.Module:

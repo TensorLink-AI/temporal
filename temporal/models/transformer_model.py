@@ -349,14 +349,13 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             # Check if we are in quantization mode (discrete loss) or regression mode
             if isinstance(self.loss_fn, DiscreteLoss):
                 with torch.no_grad():
-                    # Targets are continuous, need to get their discrete token indices
-                    target_indices = self.preprocessor.quantizer.get_indices(targets)
+                    embedded_targets = self.preprocessor.value_embedding(targets)
+                    target_indices = self.preprocessor.quantizer.get_indices(embedded_targets )
                 main_loss = self.loss_fn(preds=logits, targets=target_indices, loss_mask=loss_mask)
             else: # Regression mode
                 if self.preprocessor.instance_norm is not None:
-                  with torch.no_grad():
-                    embedded_targets = self.preprocessor.value_embedding(targets)
-                    target_indices = self.preprocessor.quantizer.get_indices(embedded_targets)
+                    targets = self.preprocessor.instance_norm.transform(targets)
+
                 main_loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
 
             # Combine main task loss with auxiliary losses
