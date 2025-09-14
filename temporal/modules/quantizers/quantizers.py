@@ -84,37 +84,52 @@ class VQVAEQuantizer(BaseQuantizer):
     """
 
     def __init__(self, config: QuantizerConfig):
+        """
+        Initializes a robust VQ-VAE quantizer with EMA updates and memory-saving features.
+
+        Args:
+            config (QuantizerConfig): The configuration object specifying VQ-VAE parameters.
+                Expected kwargs in config:
+                - commitment_cost (float): Weight for the commitment loss.
+                - use_ema (bool): Whether to use EMA for codebook updates.
+                - ema_decay (float): Decay factor for EMA.
+                - use_cosine (bool): Use cosine distance instead of L2.
+                - reinit_threshold (float): Usage threshold to re-initialize dead codes.
+                - init_from_data (bool): Lazily initialize codebook from the first batch.
+        """
         super().__init__(config)
         self.codebook_size = int(config.vocab_size)
         self.embedding_dim = int(config.d_model)
         kw = getattr(config, "kwargs", {}) or {}
 
-        # Loss weights
+        # --- Loss and Distance Configuration ---
         self.commitment_cost = float(kw.get("commitment_cost", 0.25))
+        self.use_cosine = bool(kw.get("use_cosine", False))
 
-        # EMA options (recommended)
+        # --- EMA Configuration ---
         self.use_ema = bool(kw.get("use_ema", True))
         self.ema_decay = float(kw.get("ema_decay", 0.99))
         self.ema_eps = float(kw.get("ema_eps", 1e-5))
 
-        # Optional cosine distance (unit-norm latents + codes)
-        self.use_cosine = bool(kw.get("use_cosine", False))
-
-        # Optional dead-code reinit threshold (fraction of batch assignments)
+        # --- Codebook Initialization and Robustness ---
         self.reinit_threshold = float(kw.get("reinit_threshold", 0.0))  # 0.0 = disabled
+        self._init_from_data = bool(kw.get("init_from_data", False))
+        self._initialized = False
 
-        # Codebook
+        # --- Module Initialization ---
+        # Initialize the codebook
         self.codebook = nn.Embedding(self.codebook_size, self.embedding_dim)
         nn.init.uniform_(self.codebook.weight, -1.0 / self.codebook_size, 1.0 / self.codebook_size)
 
-        # EMA state (buffers so they move with .to(device))
+        # If using EMA, set up buffers and freeze the codebook from the optimizer
         if self.use_ema:
-            self.register_buffer("ema_cluster_size", torch.zeros(self.codebook_size))
-            self.register_buffer("ema_codebook", torch.zeros(self.codebook_size, self.embedding_dim))
+            # Register EMA buffers as float32 to ensure numerical stability during mixed-precision training.
+            self.register_buffer("ema_cluster_size", torch.zeros(self.codebook_size, dtype=torch.float32))
+            self.register_buffer("ema_codebook", torch.zeros_like(self.codebook.weight, dtype=torch.float32))
 
-        # Bookkeeping for lazy data-driven init (optional)
-        self._initialized = False
-        self._init_from_data = bool(kw.get("init_from_data", False))
+            # The codebook is updated manually via EMA, so we tell the optimizer to ignore it.
+            # This saves significant GPU memory.
+            self.codebook.weight.requires_grad_(False)
 
     @torch.no_grad()
     def _maybe_data_init(self, latents: torch.Tensor) -> None:
@@ -139,32 +154,45 @@ class VQVAEQuantizer(BaseQuantizer):
             return F.normalize(x, dim=-1)
         return x
 
-    def get_indices(self, latents: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    @torch.no_grad()
+    def get_indices(self, latents: torch.Tensor, mask: Optional[torch.Tensor] = None, chunk_size: int = 2048) -> torch.Tensor:
         """
-        latents: [B, L, D], mask: [B, L] (1=valid, 0=pad) or None
-        returns: [B, L] long
+        Calculates the closest codebook indices in memory-efficient chunks.
+
+        Args:
+            latents (torch.Tensor): Input latents of shape [B, L, D].
+            mask (Optional[torch.Tensor]): Optional boolean mask of shape [B, L].
+            chunk_size (int): The batch size for chunking the distance calculation.
+
+        Returns:
+            torch.Tensor: The indices of the closest embeddings, shape [B, L].
         """
         B, L, D = latents.shape
-        codes = self._normalize_if_cosine(self.codebook.weight)      # [K, D]
-        x = self._normalize_if_cosine(latents).reshape(-1, D)        # [B*L, D]
+        x = self._normalize_if_cosine(latents).reshape(-1, D)
+        codes = self._normalize_if_cosine(self.codebook.weight)
 
-        # Distances/similarities
-        if self.use_cosine:
-            # Maximize dot product ~ minimize (−x·e)
-            sim = x @ codes.t()                                      # [B*L, K]
-            encoding_indices = torch.argmax(sim, dim=1)
-        else:
-            # Squared L2: ||x||^2 + ||e||^2 − 2x·e
-            x_sq = (x ** 2).sum(dim=1, keepdim=True)                 # [B*L, 1]
-            e_sq = (codes ** 2).sum(dim=1).unsqueeze(0)              # [1, K]
-            xe = x @ codes.t()                                       # [B*L, K]
-            distances = x_sq + e_sq - 2 * xe
-            encoding_indices = torch.argmin(distances, dim=1)
+        # Pre-calculate squared norms for L2 distance
+        if not self.use_cosine:
+            e_sq = (codes ** 2).sum(dim=1)
 
-        encoding_indices = encoding_indices.view(B, L)
+        # Process in chunks to avoid large intermediate tensors
+        all_indices = []
+        for x_chunk in x.split(chunk_size):
+            if self.use_cosine:
+                # Maximize dot product
+                sim = x_chunk @ codes.t()
+                chunk_indices = sim.argmax(dim=1)
+            else:
+                # Minimize L2 distance: ||x-e||^2 = ||x||^2 - 2x*e + ||e||^2
+                x_sq = (x_chunk ** 2).sum(dim=1, keepdim=True)
+                xe = x_chunk @ codes.t()
+                distances = x_sq - 2 * xe + e_sq
+                chunk_indices = distances.argmin(dim=1)
+            all_indices.append(chunk_indices)
+
+        encoding_indices = torch.cat(all_indices).view(B, L)
 
         if mask is not None:
-            # For padded positions, set a benign index (0) to avoid accidental updates.
             encoding_indices = torch.where(mask.bool(), encoding_indices, torch.zeros_like(encoding_indices))
 
         return encoding_indices.long()
