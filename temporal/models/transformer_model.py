@@ -154,7 +154,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             self.head_aggregator = None
 
         self.output_patch_reconstructor = None # Start as None
-        #  partion this out eventually to make it cleaner
         if self.preprocessor.is_patched:
                 self.output_patch_reconstructor = self.preprocessor.value_embedding.make_reconstructor()
 
@@ -195,7 +194,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
     ) -> TransformerOutput:
         """
         Performs a forward pass through the entire transformer model.
- 
+
         Args:
             encoder_inputs (Optional[torch.Tensor]): Inputs for the encoder,
                 shape `[B, L_enc, F_enc]`.
@@ -223,7 +222,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
 
         Returns:
-            TransformerOutput: A structured object containing the model's outputs.       
+            TransformerOutput: A structured object containing the model's outputs.
         """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -231,146 +230,87 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
-        # Step 1: Run the encoder if it exists.
-        encoder_outputs = None
-        encoder_quantizer_loss = None
+        # --- 1. Encoder and Decoder Pass ---
+        encoder_outputs, total_q_loss = None, 0.0
         if self.encoder:
-            if encoder_inputs is None:
-                raise ValueError("The model's encoder requires 'encoder_inputs'.")
-            
-            processed_encoder = self.preprocessor.process(
-                input_values=encoder_inputs,
-                attention_mask=attention_mask,
-                is_causal=False,
-                validate_shapes=validate_shapes,
-                verbose=verbose,
-            )
-            encoder_quantizer_loss = processed_encoder.pop("quantizer_loss", None)
-            encoder_outputs = self.encoder(
-                hidden_states=processed_encoder["hidden_states"],
-                attention_mask=processed_encoder["attention_mask"],
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=True,
-                x_raw=x_raw,
-            )
+            processed_encoder = self.preprocessor.process(input_values=encoder_inputs, attention_mask=attention_mask)
+            if processed_encoder.get("quantizer_loss"):
+                total_q_loss += processed_encoder["quantizer_loss"]
+            encoder_outputs = self.encoder(hidden_states=processed_encoder["hidden_states"], attention_mask=processed_encoder["attention_mask"], return_dict=True)
 
-        # Step 2: Run the decoder.
         encoder_hidden_states = encoder_outputs.last_hidden_state if encoder_outputs else None
-        decoder_outputs = None
-        decoder_quantizer_loss = None
+        
         if self.decoder:
-            if decoder_inputs is None:
-                raise ValueError("The model's decoder requires 'decoder_inputs'.")
-            
-            past_kv_length = 0
-            if past_key_values is not None:
-                try:
-                    k0 = past_key_values[0][0]
-                    past_kv_length = k0.size(-2)
-                except Exception:
-                    past_kv_length = decoder_inputs.size(1) - 1
-
-            processed_decoder = self.preprocessor.process(
-                input_values=decoder_inputs,
-                past_key_values_length=past_kv_length,
-                attention_mask=decoder_attention_mask,
-                is_causal=True,
-                validate_shapes=validate_shapes,
-                verbose=verbose,
-            )
-            decoder_quantizer_loss = processed_decoder.pop("quantizer_loss", None)
-
-            decoder_outputs = self.decoder(
-                hidden_states=processed_decoder["hidden_states"],
-                attention_mask=processed_decoder["attention_mask"],
-                encoder_hidden_states=encoder_hidden_states,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=True,
-                x_raw=x_raw,
-            )
+            past_kv_length = past_key_values[0][0].size(-2) if past_key_values else 0
+            processed_decoder = self.preprocessor.process(input_values=decoder_inputs, past_key_values_length=past_kv_length, attention_mask=decoder_attention_mask, is_causal=True)
+            if processed_decoder.get("quantizer_loss"):
+                total_q_loss += processed_decoder["quantizer_loss"]
+            decoder_outputs = self.decoder(hidden_states=processed_decoder["hidden_states"], attention_mask=processed_decoder["attention_mask"], encoder_hidden_states=encoder_hidden_states, past_key_values=past_key_values, return_dict=True)
             input_to_heads = decoder_outputs.last_hidden_state
         else:
-            if encoder_hidden_states is None:
-                raise ValueError("Model requires an encoder or decoder to produce output for the head.")
+            decoder_outputs = None
             input_to_heads = encoder_hidden_states
 
-        # Step 3: Reconstruct sequence from patches if necessary.
-        if self.preprocessor.is_patched:
-            reconstructed_output = self.output_patch_reconstructor(input_to_heads)
-            
-            B, T_tok, _ = reconstructed_output.shape
-            patch_size = self.preprocessor.patch_size 
-            output_patch_size = getattr(self.preprocessor.value_embedding, 'output_patch_size', patch_size)
-            d_model = self.config.d_model
-            input_to_heads = reconstructed_output.contiguous().view(B, T_tok * output_patch_size, d_model)
-
-        # Step 4: Align head input with targets for loss calculation if needed.
-        if (
-            targets is not None and 
-            self.config.architecture.layout == "decoder" 
-        ):
-            num_target_steps = targets.size(1)
-            if input_to_heads.shape[1] < num_target_steps:
-                 raise ValueError(
-                     f"Input to heads ({input_to_heads.shape[1]} steps) is shorter than targets ({num_target_steps} steps). "
-                     f"Cannot align for loss calculation."
-                 )
-            input_to_heads = input_to_heads[:, -num_target_steps:, :]
+        # --- 2. Align Predictions with Targets and Calculate Loss ---
+        loss, logits = None, None
         
-        # Step 5: Project the final hidden states through the output head(s).
-        logits = self.output_heads(input_to_heads)
-        if self.head_aggregator is not None:
-            logits = self.head_aggregator(logits)
-
-        # Step 6: Calculate the loss if targets are provided.
-        loss = None
-        main_loss = None
-        total_aux_loss = None
-
-        if encoder_outputs and hasattr(encoder_outputs, 'aux_loss') and encoder_outputs.aux_loss is not None:
-            total_aux_loss = encoder_outputs.aux_loss
-        if decoder_outputs and hasattr(decoder_outputs, 'aux_loss') and decoder_outputs.aux_loss is not None:
-            total_aux_loss = (total_aux_loss + decoder_outputs.aux_loss) if total_aux_loss is not None else decoder_outputs.aux_loss
-
-        total_quantizer_loss = 0.0
-        if encoder_quantizer_loss is not None:
-            total_quantizer_loss += encoder_quantizer_loss
-        if decoder_quantizer_loss is not None:
-            total_quantizer_loss += decoder_quantizer_loss
-
         if targets is not None:
-            if self.loss_fn is None:
-                raise ValueError("Loss calculation requires a 'loss_fn' to be set on the model.")
-
-            # Check if we are in quantization mode (discrete loss) or regression mode
+            # --- DISCRETE / QUANTIZED PATH ---
             if isinstance(self.loss_fn, DiscreteLoss):
                 with torch.no_grad():
-                    embedded_targets = self.preprocessor.value_embedding(targets)
-                    target_indices = self.preprocessor.quantizer.get_indices(embedded_targets )
+                    # Patch the targets to find out how many prediction steps (patches) we need to evaluate.
+                    patched_embedded_targets = self.preprocessor.value_embedding(targets)
+                    num_target_patches = patched_embedded_targets.shape[1]
+
+                # CRITICAL FIX: Slice the model's output sequence to match the target sequence length.
+                aligned_input_to_heads = input_to_heads[:, -num_target_patches:, :]
+                
+                # Project the aligned hidden states to get logits.
+                logits = self.output_heads(aligned_input_to_heads)
+                if self.head_aggregator:
+                    logits = self.head_aggregator(logits)
+
+                with torch.no_grad():
+                    # Now that logits have the correct shape, get the final target indices.
+                    target_indices = self.preprocessor.quantizer.get_indices(patched_embedded_targets)
+
                 main_loss = self.loss_fn(preds=logits, targets=target_indices, loss_mask=loss_mask)
-            else: # Regression mode
-                if self.preprocessor.instance_norm is not None:
-                    targets = self.preprocessor.instance_norm.transform(targets)
 
-                main_loss = self.loss_fn(preds=logits, targets=targets, loss_mask=loss_mask)
+            # --- REGRESSION PATH ---
+            else:
+                num_target_steps = targets.shape[1]
+                # Slice the model's output sequence to match the target sequence length.
+                aligned_input_to_heads = input_to_heads[:, -num_target_steps:, :]
+                
+                # If patched, reconstruct the *aligned* sequence back to time-steps.
+                if self.output_patch_reconstructor:
+                    final_representation = self.output_patch_reconstructor(aligned_input_to_heads)
+                else:
+                    final_representation = aligned_input_to_heads
+                
+                # Project to get continuous predictions.
+                logits = self.output_heads(final_representation)
+                if self.head_aggregator:
+                    logits = self.head_aggregator(logits)
 
-            # Combine main task loss with auxiliary losses
-            loss = main_loss + total_quantizer_loss
-            if total_aux_loss is not None:
-                loss += self.config.aux_loss_weight * total_aux_loss.mean()
+                # Calculate regression loss.
+                normalized_targets = self.preprocessor.instance_norm.transform(targets) if self.preprocessor.instance_norm else targets
+                main_loss = self.loss_fn(preds=logits, targets=normalized_targets, loss_mask=loss_mask)
+
+            # Combine all losses
+            loss = main_loss + total_q_loss
         
-        # For monitoring, report quantizer loss even if no targets are given
-        elif total_quantizer_loss > 0:
-            loss = total_quantizer_loss
+        else:
+            # --- INFERENCE PATH (no targets) ---
+            final_representation = self.output_patch_reconstructor(input_to_heads) if self.output_patch_reconstructor else input_to_heads
+            logits = self.output_heads(final_representation)
+            if self.head_aggregator:
+                logits = self.head_aggregator(logits)
 
         return TransformerOutput(
             loss=loss,
             logits=logits,
-            aux_loss=total_aux_loss,
+            aux_loss=total_q_loss if total_q_loss > 0 else None,
             past_key_values=decoder_outputs.past_key_values if decoder_outputs else None,
             decoder_hidden_states=decoder_outputs.hidden_states if decoder_outputs else None,
             decoder_attentions=decoder_outputs.attentions if decoder_outputs else None,
@@ -379,4 +319,3 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             encoder_hidden_states=encoder_outputs.hidden_states if encoder_outputs else None,
             encoder_attentions=encoder_outputs.attentions if encoder_outputs else None,
         )
-
