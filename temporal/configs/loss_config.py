@@ -148,6 +148,13 @@ class NLLLossConfig(LossConfig):
         if self.kwargs["distribution_type"] not in ["gaussian", "mixture","student_t"]:
             raise ValueError(f"Unsupported distribution_type for NLLLoss: {self.kwargs['distribution_type']}. Supported types are 'gaussian', 'mixture'.")
 
+@register_config_type("discrete_loss")
+@dataclass(frozen=True, kw_only=True)
+class DiscreteLossConfig(LossConfig):
+    """
+    Configuration for Discrete loss.
+    """
+    type: str = field(default="discrete")
 
 # Helper function for polymorphic creation
 def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
@@ -162,6 +169,7 @@ def loss_config_from_dict(data: Dict[str, Any]) -> LossConfig:
         "mq": "quantile_loss",
         "timeflow": "timeflow_loss",
         "nll": "nll_loss",
+        "discrete": "discrete_loss",
     }
     registry_key = type_to_registry_key.get(loss_type, loss_type)
 
