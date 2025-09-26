@@ -25,7 +25,7 @@ g    `transformers.PreTrainedModel` and defining the `config_class`, this wrappe
     config_class = TransformerTimeSeriesConfig
     base_model_prefix = "time_series_transformer"
 
-    def __init__(self, config: TransformerTimeSeriesConfig):
+    def __init__(self, config: TransformerTimeSeriesConfig, **kwargs):
         """
         Initializes the TimeSeriesTransformerModel wrapper.
 
@@ -34,6 +34,9 @@ g    `transformers.PreTrainedModel` and defining the `config_class`, this wrappe
         """
         super().__init__(config)
         # The core model is built and held as an attribute.
+        if "output_size" in kwargs:
+            config.output_head_config.output_size = kwargs["output_size"]
+
         self.temporal = build_time_series_transformer(config)
 
     def forward(
@@ -87,3 +90,4 @@ g    `transformers.PreTrainedModel` and defining the `config_class`, this wrappe
             prediction_length=pred_len,
             **kwargs
         )
+
