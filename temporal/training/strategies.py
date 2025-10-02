@@ -60,10 +60,14 @@ class ScheduledSamplingStrategy(TrainingStrategy):
         
         if torch.rand(1).item() < self._get_sampling_probability(current_step):
             with torch.no_grad():
+                targets = kwargs.get("targets")
+                if targets is None:
+                    raise ValueError("ScheduledSamplingStrategy requires 'targets' to determine the correct prediction_length.")
+                
                 generation_kwargs = {
                     "encoder_inputs": kwargs.get("encoder_inputs"),
                     "decoder_inputs": decoder_inputs,
-                    "prediction_length": decoder_inputs.shape[1],
+                    "prediction_length": targets.shape[1], # FIX: Use target length
                     "attention_mask": kwargs.get("attention_mask"),
                     "return_bundle": False,
                 }
@@ -81,70 +85,120 @@ class ScheduledSamplingStrategy(TrainingStrategy):
 
 class RLTrainingStrategy(TrainingStrategy):
     """
-    Implements a Reinforcement Learning strategy using a policy gradient
-    (REINFORCE) approach. This strategy computes its own loss.
+    Implements a "direct reward optimization" strategy. It uses a composite
+    loss (CRPS + sMAPE) calculated from the model's direct ensemble output
+    and backpropagates through it.
     """
 
-    def __init__(self, reward_function: callable):
+    def __init__(self, reward_loss_fn: callable):
         """
         Args:
-            reward_function (callable): A function that takes two tensors 
-                                        (generated_sequence, target_sequence)
-                                        and returns a scalar reward for each
-                                        item in the batch.
+            reward_loss_fn (callable): A function that takes the generated ensemble
+                                       and targets, and returns a scalar loss.
         """
-        self.reward_function = reward_function
+        self.reward_loss_fn = reward_loss_fn
         self.latest_loss = None
 
     def __call__(
         self, model: TransformerTemporalModel, decoder_inputs: torch.Tensor, **kwargs
     ) -> torch.Tensor:
+        
+        self._rl_forward(model, decoder_inputs, **kwargs)
+        return decoder_inputs
+
+    def _rl_forward(self, model: TransformerTemporalModel, decoder_inputs: torch.Tensor, **kwargs):
         targets = kwargs.get("targets")
         if targets is None:
-            raise ValueError("RLTrainingStrategy requires 'targets' to be passed for generation length and reward calculation.")
+            raise ValueError("RLTrainingStrategy requires 'targets' for loss calculation.")
 
-        # This strategy computes a custom loss and does not modify the decoder inputs
-        # for the standard forward pass. The training loop must be adapted to use
-        # the loss from `get_loss()` instead of the one from the model output.
-
-        # 1. Generate a full sequence autoregressively.
-        # The generate function is polymorphic and handles both decoder-only (by ignoring
-        # encoder_hidden_states=None) and encoder-decoder architectures.
         generation_kwargs = {
-            "encoder_hidden_states": kwargs.get("encoder_hidden_states"),
-            "max_length": targets.shape[1],
-            "output_scores": True,
-            "return_dict_in_generate": True,
+            "encoder_inputs": kwargs.get("encoder_inputs"),
+            "decoder_inputs": decoder_inputs,
+            "prediction_length": targets.shape[1],
+            "attention_mask": kwargs.get("attention_mask"),
         }
-        generation_result = model.generate(**generation_kwargs)
-        generated_sequence = generation_result.sequences
 
-        # 2. Score the generated sequence using the custom reward function.
-        with torch.no_grad():
-            rewards = self.reward_function(generated_sequence, targets).to(generated_sequence.device)
+        # --- 1. Generate the Ensemble (with gradients) ---
+        # Call `generate` with gradients enabled and `return_params=True`.
+        # Based on your description, this returns the ensemble of 100 paths.
+        with torch.enable_grad():
+            model.train()
+            # This is our ensemble of shape [B, T, F, 100]
+            ensemble_paths = model.generate(**generation_kwargs, return_params=True)
 
-        # 3. Calculate the Policy Gradient Loss.
-        # Stack the logits from each generation step.
-        all_logits = torch.stack(generation_result.scores, dim=1)  # [B, L, VocabSize]
-        
-        # Get the log probabilities of the tokens that were actually generated.
-        log_softmax_logits = F.log_softmax(all_logits, dim=-1)
-        token_log_probs = torch.gather(log_softmax_logits, 2, generated_sequence.unsqueeze(-1)).squeeze(-1)
-        
-        # Sum log probabilities for the entire sequence.
-        sequence_log_probs = token_log_probs.sum(dim=-1)
+        # --- 2. Calculate the Composite Loss ---
+        # Ensure target shape matches the feature dimension of the ensemble
+        if targets.ndim == 2 and ensemble_paths.ndim == 4:
+            targets = targets.unsqueeze(2).expand(-1, -1, ensemble_paths.shape[2])
 
-        # 4. Compute the final loss using reward baseline to reduce variance.
-        baseline = rewards.mean()
-        advantage = (rewards - baseline).detach()
-        
-        # Policy gradient loss. The negative sign is because optimizers perform gradient descent.
-        self.latest_loss = -torch.mean(sequence_log_probs * advantage)
-
-        # Return the original decoder_inputs. The main training loop will ignore
-        # the model's standard loss and use the one from this strategy.
-        return decoder_inputs
+        # The reward function now directly returns our final loss
+        self.latest_loss = self.reward_loss_fn(ensemble_paths, targets)
 
     def get_loss(self) -> torch.Tensor | None:
         """Allows the training loop to retrieve the computed RL loss."""
         return self.latest_loss
+
+
+# This code should be placed in your training script or a utility file.
+import torch
+import torch.nn.functional as F
+from temporal.losses import crps_ensemble
+
+
+# --- sMAPE metric (unchanged) ---
+def smape_loss(preds: torch.Tensor, targets: torch.Tensor, epsilon: float = 1e-8) -> torch.Tensor:
+    numerator = torch.abs(preds - targets)
+    denominator = (torch.abs(preds) + torch.abs(targets)) / 2.0 + epsilon
+    smape = torch.mean(numerator / denominator, dim=list(range(1, numerator.ndim)))
+    return smape
+
+# --- The Corrected Composite Loss Function ---
+class CompositeRLoss:
+    """
+    A callable class that computes a composite loss based on ensemble CRPS and sMAPE.
+    It normalizes the inputs to ensure both metrics are on a similar scale.
+    """
+    def __init__(self, crps_weight: float = 0.5, smape_weight: float = 0.5, epsilon: float = 1e-8):
+        self.crps_scorer = crps_ensemble(reduction='none')
+        self.crps_weight = crps_weight
+        self.smape_weight = smape_weight
+        self.epsilon = epsilon
+
+    def __call__(self, ensemble_forecasts: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Calculates the composite loss from a normalized ensemble of forecasts.
+
+        Args:
+            ensemble_forecasts (torch.Tensor): The generated ensemble, shape `(B, T, F, N)`.
+            targets (torch.Tensor): The ground truth values, shape `(B, T, F)`.
+
+        Returns:
+            torch.Tensor: The final composite loss for the batch, as a scalar.
+        """
+        # --- 1. Normalize the data ---
+        # We normalize based on the scale of the target data to make CRPS scale-invariant.
+        # The mean over time and batch gives a stable scaling factor.
+        with torch.no_grad():
+            scale = torch.abs(targets).mean() + self.epsilon
+        
+        normalized_targets = targets / scale
+        normalized_ensemble = ensemble_forecasts / scale
+
+        # --- 2. Calculate CRPS Loss on Normalized Data ---
+        crps_per_feature = []
+        for f in range(normalized_ensemble.shape[2]):
+            crps_loss_f = self.crps_scorer(normalized_ensemble[:, :, f, :], normalized_targets[:, :, f])
+            crps_per_feature.append(crps_loss_f.mean())
+        
+        crps_loss = torch.stack(crps_per_feature).mean()
+
+        # --- 3. Calculate sMAPE Loss ---
+        # sMAPE is already scale-invariant, but we calculate it on the original data for true interpretation.
+        point_forecast = ensemble_forecasts.mean(dim=-1)
+        smape_score = smape_loss(point_forecast, targets).mean()
+        
+        # --- 4. Combine the losses ---
+        # Now that CRPS is also a small, scale-invariant number, the weights are meaningful.
+        combined_loss = (self.crps_weight * crps_loss) + (self.smape_weight * smape_score)
+        
+        return combined_loss
