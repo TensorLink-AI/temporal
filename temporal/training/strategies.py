@@ -1,4 +1,8 @@
 from __future__ import annotations
+from typing import TYPE_CHECKING, Optional, Callable, Dict, Any, Sequence
+
+import torch
+import torch.nn as nn
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Optional
@@ -89,11 +93,7 @@ class ScheduledSamplingStrategy(TrainingStrategy):
             return 0.0
         return self.sampling_probability * min(1.0, current_step / self.total_steps)
 
-from __future__ import annotations
-from typing import TYPE_CHECKING, Optional, Callable, Dict, Any, Sequence
 
-import torch
-import torch.nn as nn
 
 if TYPE_CHECKING:
     from temporal.models.transformer_model import TransformerTemporalModel
