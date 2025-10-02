@@ -579,6 +579,8 @@ class AutoregressiveStepwiseMixin:
         return_raw: bool = False,
         post_quantiles: bool = True,
         return_bundle: bool = False,
+        return_params: bool = False,  # New flag for RL strategy
+
         **kwargs,
     ) -> Union[
         torch.Tensor,
@@ -783,7 +785,8 @@ class AutoregressiveStepwiseMixin:
             for step_dict in params_acc_list:
                 acc_tensors, acc_meta = self._accum_params_dict_step(acc_tensors, acc_meta, step_dict)
             params_stacked = self._stack_params_dict(acc_tensors, acc_meta)
-        
+        if return_params:
+            return params_stacked
         levels = self._normalize_levels(quantile_levels)
         point, q_tensor, params_for_bundle = self._extract_bundle_parts(primary_head, params_stacked, levels)
 

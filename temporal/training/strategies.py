@@ -52,34 +52,30 @@ class ScheduledSamplingStrategy(TrainingStrategy):
     inputs with the model's own predictions during training.
     """
     def __init__(self, total_steps: int, sampling_probability: float = 0.5):
-        """
-        Args:
-            total_steps (int): The total number of training steps for the annealing schedule.
-            sampling_probability (float): The maximum probability of using student-forcing.
-        """
         self.total_steps = total_steps
         self.sampling_probability = sampling_probability
 
     def __call__(self, model: TransformerTemporalModel, decoder_inputs: torch.Tensor, **kwargs) -> torch.Tensor:
         current_step = kwargs.get("current_step", 0)
         
-        # Determine if we should use the model's own generation (student forcing)
         if torch.rand(1).item() < self._get_sampling_probability(current_step):
             with torch.no_grad():
-                # Generate a sequence using the model's autoregressive capabilities.
-                # Pass all relevant context from the forward pass to the generate function.
                 generation_kwargs = {
-                    "encoder_hidden_states": kwargs.get("encoder_hidden_states"),
-                    "future_window": decoder_inputs.shape[1],
-                    "prediction_mode": "sample",
+                    "encoder_inputs": kwargs.get("encoder_inputs"),
+                    "decoder_inputs": decoder_inputs,
+                    "prediction_length": decoder_inputs.shape[1],
+                    "attention_mask": kwargs.get("attention_mask"),
+                    "return_bundle": False,
                 }
-                return model.generate(**generation_kwargs).prediction
-        
-        # Otherwise, use the ground-truth inputs (teacher forcing)
+                generated_output = model.generate(**generation_kwargs)
+                num_input_features = decoder_inputs.shape[-1]
+                return generated_output[..., :num_input_features]
+
         return decoder_inputs
 
     def _get_sampling_probability(self, current_step: int) -> float:
-        """Linearly anneals the sampling probability from 0 to the max value."""
+        if self.total_steps <= 0:
+            return 0.0
         return self.sampling_probability * min(1.0, current_step / self.total_steps)
 
 

@@ -159,71 +159,56 @@ train_dataset = TimeSeriesIterableDataset(dataset=train_data_list, config=config
 train_dataloader = DataLoader(train_dataset, batch_size=32, collate_fn=timeseries_collate_fn)
 print(f"DataLoader created.")
 
+
 # --- 4. Training Loop ---
 print("Starting training...")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # --- Strategy and Model Initialization ---
-num_epochs = 5
-batches_per_epoch = 50
-num_training_steps = num_epochs * batches_per_epoch
-strategy = ScheduledSamplingStrategy(total_steps=num_training_steps)
+num_epochs = 10 # example
+num_training_steps = num_epochs * len(train_dataloader)
+strategy = ScheduledSamplingStrategy(total_steps=num_training_steps, sampling_probability=0.5)
+
 model = TransformerTemporalModel(
     config=config,
-    training_strategy=strategy,
+    training_strategy=strategy, # Pass the strategy to the model
 )
 model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
+
+# --- TRAINING LOOP ---
 for epoch in range(num_epochs):
     model.train()
-    epoch_loss = 0.0
-    batch_count = 0
     for i, batch in enumerate(train_dataloader):
-        if not batch: continue
+        # <<< MODIFICATION START >>>
+        # Calculate the current global step
+        current_step = epoch * len(train_dataloader) + i
+        # <<< MODIFICATION END >>>
+        
+        # ... (move batch to device)
 
-        current_step = epoch * batches_per_epoch + i
         optimizer.zero_grad()
-        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+        
+        with torch.cuda.amp.autocast():
+            # Pass all necessary arguments to the model's forward pass
+            out = model(
+                decoder_inputs=batch["input_ids"],
+                decoder_attention_mask=batch["attention_mask"],
+                targets=batch["labels"], # Targets are needed for some strategies
+                # <<< MODIFICATION START >>>
+                current_step=current_step # Pass the current step here
+                # <<< MODIFICATION END >>>
+            )
+            loss = out.loss
 
-        try:
-             outputs = model(
-                 encoder_inputs=batch['input_ids'],
-                 attention_mask=batch.get('attention_mask'),
-                 decoder_inputs=batch.get('decoder_input_ids'),
-                 decoder_attention_mask=batch.get('labels_mask'),
-                 targets=batch.get('labels'),
-                 current_step=current_step,
-             )
-             loss = outputs.loss
-        except KeyError as e:
-            print(f"KeyError during model forward pass: {e}. Batch keys: {list(batch.keys())}")
-            raise e
-        except Exception as e:
-             print(f"Error during model forward pass: {e}")
-             raise e
+        if loss is not None:
+            loss.backward()
+            optimizer.step()
+        
+        if i % 10 == 0:
+            print(f"Epoch {epoch}, Batch {i}, Loss: {loss.item()}")
 
-        if loss is None:
-            print(f"Warning: Loss is None in epoch {epoch+1}, batch {i}. Check model output and loss calculation.")
-            continue
-        if not torch.isfinite(loss):
-             print(f"Warning: Non-finite loss detected in epoch {epoch+1}, batch {i}: {loss.item()}. Skipping backward pass.")
-             continue
-
-        loss.backward()
-        optimizer.step()
-        epoch_loss += loss.item()
-        batch_count += 1
-
-        if batch_count % 10 == 0:
-            print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_count}/{batches_per_epoch}], Loss: {loss.item():.4f}")
-        if batch_count >= batches_per_epoch: break
-
-    if batch_count == 0:
-        print(f"Epoch {epoch+1} finished, but no batches were processed.")
-        continue
-    avg_epoch_loss = epoch_loss / batch_count if batch_count > 0 else 0
-    print(f"--- Epoch {epoch+1} Finished --- Avg Loss: {avg_epoch_loss:.4f} ---")
 
 print("Training finished.")
 

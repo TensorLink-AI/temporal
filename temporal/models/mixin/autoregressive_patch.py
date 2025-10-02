@@ -321,6 +321,9 @@ class AutoregressivePatchMixin:
         return_raw: bool = False,
         post_quantiles: bool = True,
         return_bundle: bool = False,
+        return_params: bool = False,  # New flag for RL strategy
+
+
         **kwargs,
     ) -> Union[
         torch.Tensor,
@@ -481,7 +484,8 @@ class AutoregressivePatchMixin:
         params_stacked = primary_head(head_inputs)  # tensor OR dict, usually [B, T, ...] / dict of [B, T, ...]
         if isinstance(params_stacked, dict):
             params_stacked = self._ensure_components_present(params_stacked, primary_head)
-
+        if return_params:
+            return params_stacked
         # --------- Quantiles (once; MDN-safe) ---------
         levels = self._normalize_levels(quantile_levels)
         q_tensor: Optional[torch.Tensor] = None
