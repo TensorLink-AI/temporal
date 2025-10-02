@@ -96,7 +96,9 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         head_aggregator: Optional[nn.Module] = None,
         loss_fn: Optional[callable] = None,
         builder: Optional[ModuleBuilder] = None,
+        # <<< MODIFICATION START >>>
         training_strategy: Optional[TrainingStrategy] = None,
+        # <<< MODIFICATION END >>>
     ):
         """
         Initializes the TransformerTemporalModel in an order that matches the
@@ -108,6 +110,13 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         if builder is None:
             builder = ModuleBuilder(config)
         self.builder = builder # Store builder for potential future use
+
+        # <<< MODIFICATION START >>>
+        # Set the training strategy, defaulting to TeacherForcing for backward compatibility
+        self.training_strategy = (
+            training_strategy if training_strategy is not None else TeacherForcingStrategy()
+        )
+        # <<< MODIFICATION END >>>
 
         # 1. Preprocessor is the first step in the forward pass.
         self.preprocessor = InputPreprocessor(config, self.builder)
@@ -174,9 +183,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         self._encoder_dtype = getattr(self.encoder, 'dtype', torch.float32) if self.encoder else torch.float32
         self._decoder_dtype = getattr(self.decoder, 'dtype', torch.float32) if self.decoder else torch.float32
         
-        self.training_strategy = (
-            training_strategy if training_strategy is not None else TeacherForcingStrategy()
-        )
 
     def _primary_head(self) -> nn.Module:
         """Return the primary output head."""
@@ -194,10 +200,12 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
+        # <<< MODIFICATION START >>>
+        current_step: Optional[int] = None, # Add current_step here
+        # <<< MODIFICATION END >>>
         validate_shapes: bool = False,
         verbose: bool = False,
         x_raw: Optional[torch.Tensor] = None,
-        current_step: Optional[int] = None,
     ) -> TransformerOutput:
         """
         Performs a forward pass through the entire transformer model.
@@ -247,19 +255,30 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             encoder_outputs = self.encoder(hidden_states=processed_encoder["hidden_states"], attention_mask=processed_encoder["attention_mask"], return_dict=True)
 
         encoder_hidden_states = encoder_outputs.last_hidden_state if encoder_outputs else None
-        
+
+        # <<< MODIFICATION START >>>
+        # Determine the actual inputs for the decoder based on the current strategy
         effective_decoder_inputs = decoder_inputs
-        if self.training and decoder_inputs is not None:
-            effective_decoder_inputs = self.training_strategy(
-                model=self,
-                decoder_inputs=decoder_inputs,
-                encoder_inputs=encoder_inputs,
-                current_step=current_step,
-            )
+        if self.training and self.training_strategy is not None and decoder_inputs is not None:
+             effective_decoder_inputs = self.training_strategy(
+                 model=self,
+                 decoder_inputs=decoder_inputs,
+                 targets=targets,
+                 current_step=current_step,
+                 encoder_hidden_states=encoder_hidden_states, # Pass context for generation
+                 attention_mask=attention_mask
+             )
+        # <<< MODIFICATION END >>>
 
         if self.decoder:
             past_kv_length = past_key_values[0][0].size(-2) if past_key_values else 0
-            processed_decoder = self.preprocessor.process(input_values=effective_decoder_inputs, past_key_values_length=past_kv_length, attention_mask=decoder_attention_mask, is_causal=True)
+            # Use the 'effective_decoder_inputs' determined by the strategy
+            processed_decoder = self.preprocessor.process(
+                input_values=effective_decoder_inputs, # MODIFIED
+                past_key_values_length=past_kv_length,
+                attention_mask=decoder_attention_mask,
+                is_causal=True
+            )
             if processed_decoder.get("quantizer_loss"):
                 total_q_loss += processed_decoder["quantizer_loss"]
             decoder_outputs = self.decoder(hidden_states=processed_decoder["hidden_states"], attention_mask=processed_decoder["attention_mask"], encoder_hidden_states=encoder_hidden_states, past_key_values=past_key_values, return_dict=True)
