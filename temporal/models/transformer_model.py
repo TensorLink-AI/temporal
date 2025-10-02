@@ -11,6 +11,7 @@ from temporal.models.mixin.autoregressive_stepwise import AutoregressiveStepwise
 from temporal.models.mixin.multistep import MultiStepMixin
 from temporal.models.preprocessor import InputPreprocessor
 from temporal.models.module_builder_helper import ModuleBuilder
+from temporal.training.strategies import TrainingStrategy, TeacherForcingStrategy
 
 # Import necessary components for internal building
 from temporal.models.output_head_builder import OutputHeadBuilder
@@ -95,6 +96,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         head_aggregator: Optional[nn.Module] = None,
         loss_fn: Optional[callable] = None,
         builder: Optional[ModuleBuilder] = None,
+        training_strategy: Optional[TrainingStrategy] = None,
     ):
         """
         Initializes the TransformerTemporalModel in an order that matches the
@@ -171,6 +173,10 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         # Store dtypes for casting if necessary
         self._encoder_dtype = getattr(self.encoder, 'dtype', torch.float32) if self.encoder else torch.float32
         self._decoder_dtype = getattr(self.decoder, 'dtype', torch.float32) if self.decoder else torch.float32
+        
+        self.training_strategy = (
+            training_strategy if training_strategy is not None else TeacherForcingStrategy()
+        )
 
     def _primary_head(self) -> nn.Module:
         """Return the primary output head."""
@@ -191,6 +197,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
         validate_shapes: bool = False,
         verbose: bool = False,
         x_raw: Optional[torch.Tensor] = None,
+        current_step: Optional[int] = None,
     ) -> TransformerOutput:
         """
         Performs a forward pass through the entire transformer model.
@@ -220,6 +227,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             verbose (bool): If True, prints detailed shape information from
                 the preprocessor for debugging.
             x_raw (Optional[torch.Tensor]): Raw input for de-stationary attention.
+            current_step (Optional[int]): The current training step, for scheduled sampling.
 
         Returns:
             TransformerOutput: A structured object containing the model's outputs.
@@ -240,9 +248,18 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
 
         encoder_hidden_states = encoder_outputs.last_hidden_state if encoder_outputs else None
         
+        effective_decoder_inputs = decoder_inputs
+        if self.training and decoder_inputs is not None:
+            effective_decoder_inputs = self.training_strategy(
+                model=self,
+                decoder_inputs=decoder_inputs,
+                encoder_inputs=encoder_inputs,
+                current_step=current_step,
+            )
+
         if self.decoder:
             past_kv_length = past_key_values[0][0].size(-2) if past_key_values else 0
-            processed_decoder = self.preprocessor.process(input_values=decoder_inputs, past_key_values_length=past_kv_length, attention_mask=decoder_attention_mask, is_causal=True)
+            processed_decoder = self.preprocessor.process(input_values=effective_decoder_inputs, past_key_values_length=past_kv_length, attention_mask=decoder_attention_mask, is_causal=True)
             if processed_decoder.get("quantizer_loss"):
                 total_q_loss += processed_decoder["quantizer_loss"]
             decoder_outputs = self.decoder(hidden_states=processed_decoder["hidden_states"], attention_mask=processed_decoder["attention_mask"], encoder_hidden_states=encoder_hidden_states, past_key_values=past_key_values, return_dict=True)

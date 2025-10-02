@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import pandas as pd # Needed for date range generation
 
 # --- Configuration Import ---
-from temporal.configs.transformer_config import (
+from temporal.configs.transformer_model_config import (
     TransformerTimeSeriesConfig,
     TransformerArchitectureConfig,
     EmbeddingConfig,
@@ -20,7 +20,8 @@ from temporal.configs.transformer_config import (
     OutputHeadConfig,
     NormalizationConfig,
 )
-from temporal.models.builder import build_time_series_transformer
+from temporal.models.transformer_model import TransformerTemporalModel
+from temporal.training.strategies import ScheduledSamplingStrategy
 from temporal.utils.hf_accessors import save_hf
 from temporal.data.transformations import TimeSeriesIterableDataset, timeseries_collate_fn
 
@@ -127,24 +128,8 @@ config = TransformerTimeSeriesConfig(
 
 print(f"Configuration defined with loss type: {config.loss_config['type']} and output head: {config.output_head_config.type}")
 
-# --- 2. Model ---
-print("Building model...")
-# The build function should now correctly build DistPredHead and use CRPSLoss
-model = build_time_series_transformer(config)
-print(f"Model built: {type(model).__name__}")
-# --- CORRECTED attribute access --- #
-print(f"Output Head: {type(model.output_heads).__name__}") # Use plural 'output_heads'
-# Check the actual loss function attached to the model (might need access to model internals)
-if hasattr(model, 'loss_fn'):
-    print(f"Loss Function: {type(model.loss_fn).__name__}")
-elif hasattr(model, 'loss'): # Some HF models store loss internally
-     print(f"Loss Function (internal): {type(model.loss).__name__}")
-else:
-     print("Loss function attribute not found (check model implementation).")
-print(f"Total parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
-
-# --- 3. Synthetic Data Generation ---
+# --- 2. Synthetic Data Generation ---
 print("Generating synthetic data for TimeSeriesIterableDataset...")
 def generate_synthetic_data_list(num_series=100, min_len=60, max_len=120, noise_level=0.1):
     data_list = []
@@ -166,7 +151,7 @@ raw_data_list = generate_synthetic_data_list(
 )
 print(f"Generated {len(raw_data_list)} time series items.")
 
-# --- 4. Dataset and DataLoader ---
+# --- 3. Dataset and DataLoader ---
 print("Creating DataLoader with TimeSeriesIterableDataset...")
 train_size = int(0.8 * len(raw_data_list))
 train_data_list = raw_data_list[:train_size]
@@ -174,50 +159,53 @@ train_dataset = TimeSeriesIterableDataset(dataset=train_data_list, config=config
 train_dataloader = DataLoader(train_dataset, batch_size=32, collate_fn=timeseries_collate_fn)
 print(f"DataLoader created.")
 
-# --- 5. Training Loop (Reverted to simpler, working version) ---
+# --- 4. Training Loop ---
 print("Starting training...")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# --- Strategy and Model Initialization ---
+num_epochs = 5
+batches_per_epoch = 50
+num_training_steps = num_epochs * batches_per_epoch
+strategy = ScheduledSamplingStrategy(total_steps=num_training_steps)
+model = TransformerTemporalModel(
+    config=config,
+    training_strategy=strategy,
+)
 model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
-num_epochs = 5 # Reduced for quick testing
-batches_per_epoch = 50
 
 for epoch in range(num_epochs):
     model.train()
     epoch_loss = 0.0
     batch_count = 0
     for i, batch in enumerate(train_dataloader):
-        if not batch: continue # Skip empty batches
+        if not batch: continue
 
+        current_step = epoch * batches_per_epoch + i
         optimizer.zero_grad()
         batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
-        # --- Model Forward Pass --- 
         try:
              outputs = model(
                  encoder_inputs=batch['input_ids'],
-                 # Pass the 2D attention mask from the batch
                  attention_mask=batch.get('attention_mask'),
                  decoder_inputs=batch.get('decoder_input_ids'),
-                 # Pass the 2D mask for decoder inputs if available
                  decoder_attention_mask=batch.get('labels_mask'),
                  targets=batch.get('labels'),
-                 # loss_mask=batch.get('loss_mask') # Add this back if your model/loss handles it
+                 current_step=current_step,
              )
              loss = outputs.loss
         except KeyError as e:
             print(f"KeyError during model forward pass: {e}. Batch keys: {list(batch.keys())}")
-            print("Ensure model's forward signature arguments (e.g., 'encoder_inputs') correctly map to batch keys (e.g., 'input_ids').")
             raise e
         except Exception as e:
              print(f"Error during model forward pass: {e}")
              raise e
-        # --- End Model Forward Pass ---
 
-        # Check for non-finite loss (moved after forward pass)
         if loss is None:
             print(f"Warning: Loss is None in epoch {epoch+1}, batch {i}. Check model output and loss calculation.")
-            continue 
+            continue
         if not torch.isfinite(loss):
              print(f"Warning: Non-finite loss detected in epoch {epoch+1}, batch {i}: {loss.item()}. Skipping backward pass.")
              continue
@@ -227,7 +215,6 @@ for epoch in range(num_epochs):
         epoch_loss += loss.item()
         batch_count += 1
 
-        # Print loss less frequently
         if batch_count % 10 == 0:
             print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_count}/{batches_per_epoch}], Loss: {loss.item():.4f}")
         if batch_count >= batches_per_epoch: break
@@ -235,15 +222,12 @@ for epoch in range(num_epochs):
     if batch_count == 0:
         print(f"Epoch {epoch+1} finished, but no batches were processed.")
         continue
-    # Avoid division by zero if batch_count is 0
-    avg_epoch_loss = epoch_loss / batch_count if batch_count > 0 else 0 
+    avg_epoch_loss = epoch_loss / batch_count if batch_count > 0 else 0
     print(f"--- Epoch {epoch+1} Finished --- Avg Loss: {avg_epoch_loss:.4f} ---")
 
 print("Training finished.")
-# --- End Training Loop ---
 
-
-# --- 6. Save Model ---
+# --- 5. Save Model ---
 print("Saving model...")
 local_save_dir = "./trained_transformer_distpred_crps"
 hub_repo_id = "your_username/temporal_distpred_crps_k100" # <<< CHANGE THIS
