@@ -38,70 +38,51 @@ class TeacherForcingStrategy(TrainingStrategy):
         return decoder_inputs
 
 class ScheduledSamplingStrategy(TrainingStrategy):
-    """
-    Scheduled Sampling in native space (pragmatic for your patch-AR design).
-    Replaces decoder inputs with a *point* forecast sometimes.
-    """
-
-    def __init__(
-        self,
-        total_steps: int,
-        sampling_probability: float = 0.5,
-        prediction_method: str = "median",   # 'median' or 'mean'
-        return_raw: bool = True,
-    ):
-        self.total_steps = int(total_steps)
-        self.sampling_probability = float(sampling_probability)
+    def __init__(self, total_steps: int, sampling_probability: float = 0.5,
+                 prediction_method: str = "median", return_raw: bool = False):
+        """
+        return_raw=False  -> generate() will DENORMALIZE the point forecast
+                             so we can feed it to preprocessor.process(...)
+        """
+        self.total_steps = total_steps
+        self.sampling_probability = sampling_probability
         self.prediction_method = prediction_method
-        self.return_raw = bool(return_raw)
+        self.return_raw = return_raw
 
-    def __call__(self, model: "TransformerTemporalModel", decoder_inputs: torch.Tensor, **kwargs) -> torch.Tensor:
+    def __call__(self, model, decoder_inputs: torch.Tensor, **kwargs) -> torch.Tensor:
         current_step = kwargs.get("current_step", 0)
-        p = self._get_sampling_probability(int(current_step))
+        p = self._get_sampling_probability(current_step)
+        if torch.rand(1, device=decoder_inputs.device).item() < p:
+            targets = kwargs.get("targets")
+            if targets is None:
+                raise ValueError("ScheduledSamplingStrategy requires 'targets' to infer prediction_length.")
 
-        # no replacement → teacher forcing
-        if torch.rand(1, device=decoder_inputs.device).item() >= p:
-            return decoder_inputs
+            gen = model.generate(
+                # IMPORTANT: pass encoder_inputs (not encoder_hidden_states)
+                encoder_inputs=kwargs.get("encoder_inputs"),
+                decoder_inputs=decoder_inputs,
+                prediction_length=targets.shape[1],
+                attention_mask=kwargs.get("attention_mask"),
+                differentiable=False,
+                return_samples=False,
+                sampling=False,
+                prediction_strategy=self.prediction_method,
+                return_raw=False,          # ← denormalize so inputs are RAW
+                return_bundle=False,
+                quantile_levels=None,
+            )
 
-        targets = kwargs.get("targets")
-        if targets is None:
-            raise ValueError("ScheduledSamplingStrategy requires 'targets' to infer prediction_length.")
+            if gen.ndim == 2:
+                gen = gen.unsqueeze(-1)
+            return gen[..., :decoder_inputs.shape[-1]]
 
-        # Preserve original training mode because generate() sets eval()
-        was_training = model.training
-        try:
-            with torch.no_grad():  # hard no-grad guard
-                # NOTE: generate() currently ignores `prediction_strategy`.
-                # If you want 'mean' vs 'median', plumb it through in your generate() implementation.
-                gen = model.generate(
-                    encoder_inputs=kwargs.get("encoder_inputs"),
-                    decoder_inputs=decoder_inputs,
-                    prediction_length=targets.shape[1],
-                    attention_mask=kwargs.get("attention_mask"),
-                    differentiable=False,        # belt-and-braces with torch.no_grad
-                    return_samples=False,        # point, not paths
-                    sampling=False,              # deterministic via predict()
-                    prediction_strategy=self.prediction_method,  # only effective if wired in generate()
-                    return_raw=self.return_raw,
-                    return_bundle=False,         # just the tensor
-                    quantile_levels=None,        # don't request quantiles
-                )
-        finally:
-            # Restore the original mode so the main forward stays in train()
-            model.train(was_training)
-
-        # Shape fixups to match decoder_inputs [B, T_in, F_in]
-        if gen.ndim == 2:
-            gen = gen.unsqueeze(-1)  # [B,T] -> [B,T,1]
-        num_in_features = decoder_inputs.shape[-1]
-        gen = gen[..., :num_in_features]
-
-        return gen
+        return decoder_inputs
 
     def _get_sampling_probability(self, current_step: int) -> float:
         if self.total_steps <= 0:
             return 0.0
         return self.sampling_probability * min(1.0, current_step / self.total_steps)
+
 
 
 

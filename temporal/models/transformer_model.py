@@ -256,7 +256,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
 
         encoder_hidden_states = encoder_outputs.last_hidden_state if encoder_outputs else None
 
-        # <<< MODIFICATION START >>>
         # Determine the actual inputs for the decoder based on the current strategy
         effective_decoder_inputs = decoder_inputs
         if self.training and self.training_strategy is not None and decoder_inputs is not None:
@@ -268,7 +267,6 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
                  encoder_hidden_states=encoder_hidden_states, # Pass context for generation
                  attention_mask=attention_mask
              )
-        # <<< MODIFICATION END >>>
 
         if self.decoder:
             past_kv_length = past_key_values[0][0].size(-2) if past_key_values else 0
