@@ -333,10 +333,7 @@ class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMi
             input_to_heads = reconstructed_output.contiguous().view(B, T_tok * output_patch_size, d_model)
 
         # Step 4: Align head input with targets for loss calculation if needed.
-        if (
-            targets is not None and 
-            self.config.architecture.layout == "decoder" 
-        ):
+        if targets is not None:
             num_target_steps = targets.size(1)
 
             if input_to_heads.shape[1] < num_target_steps:
