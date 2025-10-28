@@ -53,7 +53,7 @@ class AutoregressiveDispatchMixin:
                 quantiles=quantiles,
                 **kwargs,
             )
-        if self._is_patch_based():
+        elif self._is_patch_based():
             logger.info(
                 "Patch-based model detected. Dispatching to AutoregressivePatchMixin.forecast."
             )
@@ -92,7 +92,7 @@ class AutoregressiveDispatchMixin:
             )
             return AutoregressiveBlockwiseMixin.generate(self, *args, **kwargs)
 
-        if self._is_patch_based():
+        elif self._is_patch_based():
             logger.info(
                 "Patch-based model detected. Dispatching to AutoregressivePatchMixin.generate."
             )
