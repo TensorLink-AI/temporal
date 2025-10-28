@@ -8,6 +8,8 @@ from temporal.registry.generate import register_generate
 from temporal.models.mixin.autoregressive import AutoregressiveDispatchMixin
 from temporal.models.mixin.autoregressive_patch import AutoregressivePatchMixin
 from temporal.models.mixin.autoregressive_stepwise import AutoregressiveStepwiseMixin
+from temporal.models.mixin.autoregressive_blockwise import AutoregressiveBlockwiseMixin
+
 from temporal.models.mixin.multistep import MultiStepMixin
 from temporal.models.preprocessor import InputPreprocessor
 from temporal.models.module_builder_helper import ModuleBuilder
