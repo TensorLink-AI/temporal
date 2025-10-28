@@ -538,7 +538,7 @@ class AutoregressiveBlockwiseMixin:
         Dict[str, torch.Tensor],
     ]:
         """
-        Convenience wrapper around `generate_blockwise`, just like
+        Convenience wrapper around `generate`, just like
         AutoregressiveStepwiseMixin.forecast wraps its .generate.
 
         Usage:
@@ -582,7 +582,7 @@ class AutoregressiveBlockwiseMixin:
 
         Returns
         -------
-        Same return contract as generate_blockwise():
+        Same return contract as generate():
           * ForecastBundle(...) if return_bundle=True
           * else quantile tensor [B,T,F,Q] if available
           * else point tensor [B,T,F]
@@ -590,7 +590,7 @@ class AutoregressiveBlockwiseMixin:
 
         if hasattr(self, "encoder") and self.encoder is not None:
             # encoder-decoder style: inputs go to encoder_inputs
-            return self.generate_blockwise(
+            return self.generate(
                 encoder_inputs=inputs,
                 decoder_inputs=None,  # we'll seed decoder from the last encoder step
                 prediction_length=prediction_length,
