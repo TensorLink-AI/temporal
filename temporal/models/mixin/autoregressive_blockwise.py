@@ -606,7 +606,7 @@ class AutoregressiveBlockwiseMixin:
             )
         else:
             # decoder-only style: inputs go directly to decoder_inputs
-            return self.generate_blockwise(
+            return self.generate(
                 encoder_inputs=None,
                 decoder_inputs=inputs,
                 prediction_length=prediction_length,
