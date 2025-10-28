@@ -76,7 +76,7 @@ class TransformerOutput:
         return asdict(self)
 
 @register_generate(name="transformer")
-class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMixin,AutoregressiveStepwiseMixin, MultiStepMixin, BaseTemporalModel):
+class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMixin,AutoregressiveStepwiseMixin, AutoregressiveBlockwiseMixin,MultiStepMixin, BaseTemporalModel):
     """A concrete implementation of a transformer-based temporal model.
 
     This class assembles the encoder, decoder, and output heads into a cohesive
