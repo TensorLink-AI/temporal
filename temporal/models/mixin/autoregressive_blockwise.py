@@ -242,61 +242,17 @@ class AutoregressiveBlockwiseMixin:
         Dict[str, torch.Tensor],
     ]:
         """
-        Blockwise autoregressive forecast.
+        Blockwise autoregressive forecast with fast 'one-shot' mode.
 
-        Each loop:
-          1. Run the model once to produce a parallel block forecast of length `block_len`.
-          2. Append the *entire* block forecast to the running decoder sequence.
-          3. Take just the #steps we still need for the requested horizon.
-          4. Repeat until we hit `prediction_length`.
+        If prediction_length <= block_len:
+            - Do a SINGLE forward() call with fake_targets of length prediction_length.
+            - Return that block directly (no feedback loop).
+            - This matches training-time behavior (parallel horizon prediction).
 
-        Parameters
-        ----------
-        encoder_inputs : Tensor | None
-            [B, L_enc, F_enc] history for encoder (if encoder-decoder).
-        decoder_inputs : Tensor | None
-            [B, L_hist, F] initial known context for decoder.
-            If None and encoder_inputs is provided, we seed decoder with the last
-            encoder timestep. If both are None, we raise.
-        prediction_length : int | None
-            Total forecast horizon we want, T_future.
-            Falls back to self.config.prediction_length if not provided.
-        block_len : int | None
-            How many steps to forecast per block call.
-            Typically this matches your training horizon length. If None,
-            falls back to self.config.prediction_length.
-        attention_mask : Tensor | None
-            Optional padding mask for encoder_inputs [B, L_enc].
-        decoder_attention_mask : Tensor | None
-            Optional padding mask for decoder_inputs [B, L_hist].
-            (Not strongly used here beyond shape checks.)
-        quantile_levels : List[float] | None
-            Quantiles (e.g. [0.1,0.5,0.9]) to compute per block and stitch.
-            If None, we only compute point.
-        validate_shapes : bool
-            Passed to preprocessor for debugging shape assertions.
-        verbose : bool
-            Passed to preprocessor for verbose shape printouts.
-        denormalize : bool
-            If True and self.preprocessor has .denormalize(), apply to final
-            point forecast (but not to quantiles/params).
-        return_bundle : bool
-            If True, return a ForecastBundle(point, quantiles, params, extras).
-        return_raw : bool
-            If False and denormalize=True, we'll denormalize the point forecast.
-
-        Returns
-        -------
-        If return_bundle=True:
-            ForecastBundle(
-                point      [B, prediction_length, F],
-                quantiles  [B, prediction_length, F, Q] or None,
-                params     Tensor or Dict[str,Tensor] stacked across all blocks,
-                extras     HeadExtras | dict
-            )
-        else:
-            If quantiles are available -> quantiles tensor [B, T, F, Q]
-            else -> point tensor [B, T, F]
+        If prediction_length > block_len:
+            - Fall back to multi-block rollout:
+            append each predicted block to the running sequence and continue.
+            (coarse autoregressive over blocks)
         """
         self.eval()
 
@@ -307,6 +263,7 @@ class AutoregressiveBlockwiseMixin:
                 raise ValueError("prediction_length must be provided or set in config.prediction_length")
 
         if block_len is None:
+            # default block size is the model's trained horizon
             block_len = getattr(self.config, "prediction_length", None)
             if block_len is None:
                 raise ValueError("block_len must be provided or set in config.prediction_length")
@@ -323,7 +280,7 @@ class AutoregressiveBlockwiseMixin:
             enc_proc = self.preprocessor.process(
                 input_values=encoder_inputs,
                 attention_mask=attention_mask,
-                is_causal=False,  # encoders aren't causal
+                is_causal=False,
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
@@ -339,23 +296,85 @@ class AutoregressiveBlockwiseMixin:
         # ---- seed decoder_inputs if missing ----
         if decoder_inputs is None:
             if encoder_inputs is not None:
+                # seed with last encoder timestep
                 decoder_inputs = encoder_inputs[:, -1:, :].clone()  # [B,1,F]
             else:
-                raise ValueError("Decoder-only blockwise generation requires decoder_inputs.")
+                raise ValueError("Decoder-only generation requires decoder_inputs")
 
-        # ---- prep rollout containers ----
+        # ============================================================
+        # FAST PATH: one-shot parallel forecast
+        # ============================================================
+        if prediction_length <= block_len:
+            # We can just do one forward() call that mirrors training.
+            fake_targets = torch.zeros(
+                (decoder_inputs.size(0), prediction_length,
+                getattr(self.config, "feature_size", decoder_inputs.size(-1))),
+                device=device,
+                dtype=dtype,
+            )
+
+            out = self.forward(
+                encoder_inputs=encoder_inputs,
+                decoder_inputs=decoder_inputs,
+                attention_mask=attention_mask,
+                decoder_attention_mask=decoder_attention_mask,
+                targets=fake_targets,          # <-- length tells forward() how many steps to slice
+                validate_shapes=validate_shapes,
+                verbose=verbose,
+            )
+
+            block_params = out.logits  # Tensor or dict from output head for [B, prediction_length, ...]
+            primary_head = self._get_primary_head()
+            Fsize = getattr(
+                self.config,
+                "feature_size",
+                block_params.shape[-1] if torch.is_tensor(block_params) else 1,
+            )
+
+            # Predict point forecast from head params
+            point_block_full = self._head_predict_point(primary_head, block_params)  # [B, prediction_length, F]
+            quant_all = None
+            if quantile_levels:
+                q_levels = self._normalize_levels(quantile_levels)
+                quant_all = self._head_quantiles(
+                    primary_head,
+                    block_params,
+                    q_levels,
+                    feature_size=Fsize,
+                )  # [B, prediction_length, F, Q] or None
+
+            # optional denorm
+            if denormalize and not return_raw and hasattr(self.preprocessor, "denormalize"):
+                point_block_full = self.preprocessor.denormalize(point_block_full)
+
+            # bundle-style return
+            extras_obj = HeadExtras(**{}) if "HeadExtras" in globals() else {}
+
+            bundle = ForecastBundle(
+                point=point_block_full,
+                quantiles=quant_all,
+                params=block_params,
+                extras=extras_obj,
+            )
+
+            if return_bundle:
+                return bundle
+            if quant_all is not None and torch.is_tensor(quant_all):
+                return quant_all
+            return point_block_full
+
+        # ============================================================
+        # SLOW PATH: coarse autoregressive multi-block rollout
+        # ============================================================
         remaining = prediction_length
-        collected_point_blocks: List[torch.Tensor] = []      # list of [B, k, F]
-        collected_quant_blocks: List[torch.Tensor] = []       # list of [B, k, F, Q]
-        quant_list_enabled = quantile_levels is not None
-        quantile_levels_norm = self._normalize_levels(quantile_levels)
+        collected_point_blocks: List[torch.Tensor] = []
+        collected_quant_blocks: List[torch.Tensor] = []
+        quantile_levels_norm = self._normalize_levels(quantile_levels) if quantile_levels else None
 
-        # We'll also accumulate params across blocks (for bundle.params)
         params_tensor_acc: Optional[torch.Tensor] = None
         params_dict_acc_tensors: Optional[Dict[str, List[torch.Tensor]]] = None
         params_dict_acc_meta: Optional[Dict[str, Any]] = None
 
-        # helper to accumulate dict params
         def _accum_dict_step(
             acc_tensors: Optional[Dict[str, List[torch.Tensor]]],
             acc_meta: Optional[Dict[str, Any]],
@@ -367,9 +386,7 @@ class AutoregressiveBlockwiseMixin:
                 acc_meta = {}
             for k, v in block_dict.items():
                 if torch.is_tensor(v):
-                    # ensure [B, T, ...]
                     vv = v
-                    # if it's missing time dim, unsqueeze
                     if vv.ndim == 2:
                         vv = vv.unsqueeze(1)  # [B,1,...]
                     acc_tensors.setdefault(k, []).append(vv)
@@ -377,141 +394,111 @@ class AutoregressiveBlockwiseMixin:
                     acc_meta.setdefault(k, v)
             return acc_tensors, acc_meta
 
-        # ---- rollout loop ----
-        running_seq = decoder_inputs  # grows each block: [B, T_running, F]
+        running_seq = decoder_inputs  # grows each loop
 
         while remaining > 0:
-            # fake targets: only length matters
+            this_block = min(remaining, block_len)
+
             fake_targets = torch.zeros(
-                (running_seq.size(0), block_len, getattr(self.config, "feature_size", running_seq.size(-1))),
+                (running_seq.size(0), this_block,
+                getattr(self.config, "feature_size", running_seq.size(-1))),
                 device=device,
                 dtype=dtype,
             )
 
-            # run the model forward ONCE to get a block_len forecast
             out = self.forward(
                 encoder_inputs=encoder_inputs,
                 decoder_inputs=running_seq,
                 attention_mask=attention_mask,
                 decoder_attention_mask=decoder_attention_mask,
-                targets=fake_targets,          # <-- tells forward how many future steps to project
+                targets=fake_targets,      # <-- tells forward() how many steps to slice
                 validate_shapes=validate_shapes,
                 verbose=verbose,
             )
-            # out.logits: [B, block_len, F?] (point-style or param-style)
 
-            block_params = out.logits        # may be Tensor OR dict-like head output per step
-            k = min(remaining, block_len)    # how many steps from this block we actually still need
-
+            block_params = out.logits          # Tensor or dict
             primary_head = self._get_primary_head()
-            Fsize = getattr(self.config, "feature_size", block_params.shape[-1] if torch.is_tensor(block_params) else 1)
+            Fsize = getattr(
+                self.config,
+                "feature_size",
+                block_params.shape[-1] if torch.is_tensor(block_params) else 1,
+            )
 
-            # Turn block params into point forecast for this block
-            if isinstance(block_params, dict):
-                block_params = self._ensure_components_present(block_params, primary_head)
-                # compute point and optional quantiles from dict-like params
-                point_block_full = self._head_predict_point(primary_head, block_params)           # [B, block_len, F]
+            point_block_full = self._head_predict_point(primary_head, block_params)         # [B, this_block, F]
+            if quantile_levels_norm:
+                quant_block_full = self._head_quantiles(
+                    primary_head,
+                    block_params,
+                    quantile_levels_norm,
+                    feature_size=Fsize,
+                )  # [B, this_block, F, Q] or None
+            else:
                 quant_block_full = None
-                if quant_list_enabled and quantile_levels_norm:
-                    quant_block_full = self._head_quantiles(
-                        primary_head,
-                        block_params,
-                        quantile_levels_norm,
-                        feature_size=Fsize,
-                    )  # [B, block_len, F, Q] or None
 
-                # accumulate params dict for bundle.params
+            # accumulate for return
+            collected_point_blocks.append(point_block_full)          # we already trimmed to this_block
+            if quant_block_full is not None:
+                collected_quant_blocks.append(quant_block_full)
+
+            # accumulate params for bundle
+            if isinstance(block_params, dict):
                 params_dict_acc_tensors, params_dict_acc_meta = _accum_dict_step(
                     params_dict_acc_tensors,
                     params_dict_acc_meta,
                     block_params,
                 )
-
-            elif isinstance(block_params, torch.Tensor):
-                # block_params is typically [B, block_len, something]
-                point_block_full = self._head_predict_point(primary_head, block_params)           # [B, block_len, F]
-                quant_block_full = None
-                if quant_list_enabled and quantile_levels_norm:
-                    quant_block_full = self._head_quantiles(
-                        primary_head,
-                        block_params,
-                        quantile_levels_norm,
-                        feature_size=Fsize,
-                    )
-
-                # accumulate tensor params across blocks for bundle.params
-                # ensure [B, T_block, ...]
+            else:
+                # tensor
                 bp_for_stack = block_params
                 if bp_for_stack.ndim == 2:
-                    bp_for_stack = bp_for_stack.unsqueeze(1)  # [B,1,...]
+                    bp_for_stack = bp_for_stack.unsqueeze(1)
                 if params_tensor_acc is None:
                     params_tensor_acc = bp_for_stack
                 else:
                     params_tensor_acc = torch.cat([params_tensor_acc, bp_for_stack], dim=1)
 
-            else:
-                raise TypeError(
-                    "Unsupported block_params type from model.forward(); "
-                    "expected Tensor or Dict[str,Tensor]."
-                )
+            # feedback entire block (coarse AR over blocks)
+            running_seq = torch.cat([running_seq, point_block_full], dim=1)
 
-            # slice k steps we actually need now
-            point_block_slice = point_block_full[:, :k, :]  # [B,k,F]
-            collected_point_blocks.append(point_block_slice)
+            remaining -= this_block
 
-            if quant_list_enabled and quantile_levels_norm and quant_block_full is not None:
-                quant_block_slice = quant_block_full[:, :k, ...]  # [B,k,F,Q]
-                collected_quant_blocks.append(quant_block_slice)
-
-            # feedback ENTIRE predicted block to running_seq, not just k
-            running_seq = torch.cat([running_seq, point_block_full], dim=1)  # [B, T_running+block_len, F]
-
-            remaining -= k
-
-        # ---- stitch all collected slices ----
+        # stitch blocks
         point_all = torch.cat(collected_point_blocks, dim=1)  # [B, prediction_length, F]
-
         quant_all = None
         if collected_quant_blocks:
             quant_all = torch.cat(collected_quant_blocks, dim=1)  # [B, prediction_length, F, Q]
 
-        # stitch dict params if needed
+        # stitch params dict/tensor
         params_stacked: Union[torch.Tensor, Dict[str, torch.Tensor], None] = None
         if params_tensor_acc is not None:
-            params_stacked = params_tensor_acc  # [B, sum_blocks, ...]
+            params_stacked = params_tensor_acc
         elif params_dict_acc_tensors is not None:
-            # concatenate dict-of-lists along time for each tensor field
             final_dict: Dict[str, Any] = {}
             for k_param, vs in params_dict_acc_tensors.items():
-                final_dict[k_param] = torch.cat(vs, dim=1)  # [B, sum_blocks, ...]
+                final_dict[k_param] = torch.cat(vs, dim=1)
             if params_dict_acc_meta:
                 final_dict.update(params_dict_acc_meta)
             params_stacked = final_dict
 
-        # Optional denormalization: point forecasts only
+        # optional denorm for point_all
         if denormalize and not return_raw and hasattr(self.preprocessor, "denormalize"):
-            if isinstance(point_all, torch.Tensor):
-                point_all = self.preprocessor.denormalize(point_all)
+            point_all = self.preprocessor.denormalize(point_all)
 
-        # Build ForecastBundle-like output
-        extras_dict: Dict[str, Any] = {}
-        try:
-            extras_obj = HeadExtras(**extras_dict)
-        except Exception:
-            extras_obj = extras_dict  # fallback if HeadExtras signature changes
+        extras_obj = HeadExtras(**{}) if "HeadExtras" in globals() else {}
 
         bundle = ForecastBundle(
-            point=point_all,            # [B, T, F]
-            quantiles=quant_all,        # [B, T, F, Q] or None
-            params=params_stacked,      # Tensor OR Dict[str,Tensor] OR None
+            point=point_all,
+            quantiles=quant_all,
+            params=params_stacked,
             extras=extras_obj,
         )
 
         if return_bundle:
             return bundle
-        if isinstance(quant_all, torch.Tensor):
+        if quant_all is not None and torch.is_tensor(quant_all):
             return quant_all
         return point_all
+
 
 
     # ---------------------------------------------------------------------
