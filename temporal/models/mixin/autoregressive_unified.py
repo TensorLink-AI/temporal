@@ -63,7 +63,7 @@ class AutoregressiveUnifiedMixin:
         encoder_inputs: Optional[torch.Tensor] = None,
         decoder_inputs: Optional[torch.Tensor] = None,
         prediction_length: int,
-        block_len: int,
+        block_len: Optional[int] = None,
         attention_mask: Optional[torch.Tensor] = None,
         decoder_attention_mask: Optional[torch.Tensor] = None,
         quantile_levels: Optional[List[float]] = None,
@@ -72,6 +72,7 @@ class AutoregressiveUnifiedMixin:
         denormalize: bool = False,
         return_bundle: bool = False,
         return_raw: bool = False,
+        **kwargs,
     ):
         """
         This is basically your AutoregressiveBlockwiseMixin.generate(...)
@@ -83,6 +84,13 @@ class AutoregressiveUnifiedMixin:
         if ref is None:
             raise ValueError("You must provide either decoder_inputs or encoder_inputs.")
         B, device, dtype = ref.shape[0], ref.device, ref.dtype
+
+        if block_len is None:
+            block_len = getattr(self.config, "prediction_length", None)
+            if block_len is None:
+                raise ValueError(
+                    "block_len must be provided or model.config.prediction_length must be set for blockwise generation."
+                )
 
         # ---- encoder forward (if present) ----
         encoder_hidden_states = None
@@ -344,12 +352,14 @@ class AutoregressiveUnifiedMixin:
         validate_shapes: bool = True,
         verbose: bool = True,
         quantile_levels: Optional[List[float]] = None,
+        denormalize: bool = False,
         sampling: bool = False,
         sampling_kwargs: Optional[Dict[str, Any]] = None,
         return_raw: bool = False,
         post_quantiles: bool = True,
         return_bundle: bool = False,
         enable_mc_dropout: bool = False,
+        **kwargs,
     ):
         # This is the same as your "unupdated patch version" but trimmed a bit
         self.eval()
@@ -499,7 +509,7 @@ class AutoregressiveUnifiedMixin:
         else:
             point = self._compute_point_from_params__patch(params_stacked, primary_head, q_tensor)
 
-        if hasattr(self.preprocessor, "denormalize") and not return_raw:
+        if denormalize and not return_raw and hasattr(self.preprocessor, "denormalize"):
             if point.size(-1) == getattr(self.config, "feature_size", point.size(-1)):
                 try:
                     point = self.preprocessor.denormalize(point)
@@ -675,7 +685,11 @@ class AutoregressiveUnifiedMixin:
             params_final = final_dict
 
         # denorm (if requested in shared_kwargs)
-        if shared_kwargs.get("denormalize", False) and hasattr(self.preprocessor, "denormalize"):
+        if (
+            shared_kwargs.get("denormalize", False)
+            and not shared_kwargs.get("return_raw", False)
+            and hasattr(self.preprocessor, "denormalize")
+        ):
             point_all = self.preprocessor.denormalize(point_all)
 
         extras = HeadExtras(**{}) if "HeadExtras" in globals() else {}
@@ -703,7 +717,13 @@ class AutoregressiveUnifiedMixin:
         """
         mode = kwargs.pop("mode", None)
         prediction_length = kwargs.get("prediction_length", None)
-        block_len = kwargs.get("block_len", None)
+        block_len = kwargs.pop("block_len", None)
+
+        quantiles = kwargs.pop("quantiles", None)
+        if quantiles is not None:
+            if "quantile_levels" in kwargs and kwargs["quantile_levels"] is not None:
+                raise ValueError("Provide only one of 'quantile_levels' or 'quantiles'.")
+            kwargs["quantile_levels"] = quantiles
 
         # auto-detect
         if mode is None:
@@ -724,17 +744,46 @@ class AutoregressiveUnifiedMixin:
                 else:
                     mode = "step"
 
-        if mode in ("patch", "patch_one_shot"):
+        mode_map = {
+            "step": {"step", "stepwise"},
+            "block": {"block", "blockwise"},
+            "patch": {"patch", "patch_one_shot"},
+            "patch_blockwise": {"patch_blockwise", "patch_rollout"},
+        }
+
+        canonical_mode = None
+        if mode is not None:
+            for canon, aliases in mode_map.items():
+                if mode in aliases:
+                    canonical_mode = canon
+                    break
+        if canonical_mode is None:
+            allowed = sorted({alias for aliases in mode_map.values() for alias in aliases})
+            raise ValueError(f"Unsupported generation mode '{mode}'. Allowed modes: {allowed}.")
+
+        if canonical_mode == "patch":
             return self._generate_patch_one_shot(**kwargs)
-        if mode in ("patch_blockwise", "patch_ar", "patch_rollout"):
-            return self._generate_patch_blockwise(**kwargs)
-        if mode in ("block", "blockwise"):
+        if canonical_mode == "patch_blockwise":
+            block_len = block_len or getattr(self.config, "prediction_length", None)
             if block_len is None:
-                block_len = getattr(self.config, "prediction_length", None)
+                raise ValueError(
+                    "block_len must be provided or model.config.prediction_length must be set for patch_blockwise generation."
+                )
+            return self._generate_patch_blockwise(block_len=block_len, **kwargs)
+        if canonical_mode == "block":
+            block_len = block_len or getattr(self.config, "prediction_length", None)
+            if block_len is None:
+                raise ValueError(
+                    "block_len must be provided or model.config.prediction_length must be set for blockwise generation."
+                )
             return self._generate_blockwise(block_len=block_len, **kwargs)
 
-        # STEPWISE fallback — you can plug your real stepwise mixin here
-        raise NotImplementedError("Stepwise mode not wired here; plug your AutoregressiveStepwiseMixin if needed.")
+        # Stepwise
+        if hasattr(self, "_generate_stepwise"):
+            return self._generate_stepwise(**kwargs)
+        raise NotImplementedError(
+            "Stepwise autoregression requested, but '_generate_stepwise' is not implemented on this model."
+        )
 
     @torch.no_grad()
     def forecast(
