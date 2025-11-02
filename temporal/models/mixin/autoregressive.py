@@ -4,10 +4,10 @@ from typing import Optional, List, Union, Dict, Any
 import torch
 import torch.nn as nn
 
-# unified version (the one we just designed)
+# unified mixin – the one that has _generate_patch_one_shot / _generate_patch_blockwise / _generate_blockwise
 from .autoregressive_unified import AutoregressiveUnifiedMixin
 
-# optional legacy mixins – only used as fallback if present
+# optional legacy fallbacks
 try:
     from .autoregressive_stepwise import AutoregressiveStepwiseMixin
 except Exception:  # pragma: no cover
@@ -23,25 +23,20 @@ logger = logging.getLogger(__name__)
 
 class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
     """
-    Thin, backward-compatible dispatcher.
+    Dispatch layer that normalizes user-facing args and then calls
+    the unified autoregressive mixin.
 
-    - New style:
-        model.forecast(x, prediction_length=256, mode="patch_blockwise")
-        model.generate(..., mode="patch")
-    - Old style:
-        model.forecast(x, prediction_length=96, blockwise=True)
-        model.generate(..., blockwise=True)
-
-    The *real* logic lives in AutoregressiveUnifiedMixin.
-    This class just:
-      1) normalizes arguments (mode vs blockwise)
-      2) auto-detects patch models
-      3) tries legacy mixins if the unified one doesn't handle it
+    Supports:
+      - model.forecast(..., quantiles=[...])
+      - model.forecast(..., blockwise=True)
+      - model.forecast(..., mode="patch_blockwise")
+      - model.generate(..., mode="block")
+      - auto-detect patch vs non-patch
     """
 
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
     # helpers
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
     def _is_patch_model(self) -> bool:
         return (
             hasattr(self, "preprocessor")
@@ -49,9 +44,21 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
             and hasattr(self.preprocessor.value_embedding, "patch_size")
         )
 
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _pop_quantiles(kwargs: Dict[str, Any]) -> Optional[List[float]]:
+        """
+        Many call sites still use `quantiles=...`. The unified mixin
+        uses `quantile_levels=...`. Normalize here.
+        """
+        q = kwargs.pop("quantiles", None)
+        if q is None:
+            return None
+        # ensure list[float]
+        return [float(x) for x in q]
+
+    # ------------------------------------------------------------
     # public forecast
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
     @torch.no_grad()
     def forecast(
         self,
@@ -64,64 +71,61 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
         **kwargs: Any,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        Entry point most users call.
-
-        Args
-        ----
-        inputs: [B, T, F]
-        prediction_length: int
-        mode: one of
-            - "patch"             (zero-shot patches)
-            - "patch_blockwise"   (AR over native time but using patch model)
-            - "block" / "blockwise" (non-patch block AR)
-            - "step"              (classic 1-step AR, if present)
-            - None -> auto
-        blockwise: bool
-            old API shortcut; converts to mode="patch_blockwise" for patch models
-            or mode="block" for non-patch models.
+        Normalizes:
+          - quantiles -> quantile_levels
+          - blockwise -> mode
+        then calls the unified implementation.
         """
-        # 1) normalize: old arg -> new mode
-        if blockwise and mode is None:
+
+        # 1) collect/normalize quantiles
+        # (explicit arg wins over kw)
+        kw_quantiles = self._pop_quantiles(kwargs)
+        if quantiles is None:
+            quantiles = kw_quantiles
+        elif kw_quantiles is not None:
+            # user passed in both styles – prefer explicit arg
+            pass
+
+        # 2) normalize blockwise -> mode
+        if mode is None and blockwise:
             if self._is_patch_model():
                 mode = "patch_blockwise"
             else:
                 mode = "block"
 
-        # 2) if still no mode -> auto
+        # 3) auto mode if still None
         if mode is None:
             if self._is_patch_model():
-                # decide 1-shot vs blockwise by horizon
                 train_h = getattr(self.config, "prediction_length", None)
                 if train_h is not None and prediction_length > train_h:
                     mode = "patch_blockwise"
                 else:
                     mode = "patch"
             else:
-                # non-patch: try block if user asks long horizon, else step
                 train_h = getattr(self.config, "prediction_length", None)
                 if train_h is not None and prediction_length > train_h:
                     mode = "block"
                 else:
                     mode = "step"
 
-        logger.info(f"[AutoregressiveDispatchMixin] forecast(): mode={mode}")
+        logger.info(f"[AutoregressiveDispatchMixin] forecast(): mode={mode}, patch={self._is_patch_model()}")
 
-        # 3) dispatch to unified mixin first (the new path)
+        # 4) try unified path first
         try:
             return super().forecast(
                 inputs=inputs,
                 prediction_length=prediction_length,
                 mode=mode,
-                quantiles=quantiles,
+                quantile_levels=quantiles,
                 **kwargs,
             )
         except NotImplementedError:
             logger.warning(
-                f"[AutoregressiveDispatchMixin] unified mixin does not handle mode='{mode}', "
-                f"trying legacy mixins (if available)."
+                f"[AutoregressiveDispatchMixin] unified forecast() could not handle mode='{mode}', "
+                f"falling back to legacy mixins (if available)."
             )
 
-        # 4) legacy fallbacks — to NOT break old models
+        # 5) legacy fallbacks
         if mode in ("block", "blockwise") and AutoregressiveBlockwiseMixin is not None:
             return AutoregressiveBlockwiseMixin.forecast(
                 self,
@@ -140,22 +144,24 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
                 **kwargs,
             )
 
-        # if we get here – we truly don't support it
         raise NotImplementedError(f"forecast mode='{mode}' not supported on this model.")
 
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
     # public generate
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
     @torch.no_grad()
     def generate(self, *args: Any, **kwargs: Any) -> Any:
         """
-        Expert-level entry, mirrors HF-ish API, but we normalize the old
-        `blockwise=True` kwarg to a proper unified `mode`.
+        Same idea as forecast(): normalize args, then call unified.
         """
         mode = kwargs.pop("mode", None)
         blockwise = kwargs.pop("blockwise", False)
 
-        # prefer explicit mode
+        # normalize quantiles -> quantile_levels for generate too
+        quantiles = self._pop_quantiles(kwargs)
+        if quantiles is not None:
+            kwargs["quantile_levels"] = quantiles
+
         if mode is None and blockwise:
             if self._is_patch_model():
                 mode = "patch_blockwise"
@@ -165,18 +171,18 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
         if mode is not None:
             kwargs["mode"] = mode
 
-        logger.info(f"[AutoregressiveDispatchMixin] generate(): mode={mode}")
+        logger.info(f"[AutoregressiveDispatchMixin] generate(): mode={mode}, patch={self._is_patch_model()}")
 
-        # try unified first
+        # unified first
         try:
             return super().generate(*args, **kwargs)
         except NotImplementedError:
             logger.warning(
-                f"[AutoregressiveDispatchMixin] unified generate() does not handle mode='{mode}', "
-                f"trying legacy mixins (if available)."
+                f"[AutoregressiveDispatchMixin] unified generate() could not handle mode='{mode}', "
+                f"falling back to legacy mixins (if available)."
             )
 
-        # legacy fallback path
+        # legacy
         if mode in ("block", "blockwise") and AutoregressiveBlockwiseMixin is not None:
             return AutoregressiveBlockwiseMixin.generate(self, *args, **kwargs)
 
