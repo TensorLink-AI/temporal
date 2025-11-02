@@ -1,5 +1,4 @@
 # temporal/models/mixin/autoregressive_dispatch.py
-
 import torch
 from typing import Any, Optional, List
 
@@ -8,13 +7,13 @@ from .autoregressive_unified import AutoregressiveUnifiedMixin
 
 class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
     """
-    Thin shim.
-    Old calls like:
+    Thin adapter over your AutoregressiveUnifiedMixin.
 
-        model.forecast(x, prediction_length=256, quantiles=[0.25,0.5,0.75], mode="patch_blockwise")
-
-    are normalized and passed straight to AutoregressiveUnifiedMixin.generate(...)
-    / .forecast(...).
+    - user calls: model.forecast(x, ..., mode="patch_blockwise")
+    - we:
+        * rename quantiles -> quantile_levels
+        * map inputs -> encoder_inputs / decoder_inputs
+        * forward to unified.generate(...)
     """
 
     @torch.no_grad()
@@ -26,31 +25,37 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
         mode: Optional[str] = None,
         **kwargs: Any,
     ):
-        # old name → new name
+        # 1) normalize quantiles name
         quantiles: Optional[List[float]] = kwargs.pop("quantiles", None)
-        quantile_levels: Optional[List[float]] = kwargs.pop("quantile_levels", None) or quantiles
+        if quantiles is not None and "quantile_levels" not in kwargs:
+            kwargs["quantile_levels"] = quantiles
 
-        # people do this all the time
+        # 2) normalize block len aliases
         block_len = (
             kwargs.pop("block_len", None)
             or kwargs.pop("block_size", None)
             or kwargs.pop("chunk_len", None)
         )
+        if block_len is not None:
+            kwargs["block_len"] = block_len
 
-        # denorm aliases
-        denormalize = kwargs.pop("denormalize", kwargs.pop("denorm", False))
+        # 3) normalize denorm
+        if "denormalize" not in kwargs and "denorm" in kwargs:
+            kwargs["denormalize"] = bool(kwargs.pop("denorm"))
 
         return_bundle = kwargs.pop("return_bundle", False)
         return_raw = kwargs.pop("return_raw", False)
 
-        # just call the unified one — yours expects `inputs=...`
+        # 4) map inputs -> encoder_inputs / decoder_inputs
+        if hasattr(self, "encoder") and self.encoder is not None:
+            kwargs["encoder_inputs"] = inputs
+        else:
+            kwargs["decoder_inputs"] = inputs
+
+        # 5) call your unified mixin (IMPORTANT: no `inputs=` here)
         return super().generate(
-            inputs=inputs,
             prediction_length=prediction_length,
             mode=mode,
-            quantile_levels=quantile_levels,
-            block_len=block_len,
-            denormalize=denormalize,
             return_bundle=return_bundle,
             return_raw=return_raw,
             **kwargs,
@@ -59,17 +64,21 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
     @torch.no_grad()
     def generate(self, *args: Any, **kwargs: Any):
         """
-        HF-style callers sometimes do:
+        HF-style generate:
             model.generate(x, prediction_length=...)
-        or
-            model.generate(inputs=x, ...)
-        Normalize that and send to unified.
+        or:
+            model.generate(encoder_inputs=x, ...)
+        We fix the names, then call unified.generate(...)
         """
-        # positional tensor → inputs
-        if len(args) > 0 and torch.is_tensor(args[0]) and "inputs" not in kwargs:
-            kwargs["inputs"] = args[0]
+        # positional tensor → "inputs"
+        if len(args) > 0 and torch.is_tensor(args[0]) and "encoder_inputs" not in kwargs and "decoder_inputs" not in kwargs:
+            # decide enc vs dec
+            if hasattr(self, "encoder") and self.encoder is not None:
+                kwargs["encoder_inputs"] = args[0]
+            else:
+                kwargs["decoder_inputs"] = args[0]
 
-        # old quantile name
+        # quantiles → quantile_levels
         quantiles = kwargs.pop("quantiles", None)
         if quantiles is not None and "quantile_levels" not in kwargs:
             kwargs["quantile_levels"] = quantiles
@@ -84,8 +93,14 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
             kwargs["block_len"] = block_len
 
         # denorm alias
-        denorm = kwargs.pop("denorm", None)
-        if denorm is not None and "denormalize" not in kwargs:
-            kwargs["denormalize"] = bool(denorm)
+        if "denormalize" not in kwargs and "denorm" in kwargs:
+            kwargs["denormalize"] = bool(kwargs.pop("denorm"))
+
+        # make sure we have prediction_length
+        if "prediction_length" not in kwargs:
+            pl = getattr(self.config, "prediction_length", None)
+            if pl is None:
+                raise ValueError("generate(...) needs prediction_length")
+            kwargs["prediction_length"] = pl
 
         return super().generate(**kwargs)
