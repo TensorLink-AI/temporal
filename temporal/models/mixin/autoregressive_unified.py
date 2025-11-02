@@ -639,6 +639,8 @@ class AutoregressiveUnifiedMixin:
         while remaining > 0:
             this_block = min(remaining, block_len)
             # IMPORTANT: for subsequent steps we decode-only on the *running native seq*
+            inner_kwargs = dict(shared_kwargs)
+            inner_kwargs.pop("return_bundle", None)
             bundle = self._generate_patch_one_shot(
                 encoder_inputs=enc_inputs_static if collected_points == [] else None,
                 decoder_inputs=running_seq,
@@ -646,7 +648,7 @@ class AutoregressiveUnifiedMixin:
                 attention_mask=None if collected_points else attention_mask,
                 decoder_attention_mask=decoder_attention_mask,
                 return_bundle=True,
-                **shared_kwargs,
+                **inner_kwargs,
             )
             point_b = bundle.point           # [B, this_block, F]
             quant_b = bundle.quantiles       # maybe None
@@ -724,6 +726,11 @@ class AutoregressiveUnifiedMixin:
             if "quantile_levels" in kwargs and kwargs["quantile_levels"] is not None:
                 raise ValueError("Provide only one of 'quantile_levels' or 'quantiles'.")
             kwargs["quantile_levels"] = quantiles
+
+        if kwargs.get("return_bundle") and kwargs.get("quantile_levels") is None:
+            default_q = getattr(self.config, "quantiles", None)
+            if default_q:
+                kwargs["quantile_levels"] = default_q
 
         # auto-detect
         if mode is None:
