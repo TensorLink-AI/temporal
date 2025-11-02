@@ -636,11 +636,16 @@ class AutoregressiveUnifiedMixin:
                     meta.setdefault(k, v)
             return acc, meta
 
+        denorm_requested = bool(shared_kwargs.get("denormalize", False))
+        shared_kwargs = dict(shared_kwargs)
+        shared_kwargs.pop("denormalize", None)
+
         while remaining > 0:
             this_block = min(remaining, block_len)
             # IMPORTANT: for subsequent steps we decode-only on the *running native seq*
             inner_kwargs = dict(shared_kwargs)
             inner_kwargs.pop("return_bundle", None)
+            inner_kwargs["denormalize"] = False
             bundle = self._generate_patch_one_shot(
                 encoder_inputs=enc_inputs_static if collected_points == [] else None,
                 decoder_inputs=running_seq,
@@ -688,7 +693,7 @@ class AutoregressiveUnifiedMixin:
 
         # denorm (if requested in shared_kwargs)
         if (
-            shared_kwargs.get("denormalize", False)
+            denorm_requested
             and not shared_kwargs.get("return_raw", False)
             and hasattr(self.preprocessor, "denormalize")
         ):
