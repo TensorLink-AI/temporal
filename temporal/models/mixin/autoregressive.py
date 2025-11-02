@@ -1,77 +1,137 @@
+import logging
+from typing import Optional, List, Union, Dict, Any
+
 import torch
 import torch.nn as nn
-import logging
-from typing import Any, Dict, List, Optional, Union
+
+# unified version (the one we just designed)
+from .autoregressive_unified import AutoregressiveUnifiedMixin
+
+# optional legacy mixins – only used as fallback if present
+try:
+    from .autoregressive_stepwise import AutoregressiveStepwiseMixin
+except Exception:  # pragma: no cover
+    AutoregressiveStepwiseMixin = None  # type: ignore
+
+try:
+    from .autoregressive_blockwise import AutoregressiveBlockwiseMixin
+except Exception:  # pragma: no cover
+    AutoregressiveBlockwiseMixin = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
-# new unified mixin
-from .autoregressive_unified import AutoregressiveUnifiedMixin
 
-# keep stepwise around for legacy / debugging
-from .autoregressive_stepwise import AutoregressiveStepwiseMixin
-# (we no longer need to import the old patch/blockwise ones here)
-
-
-class AutoregressiveDispatchMixin:
+class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
     """
-    Dispatch mixin that routes to the unified autoregressive mixin.
+    Thin, backward-compatible dispatcher.
 
-    Rules:
-    - if stepwise=True  -> use legacy stepwise (1-step AR)
-    - elif blockwise=True -> unified, mode="blockwise"
-    - elif model looks patched -> unified, mode="patch_blockwise" (your training-style)
-    - else -> unified, mode="blockwise"
-
-    This keeps the old call sites working:
+    - New style:
+        model.forecast(x, prediction_length=256, mode="patch_blockwise")
+        model.generate(..., mode="patch")
+    - Old style:
+        model.forecast(x, prediction_length=96, blockwise=True)
         model.generate(..., blockwise=True)
-    while letting newer code do:
-        model.generate(..., mode="patch_ar")
-        model.generate(..., mode="patch_blockwise")
-        model.generate(..., mode="blockwise")
+
+    The *real* logic lives in AutoregressiveUnifiedMixin.
+    This class just:
+      1) normalizes arguments (mode vs blockwise)
+      2) auto-detects patch models
+      3) tries legacy mixins if the unified one doesn't handle it
     """
 
     # ------------------------------------------------------------------
-    # detection
+    # helpers
     # ------------------------------------------------------------------
-    def _is_patch_based(self) -> bool:
-        """
-        Checks if the model is patch-based by inspecting its preprocessor/value_embedding.
-        """
-        if not hasattr(self, "preprocessor"):
-            return False
-        ve = getattr(self.preprocessor, "value_embedding", None)
-        if ve is None:
-            return False
-        return hasattr(ve, "patch_size")  # your current heuristic
+    def _is_patch_model(self) -> bool:
+        return (
+            hasattr(self, "preprocessor")
+            and hasattr(self.preprocessor, "value_embedding")
+            and hasattr(self.preprocessor.value_embedding, "patch_size")
+        )
 
     # ------------------------------------------------------------------
-    # forecast -> unified
+    # public forecast
     # ------------------------------------------------------------------
     @torch.no_grad()
     def forecast(
         self,
         inputs: torch.Tensor,
         prediction_length: int,
-        quantiles: Optional[List[float]] = None,
         *,
-        blockwise: bool = False,
-        stepwise: bool = False,
         mode: Optional[str] = None,
-        **kwargs,
-    ) -> Union[torch.Tensor, Dict[str, torch.Tensor], List[Dict[str, Union[torch.Tensor, List[str]]]]]:
+        blockwise: bool = False,
+        quantiles: Optional[List[float]] = None,
+        **kwargs: Any,
+    ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        User-friendly forecast that chooses the right unified mode.
+        Entry point most users call.
 
-        Params
-        ------
-        blockwise: force non-patch blockwise (like old AutoregressiveBlockwiseMixin)
-        stepwise:  force legacy stepwise (1-step AR; useful for debugging)
-        mode:      directly pass a unified mode: "blockwise" | "patch_ar" | "patch_blockwise"
+        Args
+        ----
+        inputs: [B, T, F]
+        prediction_length: int
+        mode: one of
+            - "patch"             (zero-shot patches)
+            - "patch_blockwise"   (AR over native time but using patch model)
+            - "block" / "blockwise" (non-patch block AR)
+            - "step"              (classic 1-step AR, if present)
+            - None -> auto
+        blockwise: bool
+            old API shortcut; converts to mode="patch_blockwise" for patch models
+            or mode="block" for non-patch models.
         """
-        # 1) explicit legacy stepwise takes priority
-        if stepwise:
-            logger.info("Stepwise forecasting requested explicitly. Dispatching to AutoregressiveStepwiseMixin.")
+        # 1) normalize: old arg -> new mode
+        if blockwise and mode is None:
+            if self._is_patch_model():
+                mode = "patch_blockwise"
+            else:
+                mode = "block"
+
+        # 2) if still no mode -> auto
+        if mode is None:
+            if self._is_patch_model():
+                # decide 1-shot vs blockwise by horizon
+                train_h = getattr(self.config, "prediction_length", None)
+                if train_h is not None and prediction_length > train_h:
+                    mode = "patch_blockwise"
+                else:
+                    mode = "patch"
+            else:
+                # non-patch: try block if user asks long horizon, else step
+                train_h = getattr(self.config, "prediction_length", None)
+                if train_h is not None and prediction_length > train_h:
+                    mode = "block"
+                else:
+                    mode = "step"
+
+        logger.info(f"[AutoregressiveDispatchMixin] forecast(): mode={mode}")
+
+        # 3) dispatch to unified mixin first (the new path)
+        try:
+            return super().forecast(
+                inputs=inputs,
+                prediction_length=prediction_length,
+                mode=mode,
+                quantiles=quantiles,
+                **kwargs,
+            )
+        except NotImplementedError:
+            logger.warning(
+                f"[AutoregressiveDispatchMixin] unified mixin does not handle mode='{mode}', "
+                f"trying legacy mixins (if available)."
+            )
+
+        # 4) legacy fallbacks — to NOT break old models
+        if mode in ("block", "blockwise") and AutoregressiveBlockwiseMixin is not None:
+            return AutoregressiveBlockwiseMixin.forecast(
+                self,
+                inputs=inputs,
+                prediction_length=prediction_length,
+                quantiles=quantiles,
+                **kwargs,
+            )
+
+        if mode in ("step", "stepwise") and AutoregressiveStepwiseMixin is not None:
             return AutoregressiveStepwiseMixin.forecast(
                 self,
                 inputs=inputs,
@@ -80,95 +140,47 @@ class AutoregressiveDispatchMixin:
                 **kwargs,
             )
 
-        # 2) if caller gave an explicit unified mode, just forward it
-        if mode is not None:
-            logger.info(f"Unified forecast with explicit mode={mode}.")
-            return AutoregressiveUnifiedMixin.forecast(
-                self,
-                inputs=inputs,
-                prediction_length=prediction_length,
-                quantiles=quantiles,
-                mode=mode,
-                **kwargs,
-            )
-
-        # 3) preserve old API: blockwise=True
-        if blockwise:
-            logger.info("Blockwise forecasting requested. Using unified mode='blockwise'.")
-            return AutoregressiveUnifiedMixin.forecast(
-                self,
-                inputs=inputs,
-                prediction_length=prediction_length,
-                quantiles=quantiles,
-                mode="blockwise",
-                **kwargs,
-            )
-
-        # 4) auto-detect patch models -> this is your default for patched models
-        if self._is_patch_based():
-            logger.info("Patch-based model detected. Using unified mode='patch_blockwise'.")
-            return AutoregressiveUnifiedMixin.forecast(
-                self,
-                inputs=inputs,
-                prediction_length=prediction_length,
-                quantiles=quantiles,
-                mode="patch_blockwise",
-                **kwargs,
-            )
-
-        # 5) fallback: normal non-patch blockwise
-        logger.info("Non-patch model detected. Using unified mode='blockwise'.")
-        return AutoregressiveUnifiedMixin.forecast(
-            self,
-            inputs=inputs,
-            prediction_length=prediction_length,
-            quantiles=quantiles,
-            mode="blockwise",
-            **kwargs,
-        )
+        # if we get here – we truly don't support it
+        raise NotImplementedError(f"forecast mode='{mode}' not supported on this model.")
 
     # ------------------------------------------------------------------
-    # generate -> unified
+    # public generate
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def generate(
-        self,
-        *args,
-        blockwise: bool = False,
-        stepwise: bool = False,
-        mode: Optional[str] = None,
-        **kwargs,
-    ) -> Union[torch.Tensor, Dict[str, torch.Tensor], List[Dict[str, Union[torch.Tensor, List[str]]]]]:
+    def generate(self, *args: Any, **kwargs: Any) -> Any:
         """
-        Expert-level generate that still keeps old flags working.
+        Expert-level entry, mirrors HF-ish API, but we normalize the old
+        `blockwise=True` kwarg to a proper unified `mode`.
+        """
+        mode = kwargs.pop("mode", None)
+        blockwise = kwargs.pop("blockwise", False)
 
-        You can now do:
-            model.generate(decoder_inputs=..., prediction_length=256)   # auto
-            model.generate(..., blockwise=True)                        # force non-patch blockwise
-            model.generate(..., mode="patch_blockwise")                # train-style patched blocks
-            model.generate(..., mode="patch_ar")                       # latent AR (old patch mixin)
-            model.generate(..., stepwise=True)                         # legacy stepwise
-        """
-        # 1) explicit legacy stepwise
-        if stepwise:
-            logger.info("Stepwise generation requested explicitly. Dispatching to AutoregressiveStepwiseMixin.")
+        # prefer explicit mode
+        if mode is None and blockwise:
+            if self._is_patch_model():
+                mode = "patch_blockwise"
+            else:
+                mode = "block"
+
+        if mode is not None:
+            kwargs["mode"] = mode
+
+        logger.info(f"[AutoregressiveDispatchMixin] generate(): mode={mode}")
+
+        # try unified first
+        try:
+            return super().generate(*args, **kwargs)
+        except NotImplementedError:
+            logger.warning(
+                f"[AutoregressiveDispatchMixin] unified generate() does not handle mode='{mode}', "
+                f"trying legacy mixins (if available)."
+            )
+
+        # legacy fallback path
+        if mode in ("block", "blockwise") and AutoregressiveBlockwiseMixin is not None:
+            return AutoregressiveBlockwiseMixin.generate(self, *args, **kwargs)
+
+        if mode in ("step", "stepwise") and AutoregressiveStepwiseMixin is not None:
             return AutoregressiveStepwiseMixin.generate(self, *args, **kwargs)
 
-        # 2) explicit unified mode
-        if mode is not None:
-            logger.info(f"Unified generation with explicit mode={mode}.")
-            return AutoregressiveUnifiedMixin.generate(self, *args, mode=mode, **kwargs)
-
-        # 3) old API: blockwise=True
-        if blockwise:
-            logger.info("Blockwise generation requested. Using unified mode='blockwise'.")
-            return AutoregressiveUnifiedMixin.generate(self, *args, mode="blockwise", **kwargs)
-
-        # 4) auto detect patch → patch_blockwise
-        if self._is_patch_based():
-            logger.info("Patch-based model detected. Using unified mode='patch_blockwise'.")
-            return AutoregressiveUnifiedMixin.generate(self, *args, mode="patch_blockwise", **kwargs)
-
-        # 5) fallback: blockwise
-        logger.info("Non-patch model detected. Using unified mode='blockwise'.")
-        return AutoregressiveUnifiedMixin.generate(self, *args, mode="blockwise", **kwargs)
+        raise NotImplementedError(f"generate mode='{mode}' not supported on this model.")
