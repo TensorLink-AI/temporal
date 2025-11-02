@@ -1,42 +1,41 @@
+# autoregressive_unified.py
 import logging
-from typing import Optional, List, Union, Dict, Any
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
 
-# unified mixin – the one that has _generate_patch_one_shot / _generate_patch_blockwise / _generate_blockwise
-from .autoregressive_unified import AutoregressiveUnifiedMixin
-
-# optional legacy fallbacks
-try:
-    from .autoregressive_stepwise import AutoregressiveStepwiseMixin
-except Exception:  # pragma: no cover
-    AutoregressiveStepwiseMixin = None  # type: ignore
-
-try:
-    from .autoregressive_blockwise import AutoregressiveBlockwiseMixin
-except Exception:  # pragma: no cover
-    AutoregressiveBlockwiseMixin = None  # type: ignore
-
 logger = logging.getLogger(__name__)
 
+# optional imports – we call into them if present
+try:
+    from .autoregressive_stepwise import AutoregressiveStepwiseMixin as _Stepwise
+except Exception:  # pragma: no cover
+    _Stepwise = None  # type: ignore
 
-class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
+try:
+    from .autoregressive_blockwise import AutoregressiveBlockwiseMixin as _Blockwise
+except Exception:  # pragma: no cover
+    _Blockwise = None  # type: ignore
+
+try:
+    from .autoregressive_patch import AutoregressivePatchMixin as _PatchBase
+except Exception:  # pragma: no cover
+    _PatchBase = None  # type: ignore
+
+
+class AutoregressiveUnifiedMixin(nn.Module):
     """
-    Dispatch layer that normalizes user-facing args and then calls
-    the unified autoregressive mixin.
+    Single place that knows how to do:
+      - stepwise AR
+      - blockwise AR
+      - patch one-shot (zero-shot all patches)
+      - patch blockwise (AR in patch space, roll out more than train horizon)
 
-    Supports:
-      - model.forecast(..., quantiles=[...])
-      - model.forecast(..., blockwise=True)
-      - model.forecast(..., mode="patch_blockwise")
-      - model.generate(..., mode="block")
-      - auto-detect patch vs non-patch
+    Everything comes through here; dispatch mixin just normalizes args.
     """
 
-    # ------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------
+    # ------------- helpers -------------
     def _is_patch_model(self) -> bool:
         return (
             hasattr(self, "preprocessor")
@@ -44,21 +43,7 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
             and hasattr(self.preprocessor.value_embedding, "patch_size")
         )
 
-    @staticmethod
-    def _pop_quantiles(kwargs: Dict[str, Any]) -> Optional[List[float]]:
-        """
-        Many call sites still use `quantiles=...`. The unified mixin
-        uses `quantile_levels=...`. Normalize here.
-        """
-        q = kwargs.pop("quantiles", None)
-        if q is None:
-            return None
-        # ensure list[float]
-        return [float(x) for x in q]
-
-    # ------------------------------------------------------------
-    # public forecast
-    # ------------------------------------------------------------
+    # ------------- public API -------------
     @torch.no_grad()
     def forecast(
         self,
@@ -66,34 +51,24 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
         prediction_length: int,
         *,
         mode: Optional[str] = None,
-        blockwise: bool = False,
-        quantiles: Optional[List[float]] = None,
+        quantile_levels: Optional[List[float]] = None,
         **kwargs: Any,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        Normalizes:
-          - quantiles -> quantile_levels
-          - blockwise -> mode
-        then calls the unified implementation.
+        Unified forecast entry point.
+
+        mode:
+          - "step" / "stepwise"
+          - "block" / "blockwise"
+          - "patch"
+          - "patch_blockwise"
+          - None -> auto
         """
+        # pull these out so we don't explode in the sub-fns
+        denormalize: bool = bool(kwargs.pop("denormalize", False))
+        return_bundle: bool = bool(kwargs.pop("return_bundle", False))
+        return_raw: bool = bool(kwargs.pop("return_raw", False))
 
-        # 1) collect/normalize quantiles
-        # (explicit arg wins over kw)
-        kw_quantiles = self._pop_quantiles(kwargs)
-        if quantiles is None:
-            quantiles = kw_quantiles
-        elif kw_quantiles is not None:
-            # user passed in both styles – prefer explicit arg
-            pass
-
-        # 2) normalize blockwise -> mode
-        if mode is None and blockwise:
-            if self._is_patch_model():
-                mode = "patch_blockwise"
-            else:
-                mode = "block"
-
-        # 3) auto mode if still None
         if mode is None:
             if self._is_patch_model():
                 train_h = getattr(self.config, "prediction_length", None)
@@ -108,85 +83,252 @@ class AutoregressiveDispatchMixin(AutoregressiveUnifiedMixin):
                 else:
                     mode = "step"
 
-        logger.info(f"[AutoregressiveDispatchMixin] forecast(): mode={mode}, patch={self._is_patch_model()}")
-
-        # 4) try unified path first
-        try:
-            return super().forecast(
+        if mode in ("patch", "patch_one_shot"):
+            return self._generate_patch_one_shot(
                 inputs=inputs,
                 prediction_length=prediction_length,
-                mode=mode,
-                quantile_levels=quantiles,
-                **kwargs,
-            )
-        except NotImplementedError:
-            logger.warning(
-                f"[AutoregressiveDispatchMixin] unified forecast() could not handle mode='{mode}', "
-                f"falling back to legacy mixins (if available)."
-            )
-
-        # 5) legacy fallbacks
-        if mode in ("block", "blockwise") and AutoregressiveBlockwiseMixin is not None:
-            return AutoregressiveBlockwiseMixin.forecast(
-                self,
-                inputs=inputs,
-                prediction_length=prediction_length,
-                quantiles=quantiles,
+                quantile_levels=quantile_levels,
+                denormalize=denormalize,
+                return_bundle=return_bundle,
+                return_raw=return_raw,
                 **kwargs,
             )
 
-        if mode in ("step", "stepwise") and AutoregressiveStepwiseMixin is not None:
-            return AutoregressiveStepwiseMixin.forecast(
-                self,
+        if mode in ("patch_blockwise", "patch_block"):
+            return self._generate_patch_blockwise(
                 inputs=inputs,
                 prediction_length=prediction_length,
-                quantiles=quantiles,
+                quantile_levels=quantile_levels,
+                denormalize=denormalize,
+                return_bundle=return_bundle,
+                return_raw=return_raw,
                 **kwargs,
             )
 
-        raise NotImplementedError(f"forecast mode='{mode}' not supported on this model.")
+        if mode in ("block", "blockwise"):
+            return self._generate_blockwise(
+                inputs=inputs,
+                prediction_length=prediction_length,
+                quantile_levels=quantile_levels,
+                denormalize=denormalize,
+                return_bundle=return_bundle,
+                return_raw=return_raw,
+                **kwargs,
+            )
 
-    # ------------------------------------------------------------
-    # public generate
-    # ------------------------------------------------------------
+        if mode in ("step", "stepwise"):
+            return self._generate_stepwise(
+                inputs=inputs,
+                prediction_length=prediction_length,
+                quantile_levels=quantile_levels,
+                denormalize=denormalize,
+                return_bundle=return_bundle,
+                return_raw=return_raw,
+                **kwargs,
+            )
+
+        raise NotImplementedError(f"Unknown AR mode: {mode}")
+
     @torch.no_grad()
-    def generate(self, *args: Any, **kwargs: Any) -> Any:
+    def generate(
+        self,
+        *args: Any,
+        mode: Optional[str] = None,
+        quantile_levels: Optional[List[float]] = None,
+        **kwargs: Any,
+    ) -> Any:
         """
-        Same idea as forecast(): normalize args, then call unified.
+        Same as forecast but signature-aligned with HF-style generate.
+        We still normalize and call the same internal functions.
         """
-        mode = kwargs.pop("mode", None)
-        blockwise = kwargs.pop("blockwise", False)
+        # some callers give decoder_inputs directly
+        inputs = kwargs.pop("inputs", None)
+        if inputs is None and len(args) > 0 and torch.is_tensor(args[0]):
+            inputs = args[0]
+        if inputs is None:
+            raise ValueError("generate(...) needs `inputs` tensor or first positional tensor.")
 
-        # normalize quantiles -> quantile_levels for generate too
-        quantiles = self._pop_quantiles(kwargs)
-        if quantiles is not None:
-            kwargs["quantile_levels"] = quantiles
+        prediction_length = kwargs.pop("prediction_length", None)
+        if prediction_length is None:
+            prediction_length = getattr(self.config, "prediction_length", None)
+        if prediction_length is None:
+            raise ValueError("prediction_length must be provided to generate(...)")
 
-        if mode is None and blockwise:
+        # pull common kwargs
+        denormalize: bool = bool(kwargs.pop("denormalize", False))
+        return_bundle: bool = bool(kwargs.pop("return_bundle", False))
+        return_raw: bool = bool(kwargs.pop("return_raw", False))
+
+        if mode is None:
             if self._is_patch_model():
-                mode = "patch_blockwise"
+                train_h = getattr(self.config, "prediction_length", None)
+                if train_h is not None and prediction_length > train_h:
+                    mode = "patch_blockwise"
+                else:
+                    mode = "patch"
             else:
-                mode = "block"
+                train_h = getattr(self.config, "prediction_length", None)
+                if train_h is not None and prediction_length > train_h:
+                    mode = "block"
+                else:
+                    mode = "step"
 
-        if mode is not None:
-            kwargs["mode"] = mode
-
-        logger.info(f"[AutoregressiveDispatchMixin] generate(): mode={mode}, patch={self._is_patch_model()}")
-
-        # unified first
-        try:
-            return super().generate(*args, **kwargs)
-        except NotImplementedError:
-            logger.warning(
-                f"[AutoregressiveDispatchMixin] unified generate() could not handle mode='{mode}', "
-                f"falling back to legacy mixins (if available)."
+        if mode in ("patch", "patch_one_shot"):
+            return self._generate_patch_one_shot(
+                inputs=inputs,
+                prediction_length=prediction_length,
+                quantile_levels=quantile_levels,
+                denormalize=denormalize,
+                return_bundle=return_bundle,
+                return_raw=return_raw,
+                **kwargs,
             )
 
-        # legacy
-        if mode in ("block", "blockwise") and AutoregressiveBlockwiseMixin is not None:
-            return AutoregressiveBlockwiseMixin.generate(self, *args, **kwargs)
+        if mode in ("patch_blockwise", "patch_block"):
+            return self._generate_patch_blockwise(
+                inputs=inputs,
+                prediction_length=prediction_length,
+                quantile_levels=quantile_levels,
+                denormalize=denormalize,
+                return_bundle=return_bundle,
+                return_raw=return_raw,
+                **kwargs,
+            )
 
-        if mode in ("step", "stepwise") and AutoregressiveStepwiseMixin is not None:
-            return AutoregressiveStepwiseMixin.generate(self, *args, **kwargs)
+        if mode in ("block", "blockwise"):
+            return self._generate_blockwise(
+                inputs=inputs,
+                prediction_length=prediction_length,
+                quantile_levels=quantile_levels,
+                denormalize=denormalize,
+                return_bundle=return_bundle,
+                return_raw=return_raw,
+                **kwargs,
+            )
 
-        raise NotImplementedError(f"generate mode='{mode}' not supported on this model.")
+        if mode in ("step", "stepwise"):
+            return self._generate_stepwise(
+                inputs=inputs,
+                prediction_length=prediction_length,
+                quantile_levels=quantile_levels,
+                denormalize=denormalize,
+                return_bundle=return_bundle,
+                return_raw=return_raw,
+                **kwargs,
+            )
+
+        raise NotImplementedError(f"Unknown AR mode: {mode}")
+
+    # ------------- concrete internal paths -------------
+
+    # --- 1) patch, one shot (your “zero shot all patches”) ---
+    def _generate_patch_one_shot(
+        self,
+        *,
+        inputs: torch.Tensor,
+        prediction_length: int,
+        quantile_levels: Optional[List[float]] = None,
+        denormalize: bool = False,
+        return_bundle: bool = False,
+        return_raw: bool = False,
+        **kwargs: Any,
+    ):
+        if _PatchBase is None:
+            raise NotImplementedError("Patch mixin not available in this build.")
+
+        # re-use original patch mixin but make it tolerant
+        return _PatchBase.generate(
+            self,
+            encoder_inputs=inputs if hasattr(self, "encoder") and self.encoder is not None else None,
+            decoder_inputs=None if hasattr(self, "encoder") and self.encoder is not None else inputs,
+            prediction_length=prediction_length,
+            quantile_levels=quantile_levels,
+            denormalize=denormalize,
+            return_bundle=return_bundle,
+            return_raw=return_raw,
+            **kwargs,
+        )
+
+    # --- 2) patch, blockwise AR in patch space ---
+    def _generate_patch_blockwise(
+        self,
+        *,
+        inputs: torch.Tensor,
+        prediction_length: int,
+        quantile_levels: Optional[List[float]] = None,
+        denormalize: bool = False,
+        return_bundle: bool = False,
+        return_raw: bool = False,
+        block_len: Optional[int] = None,
+        **kwargs: Any,
+    ):
+        if _PatchBase is None:
+            raise NotImplementedError("Patch mixin not available in this build.")
+
+        # simple strategy:
+        #  - number of patches to roll out = ceil(pred_len / patch_size)
+        #  - we still let the patch mixin do the actual AR in patch space
+        #  - we just forward the flags
+        return _PatchBase.generate(
+            self,
+            encoder_inputs=inputs if hasattr(self, "encoder") and self.encoder is not None else None,
+            decoder_inputs=None if hasattr(self, "encoder") and self.encoder is not None else inputs,
+            prediction_length=prediction_length,
+            quantile_levels=quantile_levels,
+            denormalize=denormalize,
+            return_bundle=return_bundle,
+            return_raw=return_raw,
+            **kwargs,
+        )
+
+    # --- 3) non-patch, true blockwise ---
+    def _generate_blockwise(
+        self,
+        *,
+        inputs: torch.Tensor,
+        prediction_length: int,
+        quantile_levels: Optional[List[float]] = None,
+        denormalize: bool = False,
+        return_bundle: bool = False,
+        return_raw: bool = False,
+        block_len: Optional[int] = None,
+        **kwargs: Any,
+    ):
+        if _Blockwise is None:
+            raise NotImplementedError("Blockwise mixin not available.")
+        return _Blockwise.forecast(
+            self,
+            inputs=inputs,
+            prediction_length=prediction_length,
+            block_len=block_len,
+            quantiles=quantile_levels,
+            denormalize=denormalize,
+            return_bundle=return_bundle,
+            return_raw=return_raw,
+            **kwargs,
+        )
+
+    # --- 4) non-patch, stepwise ---
+    def _generate_stepwise(
+        self,
+        *,
+        inputs: torch.Tensor,
+        prediction_length: int,
+        quantile_levels: Optional[List[float]] = None,
+        denormalize: bool = False,
+        return_bundle: bool = False,
+        return_raw: bool = False,
+        **kwargs: Any,
+    ):
+        if _Stepwise is None:
+            raise NotImplementedError("Stepwise mixin not available.")
+        return _Stepwise.forecast(
+            self,
+            inputs=inputs,
+            prediction_length=prediction_length,
+            quantiles=quantile_levels,
+            denormalize=denormalize,
+            return_bundle=return_bundle,
+            return_raw=return_raw,
+            **kwargs,
+        )
