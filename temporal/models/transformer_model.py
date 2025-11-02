@@ -6,9 +6,7 @@ from dataclasses import dataclass, asdict
 from temporal.models.base_model import BaseTemporalModel
 from temporal.registry.generate import register_generate
 from temporal.models.mixin.autoregressive import AutoregressiveDispatchMixin
-from temporal.models.mixin.autoregressive_patch import AutoregressivePatchMixin
-from temporal.models.mixin.autoregressive_stepwise import AutoregressiveStepwiseMixin
-from temporal.models.mixin.autoregressive_blockwise import AutoregressiveBlockwiseMixin
+
 
 from temporal.models.mixin.multistep import MultiStepMixin
 from temporal.models.preprocessor import InputPreprocessor
@@ -78,7 +76,7 @@ class TransformerOutput:
         return asdict(self)
 
 @register_generate(name="transformer")
-class TransformerTemporalModel(AutoregressiveDispatchMixin,AutoregressivePatchMixin,AutoregressiveStepwiseMixin, AutoregressiveBlockwiseMixin,MultiStepMixin, BaseTemporalModel):
+class TransformerTemporalModel(AutoregressiveDispatchMixin, BaseTemporalModel):
     """A concrete implementation of a transformer-based temporal model.
 
     This class assembles the encoder, decoder, and output heads into a cohesive
